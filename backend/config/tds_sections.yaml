@@ -1,0 +1,803 @@
+# ============================================================
+# TDS SECTIONS CONFIGURATION
+# Source: Income Tax Act 1961 | P.Y. 2025-26 / A.Y. 2026-27
+# Project: TDS Issue Detection System — Mahindra & Mahindra
+# ============================================================
+
+sections:
+
+  # ----------------------------------------------------------
+  # 192 / 392(1) — SALARY
+  # Old: 192 | New: 392(1) | Category: Salary
+  # GL: EMPLOYEE VENDOR, ADVANCE TO EMPLOYEE-SALARY
+  # ----------------------------------------------------------
+  '192':
+    old_section: '192'
+    new_section: '392'
+    new_subsection: 392(1)
+    category: Salary
+    name: Salary
+    payment_type: salary
+    deductee_types:
+      - Individual
+    rate:
+      default: null # Average rate computed per employee
+    threshold: null # Basic exemption limit varies per employee
+    time_of_deduction: at_payment
+    payer: employer
+    rename_effective_date: '2026-04-01'
+    gl_accounts:
+      - EMPLOYEE VENDOR
+      - ADVANCE TO EMPLOYEE-SALARY
+
+  # ----------------------------------------------------------
+  # 193 / 393(1) — INTEREST ON SECURITIES
+  # Old: 193 | New: 393(1) | Category: Category 5
+  # ----------------------------------------------------------
+  '193':
+    old_section: '193'
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 5
+    name: Interest on Securities
+    payment_type: interest_on_securities
+    deductee_types:
+      - Individual
+    rate:
+      default: 10
+    threshold: 10000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: any
+
+  # ----------------------------------------------------------
+  # 194 / 393(1) — DIVIDEND
+  # Old: 194 | New: 393(1) | Category: Category 5
+  # ----------------------------------------------------------
+  '194':
+    old_section: '194'
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 5
+    name: Dividend
+    payment_type: dividend_income
+    deductee_types:
+      - Individual
+    rate:
+      default: 10
+    threshold:
+      individual: 10000
+      others: 0
+    time_of_deduction: before_payment
+    payer: domestic_company
+
+  # ----------------------------------------------------------
+  # 195 / 393(2) — NON-RESIDENT / FOREIGN PAYMENTS
+  # Old: 195 | New: 393(2) | Category: Non-Resident
+  # GL: A/P GOODS OVERSEAS VENDORS, A/P CAPITAL OVERSEAS VENDOR
+  #     (TDS applicability to be checked — noted in GL map)
+  # ----------------------------------------------------------
+  '195':
+    old_section: '195'
+    new_section: '393'
+    new_subsection: 393(2)
+    category: Non-Resident Category
+    name: Non-Resident Payments
+    payment_type: foreign_payments
+    deductee_types:
+      - Firm
+      - Body Corporate
+    rate:
+      default: null
+    threshold: null
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: any
+    forms_required:
+      - 15CA
+      - 15CB
+    gl_accounts:
+      - A/P GOODS OVERSEAS VENDORS
+      - A/P CAPITAL OVERSEAS VENDOR
+    notes: |
+      Rate depends on DTAA with vendor country. GL map marks these as specific — to be checked case by case. Non-residents without PE in India excluded from 206AB.
+
+  '392':
+    old_section: '192'
+    new_section: '392'
+    new_subsection: 392(1)
+    category: Salary
+    name: Salary (effective 1st April 2026)
+    payment_type: salary
+    deductee_types:
+      - Individual
+    rate:
+      default: null
+    threshold: null
+    time_of_deduction: at_payment
+    payer: employer
+    rename_effective_date: '2026-04-01'
+    gl_accounts:
+      - EMPLOYEE VENDOR
+      - ADVANCE TO EMPLOYEE-SALARY
+
+  # ----------------------------------------------------------
+  # 192A / 392(2) — EPF / FUND WITHDRAWALS
+  # Old: 192A | New: 392(2) | Category: Salary Related Funds
+  # ----------------------------------------------------------
+  192A:
+    old_section: 192A
+    new_section: '392'
+    new_subsection: 392(2)
+    category: Salary Related Funds
+    name: PF Premature Withdrawal
+    payment_type: epf_fund_withdrawal
+    deductee_types:
+      - Individual
+    rate:
+      default: 10
+    threshold: 50000
+    time_of_deduction: at_payment
+    payer: trustee
+    rename_effective_date: '2026-04-01'
+
+  '392_2':
+    old_section: 192A
+    new_section: '392'
+    new_subsection: 392(2)
+    category: Salary Related Funds
+    name: EPF / Fund Withdrawals (effective 1st April 2026)
+    payment_type: epf_fund_withdrawal
+    deductee_types:
+      - Individual
+    rate:
+      default: 10
+    threshold: 50000
+    time_of_deduction: at_payment
+    payer: trustee
+    rename_effective_date: '2026-04-01'
+
+  # ----------------------------------------------------------
+  # 194A / 393(1) — INTEREST OTHER THAN SECURITIES
+  # Old: 194A | New: 393(1) | Category: Category 5
+  # ----------------------------------------------------------
+  194A:
+    old_section: 194A
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 5
+    name: Interest (Other than Securities)
+    payment_type: bank_fd_interest
+    deductee_types:
+      - Individual
+    rate:
+      default: 10
+    threshold:
+      bank_post_office: 50000
+      senior_citizen_bank: 100000
+      others: 10000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: non_individual_huf
+    exemptions:
+      - firm_to_partner
+      - bank_saving_account
+      - current_account
+      - to_banks_lic_gic_uti
+    notes: |
+      CBS banks: aggregate across ALL branches for threshold. Senior citizen limit Rs. 1,00,000 for banks (NOT Rs. 50,000). Interest on late payment to vendors: check if 194A applies.
+
+  # ----------------------------------------------------------
+  # 194C / 393(1) — CONTRACTOR PAYMENTS
+  # Old: 194C | New: 393(1) | Category: Category 6
+  # GL: A/P SERVICE DOMESTIC VENDOR, A/P EXPENSES DOMESTIC VENDOR
+  #     (when 50L turnover crossed and nature is contract)
+  # ----------------------------------------------------------
+  194C:
+    old_section: 194C
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 6
+    name: Contract / Sub-contract Payments
+    payment_type: contractor_payments
+    deductee_types:
+      - Individual
+      - HUF
+      - Firm
+      - Body Corporate
+    rate:
+      individual_huf: 1
+      others: 2
+      transporter_with_pan: 0
+    threshold:
+      single_contract: 30000
+      aggregate_fy: 100000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: specified
+    covered_work:
+      - advertising
+      - broadcasting_telecasting
+      - carriage_of_goods
+      - catering
+      - manufacturing_from_customer_material
+    excluded_work:
+      - sale_contract_raw_material_third_party
+      - professional_services
+      - railways
+    notes: |
+      Transporter exemption: ALL 3 conditions simultaneously — (1) is transporter, (2) gives PAN, (3) owns <= 10 vehicles. Both thresholds checked — single 30K AND aggregate 1L. TDS on ALL previous payments once aggregate crosses Rs. 1L. Material from customer: TDS on invoice minus material cost if separately shown. CONFUSION: Professional services -> 194J not 194C.
+
+  # ----------------------------------------------------------
+  # 194H / 393(1) — COMMISSION / BROKERAGE
+  # Old: 194H | New: 393(1) | Category: Category 1
+  # ----------------------------------------------------------
+  194H:
+    old_section: 194H
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 1
+    name: Commission / Brokerage
+    payment_type: commission_brokerage
+    deductee_types:
+      - Individual
+      - HUF
+      - Firm
+      - Body Corporate
+    rate:
+      default: 2
+    threshold: 20000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: non_individual_huf
+    notes: 'CONFUSION: Commission = 194H. Contract work = 194C.'
+
+  # ----------------------------------------------------------
+  # 194I / 393(1) — RENT
+  # Old: 194I | New: 393(1) | Category: Category 2
+  # GL: RENTAL CHARGES - IT ASSETS (TDS Applicable as per GL map)
+  # ----------------------------------------------------------
+  194I:
+    old_section: 194I
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 2
+    name: Rent
+    payment_type: rent_payments
+    deductee_types:
+      - Individual
+      - HUF
+      - Firm
+      - Body Corporate
+    rate:
+      land_building_furniture: 10
+      plant_machinery_equipment: 2
+    threshold: 50000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: non_individual_huf
+    gl_accounts:
+      - RENTAL CHARGES - IT ASSETS
+    exclusions:
+      - cooling_charges
+      - passenger_service_fee
+      - lump_sum_lease_premium
+    notes: |
+      GST excluded from TDS base if separately shown. Cooling charges -> 194C not 194I. IT asset rental -> plant_machinery_equipment rate (2%).
+
+  # ----------------------------------------------------------
+  # 194IA / 393(1) — IMMOVABLE PROPERTY PURCHASE
+  # Old: 194IA | New: 393(1) | Category: Category 3
+  # ----------------------------------------------------------
+  194IA:
+    old_section: 194IA
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 3
+    name: Purchase of Immovable Property
+    payment_type: property_purchase
+    deductee_types:
+      - Individual
+    rate:
+      default: 1
+    threshold: 5000000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: buyer
+    tan_required: false
+    form: 26QB
+    consideration_includes:
+      - club_membership_fee
+      - car_parking
+      - electricity_water_facility
+      - maintenance_fee
+      - advance_fee
+    notes: |
+      Rate on HIGHER of consideration or SDV. Multiple buyers/sellers: use AGGREGATE consideration. Agricultural land NOT covered. TAN not required. Form 26QB within 30 days.
+
+  # ----------------------------------------------------------
+  # 194J / 393(1) — PROFESSIONAL / TECHNICAL SERVICES
+  # Old: 194J | New: 393(1) | Category: Category 6
+  # GL: A/P SERVICE DOMESTIC VENDOR, A/P EXPENSES DOMESTIC VENDOR
+  #     (when nature is professional/technical)
+  # ----------------------------------------------------------
+  194J:
+    old_section: 194J
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 6
+    name: Professional / Technical Services / Royalty
+    payment_type: professional_technical_services
+    deductee_types:
+      - Individual
+      - HUF
+      - Firm
+      - Body Corporate
+    rate:
+      professional_services: 10
+      technical_services: 2
+      royalty_film: 2
+      royalty_other: 10
+      non_compete_fees: 10
+      director_remuneration: 10
+      call_centre: 2
+    threshold:
+      default: 50000
+      director_remuneration: 0
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: non_individual_huf
+    professional_services_include:
+      - legal
+      - medical
+      - engineering
+      - architecture
+      - accountancy
+      - technical_consultancy
+      - interior_decoration
+      - it_professional
+      - company_secretary
+      - film_artist
+      - sports_persons_coaches
+    notes: |
+      Director sitting fees: NO threshold. Rs. 50,000 limit SEPARATE for each sub-category. IT/software services = 194J (technical) NOT 194C.
+
+  # ----------------------------------------------------------
+  # 194K / 393(1) — MUTUAL FUND INCOME
+  # Old: 194K | New: 393(1) | Category: Category 4
+  # ----------------------------------------------------------
+  194K:
+    old_section: 194K
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 4
+    name: Income from Mutual Fund Units
+    payment_type: mutual_fund_income
+    deductee_types:
+      - Individual
+    rate:
+      default: 10
+    threshold: 10000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: mutual_fund_amc
+
+  # ----------------------------------------------------------
+  # 194LA / 393(1) — LAND ACQUISITION COMPENSATION
+  # Old: 194LA | New: 393(1) | Category: Category 3
+  # ----------------------------------------------------------
+  194LA:
+    old_section: 194LA
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 3
+    name: Land Acquisition Compensation
+    payment_type: land_acquisition_compensation
+    deductee_types:
+      - Individual
+    rate:
+      default: 10
+    threshold: 500000
+    time_of_deduction: at_payment
+    payer: any
+
+  # ----------------------------------------------------------
+  # 194N / 393(3) — CASH WITHDRAWAL
+  # Old: 194N | New: 393(3) | Category: Common Provisions
+  # ----------------------------------------------------------
+  194N:
+    old_section: 194N
+    new_section: '393'
+    new_subsection: 393(3)
+    category: Common Provisions
+    name: Cash Withdrawal
+    payment_type: cash_withdrawal_tds
+    deductee_types:
+      - Individual
+    rate:
+      normal_filer: 2
+      non_filer_20L_to_1cr: 2
+      non_filer_above_1cr: 5
+    threshold:
+      normal_filer: 10000000
+      normal_filer_coop: 30000000
+      non_filer: 2000000
+    time_of_deduction: at_payment
+    payer: bank_cooperative_post_office
+    exemptions:
+      - government
+      - banks
+      - business_correspondents
+      - white_label_atm_operators
+    notes: |
+      Non-filer threshold Rs. 20 LAKHS (not Rs. 1 crore). 194N TDS NOT added to income of assessee.
+
+  # ----------------------------------------------------------
+  # 194O / 393(1) — E-COMMERCE TRANSACTIONS
+  # Old: 194O | New: 393(1) | Category: Category 8
+  # ----------------------------------------------------------
+  194O:
+    old_section: 194O
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 8
+    name: E-commerce Transactions
+    payment_type: ecommerce_payments
+    deductee_types:
+      - Individual
+    rate:
+      default: 1
+    threshold: 500000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: ecommerce_operator
+
+  # ----------------------------------------------------------
+  # 194Q / 393(1) — PURCHASE OF GOODS
+  # Old: 194Q | New: 393(1) | Category: Category 8
+  # GL: A/P GOODS DOMESTIC VENDORS, A/P CAPITAL DOMESTIC VENDOR
+  #     Condition: buyer turnover > 10Cr AND payment > 50L
+  # ----------------------------------------------------------
+  194Q:
+    old_section: 194Q
+    new_section: '393'
+    new_subsection: 393(1)
+    category: Category 8
+    name: Purchase of Goods
+    payment_type: goods_purchase
+    deductee_types:
+      - Firm
+      - Body Corporate
+    rate:
+      default: 0.1
+      no_pan_override: 5
+    threshold: 5000000
+    buyer_turnover_threshold: 100000000
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: buyer_turnover_above_10cr
+    gl_accounts:
+      - A/P GOODS DOMESTIC VENDORS
+      - A/P CAPITAL DOMESTIC VENDOR
+    notes: |
+      Buyer turnover > Rs. 10 crore in preceding FY required. PAN not furnished: 5% only (NOT 20% — special for 194Q). 194Q overrides 206C(1H) if both apply. NOT applicable if TDS deductible under any other provision. Per GL map: applicable only after 50L turnover crossed.
+
+  # ----------------------------------------------------------
+  # 196A / 196B / 196C / 196D — NON-RESIDENT SPECIFIC INCOMES
+  # ----------------------------------------------------------
+  196A:
+    old_section: 196A
+    new_section: 196A
+    new_subsection: 196A
+    category: Non-Resident Category
+    name: Income of Non-Resident from Units
+    payment_type: non_resident_unit_income
+    deductee_types:
+      - Individual
+      - Body Corporate
+    rate:
+      default: 20
+    threshold: null
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: any
+
+  196B:
+    old_section: 196B
+    new_section: 196B
+    new_subsection: 196B
+    category: Non-Resident Category
+    name: Income from Units (Offshore Fund)
+    payment_type: offshore_fund_income
+    deductee_types:
+      - Body Corporate
+    rate:
+      default: 10
+    threshold: null
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: any
+
+  196C:
+    old_section: 196C
+    new_section: 196C
+    new_subsection: 196C
+    category: Non-Resident Category
+    name: Income from Foreign Currency Bonds/Shares
+    payment_type: foreign_currency_income
+    deductee_types:
+      - Body Corporate
+    rate:
+      default: 10
+    threshold: null
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: any
+
+  196D:
+    old_section: 196D
+    new_section: 196D
+    new_subsection: 196D
+    category: Non-Resident Category
+    name: Income of FIIs from Securities
+    payment_type: fii_securities_income
+    deductee_types:
+      - Body Corporate
+    rate:
+      default: 20
+    threshold: null
+    time_of_deduction: credit_or_payment_whichever_earlier
+    payer: any
+
+# ============================================================
+# CROSS-SECTION RULES
+# Defined ONCE — applied across ALL sections by rule engine
+# ============================================================
+
+cross_section_rules:
+
+  section_206AA:
+    name: PAN Not Furnished
+    rate: 20
+    exception_194Q: 5
+    notes: |
+      Apply higher of: prescribed rate, rate in force, or 20%. Exception: 194Q uses 5% cap not 20%. Invalid PAN treated as no PAN.
+
+  section_206AB:
+    name: Non-Filer Higher Rate
+    condition: ITR not filed for preceding PY AND TDS+TCS >= 50000 in that PY
+    rate: twice_normal_or_5_percent_whichever_higher
+    excludes: non_residents_without_PE_in_india
+
+  gst_exclusion:
+    rule: Exclude GST from TDS base if separately shown on invoice
+    gl_accounts_always_excluded:
+      - IGST OUTPUT - MH
+      - CGST OUTPUT - MH
+      - SGST OUTPUT - MH
+      - IGST OUTPUT UNDER RCM - MH
+      - CGST OUTPUT UNDER RCM - MH
+      - SGST OUTPUT UNDER RCM - MH
+      - IGST INPUT - MH
+      - CGST INPUT - MH
+      - SGST INPUT - MH
+      - IGST UNDER RCM - MH
+      - CGST UNDER RCM - MH
+      - SGST UNDER RCM - MH
+      - IGST INPUT IMPORT OF GOODS
+
+  timing_rule:
+    default: credit_or_payment_whichever_earlier
+    at_payment_only:
+      - '192'
+      - '392'
+      - 192A
+      - '392_2'
+      - 194N
+      - 194LA
+
+# ============================================================
+# SECTION RENAME MAPPING
+# ============================================================
+
+section_rename_map:
+  effective_date: '2026-04-01'
+  old_to_new:
+    '192': 392(1)
+    '193': 393(1)
+    '194': 393(1)
+    '195': 393(2)
+    192A: 392(2)
+    194A: 393(1)
+    194C: 393(1)
+    194H: 393(1)
+    194I: 393(1)
+    194IA: 393(1)
+    194J: 393(1)
+    194K: 393(1)
+    194LA: 393(1)
+    194N: 393(3)
+    194O: 393(1)
+    194Q: 393(1)
+
+# ============================================================
+# GL ACCOUNTS WHERE TDS IS NOT APPLICABLE
+# Source: Mahindra GL Account TDS Applicability Mapping
+# These accounts are skipped by the rule engine entirely
+# ============================================================
+
+gl_tds_not_applicable:
+
+  tcs_accounts:
+    reason: TCS applies — not TDS. TCS fully out of scope.
+    accounts:
+      - A/R DOMESTIC CUSTOMERS
+      - SALES - DOMESTIC - RM (TDG)
+      - A/R SCRAP AND OTHER CUSTOMERS
+      - SCRAP ACCOUNT
+      - TCS PAYABLE - 1% - 206C
+      - A/R SUBCONTRACT CUSTOMERS
+
+  gst_accounts:
+    reason: GST accounts — outside scope of TDS law entirely.
+    accounts:
+      - IGST OUTPUT - MH
+      - CGST OUTPUT - MH
+      - SGST OUTPUT - MH
+      - IGST OUTPUT UNDER RCM - MH
+      - CGST OUTPUT UNDER RCM - MH
+      - SGST OUTPUT UNDER RCM - MH
+      - IGST INPUT - MH
+      - CGST INPUT - MH
+      - SGST INPUT - MH
+      - IGST UNDER RCM - MH
+      - CGST UNDER RCM - MH
+      - SGST UNDER RCM - MH
+      - IGST INPUT IMPORT OF GOODS
+
+  reimbursement_accounts:
+    reason: Reimbursements — TDS not applicable as per rule.
+    accounts:
+      - TRAVELLING EXPENSES - DOMESTIC
+      - EMPLOYEE TRANSPORT EXPENSE
+
+  bank_loan_accounts:
+    reason: Bank loan — TDS not applicable as per rule.
+    accounts:
+      - IDFC FIRST Bank - Term Loan
+
+  inter_branch_accounts:
+    reason: Same PAN — TDS not applicable.
+    accounts:
+      - A/P INTER BRANCH
+
+  depreciation_accounts:
+    reason: Depreciation entries — not in TDS rule.
+    accounts:
+      - DEPRECIATION - LAND & BUILDING
+      - DEPRECIATION - PLANT & MACHINERY
+      - DEPRECIATION - COMPUTER & SERVER
+      - DEPRECIATION - ELECTRICAL INSTALLATION
+      - DEPRECIATION - OFFICE EQUIPMENT
+      - DEPRECIATION-FURNITURE & FIXTURE
+      - DEPRECIATION -COMPUTER SOFTWARE & WEBSITE DEVELOPMENT
+      - DEPRECIATION - PLANT & MACHINERY - MANUAL
+      - DEPRECIATION - COMPUTER & SERVER - MANUAL
+      - DEPRECIATION-OFFICE EQUIPMENT - MANUAL
+
+  asset_accounts:
+    reason: Asset accounts — not applicable for TDS.
+    accounts:
+      - FACTORY BUILDING
+      - PLANT & MACHINERY
+      - FURNITURE & FIXTURE
+      - COMPUTER AND SERVER
+      - ELECTRICAL INSTALLATION
+      - OFFICE EQUIPMENTS
+      - COMPUTER SOFTWARE & WEBSITE DEVELOPMENT
+      - FIXED ASSETS - MANUAL
+      - CWIP - BUILDING
+      - CWIP - PLANT AND MACHINERY
+
+  accumulated_depreciation_accounts:
+    reason: Accumulated depreciation — not in rule.
+    accounts:
+      - Accu. Dep. - Factory Building
+      - ACCU. DEP. - PLANT & MACHINERY
+      - ACCU. DEP. - FURNITURE & FIXTURE
+      - ACCU. DEP. - COMPUTER AND SERVER
+      - ACCU. DEP. - ELECTRICAL INSTALLATION
+      - ACCU. DEP. - OFFICE EQUIPMENTS
+      - ACCU. DEP. - COMPUTER SOFTWARE & WEB DEV.
+
+  inventory_accounts:
+    reason: Inventory accounts — not in TDS rule.
+    accounts:
+      - INVENTORY RAW MATERIAL
+      - INVENTORY PACKAGING MATERIAL
+      - INVENTORY CONSUMABLES - PRODUCTION
+      - INVENTORY SEMI FINISHED GOODS
+      - INVENTORY FINISHED GOODS - FAN
+      - INVENTORY FINISHED GOODS - OTHER
+      - INVENTORY CONSUMABLES - NON INVENTORY
+      - INVENTORY FINISHED GOODS - MFP
+      - INVENTORY FINISHED GOODS - SMART LOCK
+      - INVENTORY FINISHED GOODS - EXHAUST
+      - INVENTORY FINISHED GOODS - SJ
+      - INVENTORY FINISHED GOODS - WATER PURIFIER
+      - INVENTORY REVALUATION - FG
+      - INVENTORY REVALUATION - SFG
+      - PHYSICAL INVENTORY CHANGE - RM
+
+  bank_and_financial_accounts:
+    reason: Bank and financial clearing accounts — not in rule.
+    accounts:
+      - RBL BANK (OD) - 409001280495 - OUTGOING
+      - CITI BANK CA - 0598452008 - OUTGOING
+      - BANK CHARGES- OTHERS
+      - INVESTMENT AND SECURITIES
+
+  cogs_and_variance_accounts:
+    reason: COGS and variance accounts — not in rule.
+    accounts:
+      - MATERIAL QTY/PRICE VARIANCE-RM
+      - MATERIAL QTY/PRICE VARIANCE-FG
+      - MATERIAL QTY/PRICE VARIANCE-SFG
+      - ASSET TECHNICAL CLEARING A/C
+      - COGM - FG FAN
+      - COGS RM CONSUMABLES
+      - COGS MANUAL
+      - Loss on Sale of Asset
+      - CUSTOM CLEARING A/C
+      - DISCOUNT RECEIVED
+      - CONSUMPTION OF STORES, SPARES AND CONSUMABLES
+      - CONSUMPTION-RM CONSUMABLES
+      - CONSUMPTION - FG TRADING
+      - ELECTRICITY EXPENSES
+
+  other_not_in_rule:
+    reason: No TDS rule applicable for these accounts.
+    accounts:
+      - INTERNET & CONNECTIVITY
+      - INTERNSHIP STIPEND
+      - INTEREST ON LATE PAYMENT OTHERS
+      - PRINTER CARTRIDGE EXPENSES
+      - CWIP - PLANT AND MACHINERY
+
+  gl_accounts_to_verify:
+    reason: |
+      TDS applicability specific — to be verified with Mahindra tax team based on vendor residency and transaction details.
+    accounts:
+      - A/P GOODS OVERSEAS VENDORS
+      - A/P CAPITAL OVERSEAS VENDOR
+
+# ============================================================
+# OUT OF SCOPE SECTIONS — THIS RELEASE
+# TDS either not applicable or excluded from this release
+# ============================================================
+
+out_of_scope:
+  - section: 194B
+    reason: Lottery winnings
+  - section: 194BA
+    reason: Online gaming winnings
+  - section: 194BB
+    reason: Horse race winnings
+  - section: 194D
+    reason: Insurance commission
+  - section: 194DA
+    reason: LIC maturity proceeds
+  - section: 194EE
+    reason: NSS deposits
+  - section: 194F
+    reason: Repurchase of MF units
+  - section: 194G
+    reason: Commission on lottery tickets
+  - section: 194IB
+    reason: Rent by Individual/HUF
+  - section: 194IC
+    reason: Joint development agreement
+  - section: 194M
+    reason: Individual contractor/professional payments
+  - section: 194P
+    reason: Pension for senior citizen 75+
+  - section: 194R
+    reason: Benefit or perquisite
+  - section: 194S
+    reason: VDA/Crypto payments
+  - section: 194T
+    reason: Partner salary/remuneration
+  - section: 194LBA
+    reason: Business trust income distribution
+  - section: 194LBB
+    reason: Investment fund income
+  - section: 194LBC
+    reason: Securitisation trust income
+  - section: TCS
+    reason: TCS fully out of scope for this project

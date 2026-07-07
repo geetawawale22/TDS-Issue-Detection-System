@@ -1,0 +1,29 @@
+# Virtual environments
+venv/
+backend/venv/
+*/venv/
+
+# Python cache
+__pycache__/
+backend/__pycache__/
+*.pyc
+*.pyo
+
+# Environment files
+.env
+backend/.env
+
+# OS files
+.DS_Store
+
+# Data files
+*.xlsx
+*.csv
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# IDE
+.vscode/
+_reference_old_backend/
