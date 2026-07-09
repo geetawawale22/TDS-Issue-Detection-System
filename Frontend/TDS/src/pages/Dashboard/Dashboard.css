@@ -1,0 +1,80 @@
+/* ── Dashboard Welcome Banner ─────────────────────────── */
+.dashboard-banner {
+  border-radius: var(--border-radius);
+  background: linear-gradient(135deg, #7a1616 0%, #991B1B 60%, #b52020 100%);
+  padding: 14px 18px;
+  margin-bottom: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.dashboard-banner-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(transparent 90%, rgba(255,255,255,0.04) 90%),
+    linear-gradient(90deg, transparent 90%, rgba(255,255,255,0.04) 90%);
+  background-size: 28px 28px;
+  pointer-events: none;
+}
+
+.dashboard-banner-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-banner-greeting {
+  font-size: 14px;
+  font-weight: 600;
+  color: white;
+}
+
+.dashboard-banner-sub {
+  font-size: 11.5px;
+  color: rgba(255,255,255,0.6);
+  margin-top: 2px;
+}
+
+.dashboard-banner-meta {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.dashboard-banner-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.dashboard-banner-meta-icon {
+  color: rgba(255,255,255,0.5);
+  flex-shrink: 0;
+}
+
+.dashboard-banner-meta-label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.5);
+  line-height: 1;
+}
+
+.dashboard-banner-meta-value {
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: white;
+  margin-top: 2px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .dashboard-banner-meta { display: none; }
+}

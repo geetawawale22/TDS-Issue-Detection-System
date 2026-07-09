@@ -1,0 +1,7 @@
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  border-radius: 8px !important;
+  border: 1px solid var(--color-border) !important;
+  font-size: 12px !important;
+  padding: 6px 10px !important;
+  font-family: var(--font-sans) !important;
+}

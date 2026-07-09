@@ -1,0 +1,100 @@
+import { NavLink } from 'react-router-dom'
+import {
+  LayoutGrid, AlertTriangle, Gauge, GitPullRequestArrow,
+  FileBarChart, Settings, ShieldCheck, ChevronsLeft, LogOut,
+} from 'lucide-react'
+import { useDispatch, useSelector } from 'react-redux'
+import { toggleSidebar } from '@/redux/slices/appSlice'
+import { useAuth } from '@/context/AuthContext'
+import { initials } from '@/utils/utils'
+import './Sidebar.css'
+
+const navItems = [
+  { label: 'Dashboard',            path: '/dashboard',             icon: LayoutGrid },
+  { label: 'Issues',               path: '/issues',                icon: AlertTriangle },
+  { label: 'Threshold Monitoring', path: '/threshold-monitoring',  icon: Gauge },
+  { label: 'Correction Center',    path: '/correction-center',     icon: GitPullRequestArrow },
+  { label: 'Reports',              path: '/reports',               icon: FileBarChart },
+  { label: 'Settings',             path: '/settings',              icon: Settings },
+]
+
+export default function Sidebar() {
+  const collapsed = useSelector((s) => s.app.sidebarCollapsed)
+  const dispatch  = useDispatch()
+  const { user, logout } = useAuth()
+
+  const displayName = user?.name ?? 'User'
+  const displayRole = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Viewer'
+
+  return (
+    <div className="sidebar">
+      {/* Logo */}
+      <div className={`sidebar-logo ${collapsed ? 'collapsed' : ''}`}>
+        <div className="sidebar-logo-icon">
+          <ShieldCheck size={16} strokeWidth={2.3} color="#fff" />
+        </div>
+        {!collapsed && (
+          <div className="sidebar-logo-text">
+            <span className="sidebar-logo-title">TDS Intelligence</span>
+            <span className="sidebar-logo-sub">Compliance Platform</span>
+          </div>
+        )}
+      </div>
+
+      {/* Navigation */}
+      <nav className="sidebar-nav">
+        {navItems.map((item) => (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            title={collapsed ? item.label : undefined}
+            className={({ isActive }) =>
+              `sidebar-nav-item${isActive ? ' active' : ''}${collapsed ? ' collapsed' : ''}`
+            }
+          >
+            {({ isActive }) => (
+              <>
+                {isActive && !collapsed && <span className="sidebar-nav-indicator" />}
+                <item.icon size={16} strokeWidth={isActive ? 2.3 : 1.9} />
+                {!collapsed && <span className="sidebar-nav-label">{item.label}</span>}
+              </>
+            )}
+          </NavLink>
+        ))}
+      </nav>
+
+      {/* Collapse toggle */}
+      <button
+        className={`sidebar-collapse-btn ${collapsed ? 'collapsed' : ''}`}
+        onClick={() => dispatch(toggleSidebar())}
+        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        <ChevronsLeft size={14} className={collapsed ? 'rotated' : ''} />
+        {!collapsed && <span>Collapse</span>}
+      </button>
+
+      {/* User row */}
+      <div className={`sidebar-user ${collapsed ? 'collapsed' : ''}`}>
+        <div className="sidebar-avatar">
+          {initials(displayName)}
+        </div>
+        {!collapsed && (
+          <>
+            <div className="sidebar-user-info">
+              <span className="sidebar-user-name">{displayName}</span>
+              <span className="sidebar-user-role">{displayRole}</span>
+            </div>
+            <button
+              className="sidebar-logout-btn"
+              onClick={logout}
+              title="Sign out"
+              aria-label="Sign out"
+            >
+              <LogOut size={14} />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}

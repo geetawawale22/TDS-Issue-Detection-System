@@ -24,6 +24,9 @@ backend/.env
 node_modules/
 frontend/node_modules/
 
+# Frontend build output
+dist/
+
 # IDE
 .vscode/
 _reference_old_backend/
