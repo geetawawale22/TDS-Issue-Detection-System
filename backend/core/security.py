@@ -1,4 +1,5 @@
 import os
+from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from jose import jwt, JWTError
@@ -9,6 +10,8 @@ load_dotenv()
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", 480))
+PASSWORD_RESET_EXPIRE_MINUTES = int(os.getenv("PASSWORD_RESET_EXPIRE_MINUTES", 30))
+PASSWORD_RESET_SECRET_KEY = os.getenv("PASSWORD_RESET_SECRET_KEY", JWT_SECRET_KEY)
 
 # bcrypt context — used to hash and verify passwords
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -52,3 +55,35 @@ def decode_access_token(token: str) -> dict | None:
         return payload
     except JWTError:
         return None
+
+
+def create_password_reset_token(user_id: int, hashed_password: str) -> str:
+    """Create a short-lived token that becomes invalid after a password change."""
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=PASSWORD_RESET_EXPIRE_MINUTES)
+    password_fingerprint = sha256(hashed_password.encode("utf-8")).hexdigest()
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "purpose": "password_reset",
+            "password_fingerprint": password_fingerprint,
+            "exp": expires_at,
+        },
+        PASSWORD_RESET_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+    )
+
+
+def decode_password_reset_token(token: str) -> dict | None:
+    """Return a valid password-reset token payload, or ``None`` for any invalid token."""
+    try:
+        payload = jwt.decode(token, PASSWORD_RESET_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        if payload.get("purpose") != "password_reset" or not payload.get("sub"):
+            return None
+        return payload
+    except JWTError:
+        return None
+
+
+def password_fingerprint(hashed_password: str) -> str:
+    """Fingerprint used to invalidate reset links once the password changes."""
+    return sha256(hashed_password.encode("utf-8")).hexdigest()
