@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from core.dependencies import require_admin
 from db.database import get_db
@@ -91,14 +92,20 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     The same response is returned for every address to avoid disclosing which
     email addresses belong to users.
     """
-    user = db.query(User).filter(User.email == str(request.email)).first()
+    user = db.query(User).filter(
+        func.lower(User.email) == str(request.email).lower()
+    ).first()
     if user and user.is_active:
+        logger.info("Password reset requested for active user_id=%s", user.id)
         token = create_password_reset_token(user.id, user.hashed_password)
         try:
             send_password_reset_email(user.email, token)
+            logger.info("Password reset email accepted by SMTP for user_id=%s", user.id)
         except Exception:
             # Do not expose delivery/configuration details to an unauthenticated caller.
             logger.exception("Unable to send password-reset email for user_id=%s", user.id)
+    else:
+        logger.info("Password reset requested for an unknown or inactive account")
 
     return MessageResponse(message="If an account exists for this email, a password reset link has been sent.")
 
