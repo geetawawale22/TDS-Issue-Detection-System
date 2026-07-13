@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -60,7 +61,7 @@ def create_user(
     db.refresh(new_user)
 
     # Generate invite token and email the "set your password" link
-    raw_token, token_hash = generate_setup_token()
+    raw_token, token_hash = create_invite_token()
     expiry_hours = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
     expires_at = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
 
