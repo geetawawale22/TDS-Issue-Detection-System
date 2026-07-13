@@ -6,17 +6,19 @@ from datetime import datetime
 class UserCreate(BaseModel):
     """Used when Admin creates a new user."""
     full_name: str
+    username: str
     email: EmailStr
-    password: str
     role: str = "accountant"   # "admin" or "accountant"
 
 
 class UserOut(BaseModel):
     id: int
     full_name: str
+    username: str
     email: EmailStr
     role: str
     is_active: bool
+    created_by: Optional[int] = None
     created_at: datetime
     company_codes: List[str] = []
 

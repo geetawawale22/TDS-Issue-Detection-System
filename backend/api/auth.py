@@ -1,56 +1,20 @@
 import logging
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from core.dependencies import require_admin
 from db.database import get_db
-from db.models import User, CompanyCodeAccess
-from schemas.auth import (
-    ForgotPasswordRequest,
-    LoginRequest,
-    MessageResponse,
-    ResetPasswordRequest,
-    TokenResponse,
-)
+from db.models import User
+from schemas.auth import ForgotPasswordRequest, LoginRequest,MessageResponse,ResetPasswordRequest,TokenResponse
 from schemas.user import UserCreate, UserOut
-from core.security import (
-    create_access_token,
-    create_password_reset_token,
-    decode_password_reset_token,
-    hash_password,
-    password_fingerprint,
-    verify_password,
-)
+from core.security import create_access_token,create_password_reset_token,decode_password_reset_token,hash_password,password_fingerprint,verify_password,decode_invite_token
 from services.email_service import send_password_reset_email
+from pydantic import BaseModel
+from datetime import datetime, timezone
+
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = logging.getLogger(__name__)
-
-
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register_user(user_in: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(require_admin)):
-    """
-    Creates a new user. In production this should be restricted to Admin only
-    (we'll lock this down once role-checking middleware is built).
-    """
-    existing_user = db.query(User).filter(User.email == user_in.email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    new_user = User(
-        full_name=user_in.full_name,
-        email=user_in.email,
-        hashed_password=hash_password(user_in.password),
-        role=user_in.role,
-        is_active=True,
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    # attach empty company_codes list for response shape
-    new_user.company_codes = []
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -60,7 +24,7 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     user = db.query(User).filter(User.email == login_data.email).first()
 
-    if not user or not verify_password(login_data.password, user.hashed_password):
+    if not user or user.hashed_password is None or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -83,6 +47,35 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         role=user.role,
         full_name=user.full_name,
     )
+
+
+
+class SetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+@router.post("/set-password", response_model=MessageResponse)
+def set_password(payload: SetPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Completes first-time password setup for a newly invited user.
+    """
+    token_data = decode_invite_token(payload.token)
+    if token_data is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired invite link")
+
+    user = db.query(User).filter(User.id == int(token_data["sub"])).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.hashed_password is not None:
+        raise HTTPException(status_code=400, detail="This invite link has already been used")
+
+    user.hashed_password = hash_password(payload.new_password)
+    user.is_active = True
+    db.commit()
+
+    return MessageResponse(message="Password set successfully. You can now log in.")
 
 
 @router.post("/forgot-password", response_model=MessageResponse)

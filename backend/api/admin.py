@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
-
 from db.database import get_db
-from db.models import User, CompanyCodeAccess
+from db.models import User, CompanyCodeAccess, PasswordSetupToken
 from schemas.user import UserCreate, UserOut, CompanyCodeAssign
-from core.security import hash_password
 from core.dependencies import require_admin
+from services.email_service import send_invite_email
+from datetime import datetime, timedelta, timezone
+from core.security import create_invite_token
+
 
 router = APIRouter(prefix="/admin", tags=["Admin - User Management"])
 
@@ -30,25 +32,53 @@ def create_user(
 ):
     """
     Admin creates a new user (Admin or Accountant).
-    This replaces the open /auth/register endpoint for production use.
+    No password is set here — user completes setup via an
+    invite link sent to their email (built in the next step).
     """
-    existing_user = db.query(User).filter(User.email == user_in.email).first()
-    if existing_user:
+    existing_email = db.query(User).filter(User.email == user_in.email).first()
+    if existing_email:
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    existing_username = db.query(User).filter(User.username == user_in.username).first()
+    if existing_username:
+        raise HTTPException(status_code=400, detail="Username already taken")
 
     if user_in.role not in ["admin", "accountant"]:
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'accountant'")
 
     new_user = User(
         full_name=user_in.full_name,
+        username=user_in.username,
         email=user_in.email,
-        hashed_password=hash_password(user_in.password),
+        hashed_password=None,
         role=user_in.role,
-        is_active=True,
+        is_active=False,
+        created_by=admin_user.id,
     )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    # Generate invite token and email the "set your password" link
+    raw_token, token_hash = generate_setup_token()
+    expiry_hours = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
+
+    invite_token_row = PasswordSetupToken(
+        user_id=new_user.id,
+        token_hash=token_hash,
+        token_type="invite",
+        expires_at=expires_at,
+    )
+    db.add(invite_token_row)
+    db.commit()
+
+    try:
+        send_invite_email(new_user.email, new_user.full_name, raw_token)
+    except RuntimeError:
+        # SMTP not configured — user created successfully but email failed.
+        # Admin should be told to share the link manually or fix SMTP config.
+        pass
 
     return _serialize_user(new_user, db)
 

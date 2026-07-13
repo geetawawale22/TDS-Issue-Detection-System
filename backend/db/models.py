@@ -1,24 +1,9 @@
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, Table
+    Column, Integer, String, Boolean, DateTime, ForeignKey
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from db.database import Base
-
-
-# ============================================================
-# ASSOCIATION TABLE — Many-to-Many between Users and Company Codes
-# One user can have access to multiple company codes.
-# One company code can have multiple users.
-# ============================================================
-
-user_company_access = Table(
-    "user_company_access",
-    Base.metadata,
-    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),
-    Column("company_code", String(10), primary_key=True),
-    Column("granted_at", DateTime(timezone=True), server_default=func.now()),
-)
 
 
 # ============================================================
@@ -30,13 +15,21 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     full_name = Column(String(100), nullable=False)
+    username = Column(String(50), unique=True, nullable=False, index=True)
     email = Column(String(150), unique=True, nullable=False, index=True)
-    hashed_password = Column(String(255), nullable=False)
+    hashed_password = Column(String(255), nullable=True)
+    # Nullable now — user has no password until they complete
+    # the "set your password" flow via the invite link.
 
     role = Column(String(20), nullable=False, default="accountant")
     # role values: "admin" or "accountant"
 
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=False)
+    # Starts False — becomes True only after user sets their
+    # password for the first time via the invite link.
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # Which admin created this user account — audit trail.
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -68,3 +61,28 @@ class CompanyCodeAccess(Base):
     granted_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="company_codes", foreign_keys=[user_id])
+
+
+
+# ============================================================
+# PASSWORD SETUP TOKENS TABLE
+# Handles both first-time password setup (invite) and
+# forgot-password (reset) flows using the same mechanism.
+# ============================================================
+
+class PasswordSetupToken(Base):
+    __tablename__ = "password_setup_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token_hash = Column(String(255), unique=True, nullable=False, index=True)
+    # We store a HASH of the token, never the raw token itself —
+    # same principle as password storage.
+
+    token_type = Column(String(20), nullable=False)
+    # "invite" — first-time password setup (longer expiry)
+    # "reset"  — forgot password (shorter expiry)
+
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

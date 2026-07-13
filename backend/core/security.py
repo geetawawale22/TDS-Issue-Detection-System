@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from dotenv import load_dotenv
+import secrets
 
 load_dotenv()
 
@@ -12,6 +13,8 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", 480))
 PASSWORD_RESET_EXPIRE_MINUTES = int(os.getenv("PASSWORD_RESET_EXPIRE_MINUTES", 30))
 PASSWORD_RESET_SECRET_KEY = os.getenv("PASSWORD_RESET_SECRET_KEY", JWT_SECRET_KEY)
+INVITE_EXPIRE_HOURS = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
+INVITE_SECRET_KEY = os.getenv("INVITE_SECRET_KEY", JWT_SECRET_KEY)
 
 # bcrypt context — used to hash and verify passwords
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -87,3 +90,33 @@ def decode_password_reset_token(token: str) -> dict | None:
 def password_fingerprint(hashed_password: str) -> str:
     """Fingerprint used to invalidate reset links once the password changes."""
     return sha256(hashed_password.encode("utf-8")).hexdigest()
+
+
+def create_invite_token(user_id: int) -> str:
+    """
+    Create a token for first-time password setup, sent when Admin
+    creates a new user. Unlike the reset token, there is no existing
+    password to fingerprint — validity is instead checked at use-time
+    by confirming the user's hashed_password is still empty.
+    """
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=INVITE_EXPIRE_HOURS)
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "purpose": "invite",
+            "exp": expires_at,
+        },
+        INVITE_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+    )
+
+
+def decode_invite_token(token: str) -> dict | None:
+    """Return a valid invite-token payload, or None for any invalid token."""
+    try:
+        payload = jwt.decode(token, INVITE_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        if payload.get("purpose") != "invite" or not payload.get("sub"):
+            return None
+        return payload
+    except JWTError:
+        return None
