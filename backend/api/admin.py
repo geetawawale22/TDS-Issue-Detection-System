@@ -34,7 +34,7 @@ def create_user(
     """
     Admin creates a new user (Admin or Accountant).
     No password is set here — user completes setup via an
-    invite link sent to their email (built in the next step).
+    invite link sent to their email.
     """
     existing_email = db.query(User).filter(User.email == user_in.email).first()
     if existing_email:
@@ -60,22 +60,22 @@ def create_user(
     db.commit()
     db.refresh(new_user)
 
-    # Generate invite token and email the "set your password" link
-    raw_token, token_hash = create_invite_token()
-    expiry_hours = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
+    # Generate invite token (self-contained JWT, no DB validation needed)
+    invite_token = create_invite_token(new_user.id)
 
-    invite_token_row = PasswordSetupToken(
+    # Optional audit log entry — not used for validation, just visibility
+    expiry_hours = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
+    audit_row = PasswordSetupToken(
         user_id=new_user.id,
-        token_hash=token_hash,
+        token_hash="jwt-based",  # actual token is never stored, only a marker
         token_type="invite",
-        expires_at=expires_at,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=expiry_hours),
     )
-    db.add(invite_token_row)
+    db.add(audit_row)
     db.commit()
 
     try:
-        send_invite_email(new_user.email, new_user.full_name, raw_token)
+        send_invite_email(new_user.email, new_user.full_name, invite_token)
     except RuntimeError:
         # SMTP not configured — user created successfully but email failed.
         # Admin should be told to share the link manually or fix SMTP config.
