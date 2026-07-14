@@ -1,4 +1,6 @@
 import os
+import logging
+from hashlib import sha256
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -10,6 +12,7 @@ from services.email_service import send_invite_email
 from datetime import datetime, timedelta, timezone
 from core.security import create_invite_token
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin - User Management"])
 
@@ -63,23 +66,33 @@ def create_user(
     # Generate invite token (self-contained JWT, no DB validation needed)
     invite_token = create_invite_token(new_user.id)
 
-    # Optional audit log entry — not used for validation, just visibility
-    expiry_hours = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
-    audit_row = PasswordSetupToken(
-        user_id=new_user.id,
-        token_hash="jwt-based",  # actual token is never stored, only a marker
-        token_type="invite",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=expiry_hours),
-    )
-    db.add(audit_row)
-    db.commit()
+    # Optional audit log entry — not used for validation, just visibility.
+    # The user account is already committed above; nothing below this point
+    # may raise back to the client — a failure here or in the email send
+    # must never turn a successful user creation into a 500.
+    try:
+        expiry_hours = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
+        audit_row = PasswordSetupToken(
+            user_id=new_user.id,
+            # Hash of the real token, so each row is unique (the column has
+            # a UNIQUE constraint) — a fixed placeholder collides on the
+            # second-plus invite ever issued.
+            token_hash=sha256(invite_token.encode("utf-8")).hexdigest(),
+            token_type="invite",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=expiry_hours),
+        )
+        db.add(audit_row)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to write invite audit log for user_id=%s", new_user.id)
 
     try:
         send_invite_email(new_user.email, new_user.full_name, invite_token)
-    except RuntimeError:
-        # SMTP not configured — user created successfully but email failed.
+    except Exception:
+        # SMTP not configured or send failed — user created successfully.
         # Admin should be told to share the link manually or fix SMTP config.
-        pass
+        logger.exception("Failed to send invite email for user_id=%s", new_user.id)
 
     return _serialize_user(new_user, db)
 
@@ -179,6 +192,39 @@ def revoke_company_code(
     db.refresh(user)
 
     return _serialize_user(user, db)
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_200_OK)
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
+    """
+    Admin permanently deletes a user account.
+
+    A user can be referenced elsewhere purely for audit purposes —
+    as the creator of other users (created_by) or the granter of
+    someone else's company-code access (granted_by). Those links are
+    informational only, so they're cleared rather than blocking the
+    delete. Their own invite/reset tokens are removed outright, and
+    their own company-code grants cascade via the ORM relationship.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.id == admin_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    db.query(User).filter(User.created_by == user_id).update({"created_by": None})
+    db.query(CompanyCodeAccess).filter(CompanyCodeAccess.granted_by == user_id).update({"granted_by": None})
+    db.query(PasswordSetupToken).filter(PasswordSetupToken.user_id == user_id).delete()
+
+    db.delete(user)
+    db.commit()
+
+    return {"detail": "User deleted successfully"}
 
 
 @router.patch("/users/{user_id}/deactivate", response_model=UserOut)
