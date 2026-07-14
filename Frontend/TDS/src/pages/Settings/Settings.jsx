@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Building2, Users, ShieldCheck, Database, RefreshCw, Bell, History, Plus, X } from 'lucide-react'
+import { Building2, Users, ShieldCheck, Database, RefreshCw, Bell, History, Plus, X, Pencil, Search, RotateCcw, Trash2 } from 'lucide-react'
 import StatusBadge from '@/components/Common/StatusBadge'
 import { useAuth } from '@/context/AuthContext'
 import adminService from '@/services/adminService'
-import { initials, capitalize } from '@/utils/utils'
+import { initials, capitalize, isValidEmail } from '@/utils/utils'
+import { MESSAGES } from '@/utils/messages'
 import '@/components/Common/Common.css'
 import './Settings.css'
 
@@ -70,7 +71,18 @@ export default function Settings() {
   const [usersLoading, setUsersLoading] = useState(false)
   const [usersError, setUsersError] = useState(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [editingUser, setEditingUser] = useState(null)
   const [busyUserId, setBusyUserId] = useState(null)
+  const [userSearch, setUserSearch] = useState('')
+  const [userStatusFilter, setUserStatusFilter] = useState('all')
+
+  const filteredUsers = users.filter((u) => {
+    const q = userSearch.trim().toLowerCase()
+    if (q && !u.full_name.toLowerCase().includes(q) && !u.email.toLowerCase().includes(q)) return false
+    if (userStatusFilter === 'active' && !u.is_active) return false
+    if (userStatusFilter === 'deactivated' && u.is_active) return false
+    return true
+  })
 
   async function loadUsers() {
     if (!isAdmin) return
@@ -91,14 +103,30 @@ export default function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
 
-  async function handleCreateUser(payload) {
+  async function handleCreateUser({ company_codes, ...payload }) {
     try {
-      await adminService.createUser(payload)
-      toast.success(`${payload.full_name} was added.`)
+      const created = await adminService.createUser(payload)
+
+      // Company codes aren't part of user creation itself — they're granted
+      // via the existing assign-company-code endpoint right after. Admins
+      // implicitly have access to every code, so nothing to assign there.
+      if (payload.role !== 'admin' && company_codes?.length) {
+        const results = await Promise.allSettled(
+          company_codes.map((code) => adminService.assignCompanyCode(created.id, code))
+        )
+        const failed = results.filter((r) => r.status === 'rejected').length
+        if (failed > 0) {
+          toast.error(`User created, but ${failed} of ${company_codes.length} company code(s) could not be assigned.`)
+        }
+      }
+
+      toast.success(MESSAGES.USER_CREATED)
       setShowCreateModal(false)
       loadUsers()
+      return true
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || MESSAGES.UNEXPECTED_ERROR)
+      return false
     }
   }
 
@@ -107,16 +135,42 @@ export default function Settings() {
     try {
       if (u.is_active) {
         await adminService.deactivateUser(u.id)
-        toast.success(`${u.full_name} deactivated.`)
       } else {
         await adminService.activateUser(u.id)
-        toast.success(`${u.full_name} activated.`)
       }
+      toast.success(MESSAGES.ACTIVATION_UPDATED(u.full_name, !u.is_active))
       loadUsers()
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || MESSAGES.UNEXPECTED_ERROR)
     } finally {
       setBusyUserId(null)
+    }
+  }
+
+  async function handleDeleteUser(u) {
+    if (!window.confirm(`Delete ${u.full_name}? This permanently removes their account and cannot be undone.`)) return
+    setBusyUserId(u.id)
+    try {
+      await adminService.deleteUser(u.id)
+      toast.success(MESSAGES.USER_DELETED(u.full_name))
+      loadUsers()
+    } catch (err) {
+      toast.error(err.message || MESSAGES.UNEXPECTED_ERROR)
+    } finally {
+      setBusyUserId(null)
+    }
+  }
+
+  async function handleUpdateUser(userId, payload) {
+    try {
+      await adminService.updateUser(userId, payload)
+      toast.success(MESSAGES.USER_UPDATED)
+      setEditingUser(null)
+      loadUsers()
+      return true
+    } catch (err) {
+      toast.error(err.message || MESSAGES.UNEXPECTED_ERROR)
+      return false
     }
   }
 
@@ -128,9 +182,10 @@ export default function Settings() {
       } else {
         await adminService.assignCompanyCode(u.id, code)
       }
+      toast.success(MESSAGES.COMPANY_CODE_UPDATED)
       loadUsers()
     } catch (err) {
-      toast.error(err.message)
+      toast.error(err.message || MESSAGES.UNEXPECTED_ERROR)
     } finally {
       setBusyUserId(null)
     }
@@ -198,10 +253,41 @@ export default function Settings() {
               </button>
             </div>
 
+            <div className="filter-bar" style={{ boxShadow: 'none', margin: '0 16px 10px' }}>
+              <div className="filter-bar-label"><Search size={13} />Search</div>
+              <input
+                className="filter-input"
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                placeholder="Search name or email…"
+              />
+              <select
+                className="filter-select"
+                value={userStatusFilter}
+                onChange={(e) => setUserStatusFilter(e.target.value)}
+              >
+                <option value="all">All Statuses</option>
+                <option value="active">Active</option>
+                <option value="deactivated">Deactivated</option>
+              </select>
+              {(userSearch || userStatusFilter !== 'all') && (
+                <button
+                  className="filter-reset-btn"
+                  onClick={() => { setUserSearch(''); setUserStatusFilter('all') }}
+                >
+                  <RotateCcw size={12} />Reset
+                </button>
+              )}
+            </div>
+
             {usersLoading && <div style={{ padding: 16, fontSize: 12.5, color: 'var(--color-text-muted)' }}>Loading users…</div>}
             {usersError && <div style={{ padding: 16, fontSize: 12.5, color: 'var(--color-danger)' }}>{usersError}</div>}
 
-            {!usersLoading && !usersError && users.map((u) => (
+            {!usersLoading && !usersError && filteredUsers.length === 0 && (
+              <div style={{ padding: 16, fontSize: 12.5, color: 'var(--color-text-muted)' }}>No users match your search or filter.</div>
+            )}
+
+            {!usersLoading && !usersError && filteredUsers.map((u) => (
               <div key={u.id} className="settings-user-row" style={{ flexWrap: 'wrap', gap: 10 }}>
                 <div className="settings-user-avatar">{initials(u.full_name)}</div>
                 <div className="settings-user-info">
@@ -210,23 +296,18 @@ export default function Settings() {
                 </div>
                 <span className="settings-user-role">{capitalize(u.role)}</span>
 
-                {/* Company code chips — click to grant/revoke, admins implicitly have all */}
-                <div style={{ display: 'flex', gap: 4 }}>
+                {/* Company code chips — click to grant/revoke directly, admins implicitly have all */}
+                <div className="settings-user-codes" title={u.role === 'admin' ? 'Admins have access to all company codes' : undefined}>
                   {adminService.VALID_COMPANY_CODES.map((code) => {
                     const has = u.role === 'admin' || u.company_codes.includes(code)
                     return (
                       <button
                         key={code}
+                        type="button"
                         disabled={u.role === 'admin' || busyUserId === u.id}
                         onClick={() => handleToggleCompanyCode(u, code)}
                         title={u.role === 'admin' ? 'Admins have access to all company codes' : has ? `Revoke ${code}` : `Grant ${code}`}
-                        style={{
-                          fontSize: 10.5, fontFamily: 'monospace', padding: '2px 6px', borderRadius: 5,
-                          border: '1px solid var(--color-border)', cursor: u.role === 'admin' ? 'default' : 'pointer',
-                          background: has ? 'var(--color-primary)' : 'transparent',
-                          color: has ? '#fff' : 'var(--color-text-muted)',
-                          opacity: busyUserId === u.id ? 0.5 : 1,
-                        }}
+                        className={`company-code-badge company-code-badge--toggle ${has ? 'is-granted' : ''}`}
                       >
                         {code}
                       </button>
@@ -236,11 +317,30 @@ export default function Settings() {
 
                 <StatusBadge label={u.is_active ? 'Active' : 'Deactivated'} tone={u.is_active ? 'success' : 'warning'} />
                 <button
+                  className="btn btn-icon btn-sm"
+                  title="Edit user"
+                  aria-label={`Edit ${u.full_name}`}
+                  disabled={busyUserId === u.id}
+                  onClick={() => setEditingUser(u)}
+                >
+                  <Pencil size={13} />
+                </button>
+                <button
                   className="btn btn-outline btn-sm"
                   disabled={busyUserId === u.id}
                   onClick={() => handleToggleActive(u)}
                 >
                   {u.is_active ? 'Deactivate' : 'Activate'}
+                </button>
+                <button
+                  className="btn btn-icon btn-sm"
+                  title="Delete user"
+                  aria-label={`Delete ${u.full_name}`}
+                  disabled={busyUserId === u.id}
+                  onClick={() => handleDeleteUser(u)}
+                  style={{ color: 'var(--color-danger)' }}
+                >
+                  <Trash2 size={13} />
                 </button>
               </div>
             ))}
@@ -353,27 +453,95 @@ export default function Settings() {
       {showCreateModal && (
         <CreateUserModal onClose={() => setShowCreateModal(false)} onSubmit={handleCreateUser} />
       )}
+
+      {editingUser && (
+        <EditUserModal
+          user={editingUser}
+          onClose={() => setEditingUser(null)}
+          onSubmit={(payload) => handleUpdateUser(editingUser.id, payload)}
+        />
+      )}
+    </div>
+  )
+}
+
+function validateNewUser(values) {
+  const errors = {}
+  if (!values.full_name.trim()) errors.full_name = 'Full name is required.'
+  if (!values.username.trim()) errors.username = 'Username is required.'
+  else if (/\s/.test(values.username)) errors.username = 'Username cannot contain spaces.'
+  if (!values.email.trim()) errors.email = 'Email is required.'
+  else if (!isValidEmail(values.email)) errors.email = 'Enter a valid email address.'
+  if (values.role !== 'admin' && values.company_codes.length === 0) {
+    errors.company_codes = 'Select at least one company code.'
+  }
+  return errors
+}
+
+function CompanyCodeCheckboxes({ selected, onToggle, disabled }) {
+  return (
+    <div className="company-code-options">
+      {adminService.VALID_COMPANY_CODES.map((code) => (
+        <label key={code} className="company-code-option">
+          <input
+            type="checkbox"
+            checked={disabled || selected.includes(code)}
+            disabled={disabled}
+            onChange={() => onToggle(code)}
+          />
+          {code}
+        </label>
+      ))}
     </div>
   )
 }
 
 function CreateUserModal({ onClose, onSubmit }) {
-  const [values, setValues] = useState({ full_name: '', email: '', password: '', role: 'accountant' })
+  const [values, setValues] = useState({ full_name: '', username: '', email: '', role: 'accountant', company_codes: [] })
+  const [errors, setErrors] = useState({})
+  const [touched, setTouched] = useState({})
   const [submitting, setSubmitting] = useState(false)
+
+  function handleChange(field, value) {
+    const next = { ...values, [field]: value }
+    setValues(next)
+    if (touched[field]) setErrors((e) => ({ ...e, [field]: validateNewUser(next)[field] }))
+  }
+
+  function toggleCompanyCode(code) {
+    const next = {
+      ...values,
+      company_codes: values.company_codes.includes(code)
+        ? values.company_codes.filter((c) => c !== code)
+        : [...values.company_codes, code],
+    }
+    setValues(next)
+    if (touched.company_codes) setErrors((e) => ({ ...e, company_codes: validateNewUser(next).company_codes }))
+  }
+
+  function handleBlur(field) {
+    setTouched((t) => ({ ...t, [field]: true }))
+    setErrors(validateNewUser(values))
+  }
 
   async function handleSubmit(e) {
     e.preventDefault()
+    setTouched({ full_name: true, username: true, email: true, company_codes: true })
+    const errs = validateNewUser(values)
+    setErrors(errs)
+    if (Object.keys(errs).length > 0) {
+      toast.error(MESSAGES.VALIDATION_ERROR)
+      return
+    }
     setSubmitting(true)
-    await onSubmit(values)
+    const ok = await onSubmit(values)
     setSubmitting(false)
+    if (!ok) return
   }
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(17,24,39,0.35)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
-    }}>
-      <div className="settings-card" style={{ width: 380, position: 'relative' }}>
+    <div className="modal-overlay">
+      <div className="settings-card modal-card" style={{ position: 'relative' }}>
         <button
           onClick={onClose}
           style={{ position: 'absolute', top: 12, right: 12, background: 'none', border: 'none', cursor: 'pointer' }}
@@ -381,45 +549,161 @@ function CreateUserModal({ onClose, onSubmit }) {
           <X size={16} />
         </button>
         <h3 className="settings-card-title">Add User</h3>
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} noValidate>
           <div className="settings-field-row">
             <label className="settings-field-label">Full name</label>
             <input
-              className="settings-input" required
+              className={`settings-input ${errors.full_name ? 'error' : ''}`}
               value={values.full_name}
-              onChange={(e) => setValues((v) => ({ ...v, full_name: e.target.value }))}
+              onChange={(e) => handleChange('full_name', e.target.value)}
+              onBlur={() => handleBlur('full_name')}
             />
+            {errors.full_name && <span className="form-error">{errors.full_name}</span>}
+          </div>
+          <div className="settings-field-row">
+            <label className="settings-field-label">Username</label>
+            <input
+              className={`settings-input ${errors.username ? 'error' : ''}`}
+              value={values.username}
+              onChange={(e) => handleChange('username', e.target.value)}
+              onBlur={() => handleBlur('username')}
+            />
+            {errors.username && <span className="form-error">{errors.username}</span>}
           </div>
           <div className="settings-field-row">
             <label className="settings-field-label">Email</label>
             <input
-              type="email" className="settings-input" required
+              type="email" className={`settings-input ${errors.email ? 'error' : ''}`}
               value={values.email}
-              onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
+              onChange={(e) => handleChange('email', e.target.value)}
+              onBlur={() => handleBlur('email')}
             />
-          </div>
-          <div className="settings-field-row">
-            <label className="settings-field-label">Temporary password</label>
-            <input
-              type="password" className="settings-input" required minLength={8}
-              value={values.password}
-              onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
-            />
+            {errors.email && <span className="form-error">{errors.email}</span>}
           </div>
           <div className="settings-field-row">
             <label className="settings-field-label">Role</label>
             <select
               className="filter-select"
               value={values.role}
-              onChange={(e) => setValues((v) => ({ ...v, role: e.target.value }))}
+              onChange={(e) => handleChange('role', e.target.value)}
             >
               <option value="accountant">Accountant</option>
               <option value="admin">Admin</option>
             </select>
           </div>
-          <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+          <div className="settings-field-row">
+            <label className="settings-field-label">Company code{values.role === 'admin' ? '' : ' *'}</label>
+            <div style={{ flex: 1 }}>
+              {values.role === 'admin' ? (
+                <span style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>Admins have access to all company codes.</span>
+              ) : (
+                <>
+                  <CompanyCodeCheckboxes selected={values.company_codes} onToggle={toggleCompanyCode} />
+                  {errors.company_codes && <span className="form-error">{errors.company_codes}</span>}
+                </>
+              )}
+            </div>
+          </div>
+          <div className="modal-actions">
             <button type="submit" className="btn btn-primary" disabled={submitting}>
               {submitting ? 'Creating…' : 'Create User'}
+            </button>
+            <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function validateEditUser(values) {
+  const errors = {}
+  if (!values.full_name.trim()) errors.full_name = 'Full name is required.'
+  if (!values.email.trim()) errors.email = 'Email is required.'
+  else if (!isValidEmail(values.email)) errors.email = 'Enter a valid email address.'
+  return errors
+}
+
+function EditUserModal({ user: u, onClose, onSubmit }) {
+  const [values, setValues] = useState({ full_name: u.full_name, email: u.email, role: u.role })
+  const [errors, setErrors] = useState({})
+  const [touched, setTouched] = useState({})
+  const [submitting, setSubmitting] = useState(false)
+
+  function handleChange(field, value) {
+    const next = { ...values, [field]: value }
+    setValues(next)
+    if (touched[field]) setErrors((e) => ({ ...e, [field]: validateEditUser(next)[field] }))
+  }
+
+  function handleBlur(field) {
+    setTouched((t) => ({ ...t, [field]: true }))
+    setErrors(validateEditUser(values))
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setTouched({ full_name: true, email: true })
+    const errs = validateEditUser(values)
+    setErrors(errs)
+    if (Object.keys(errs).length > 0) {
+      toast.error(MESSAGES.VALIDATION_ERROR)
+      return
+    }
+    setSubmitting(true)
+    const ok = await onSubmit(values)
+    setSubmitting(false)
+    if (!ok) return
+  }
+
+  return (
+    <div className="modal-overlay">
+      <div className="settings-card modal-card" style={{ position: 'relative' }}>
+        <button
+          onClick={onClose}
+          style={{ position: 'absolute', top: 12, right: 12, background: 'none', border: 'none', cursor: 'pointer' }}
+        >
+          <X size={16} />
+        </button>
+        <h3 className="settings-card-title">Edit User</h3>
+        <form onSubmit={handleSubmit} noValidate>
+          <div className="settings-field-row">
+            <label className="settings-field-label">Full name</label>
+            <input
+              className={`settings-input ${errors.full_name ? 'error' : ''}`}
+              value={values.full_name}
+              onChange={(e) => handleChange('full_name', e.target.value)}
+              onBlur={() => handleBlur('full_name')}
+            />
+            {errors.full_name && <span className="form-error">{errors.full_name}</span>}
+          </div>
+          <div className="settings-field-row">
+            <label className="settings-field-label">Email</label>
+            <input
+              type="email" className={`settings-input ${errors.email ? 'error' : ''}`}
+              value={values.email}
+              onChange={(e) => handleChange('email', e.target.value)}
+              onBlur={() => handleBlur('email')}
+            />
+            {errors.email && <span className="form-error">{errors.email}</span>}
+          </div>
+          <div className="settings-field-row">
+            <label className="settings-field-label">Role</label>
+            <select
+              className="filter-select"
+              value={values.role}
+              onChange={(e) => handleChange('role', e.target.value)}
+            >
+              <option value="accountant">Accountant</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+            Company code access and active status are managed from the user row directly.
+          </p>
+          <div className="modal-actions">
+            <button type="submit" className="btn btn-primary" disabled={submitting}>
+              {submitting ? 'Saving…' : 'Save Changes'}
             </button>
             <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
           </div>

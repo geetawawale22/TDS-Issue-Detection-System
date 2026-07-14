@@ -35,3 +35,20 @@ export function capitalize(str) {
 export function formatStatusLabel(value) {
   return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/** Returns true only for a well-formed, non-empty email address. */
+export function isValidEmail(value) {
+  return EMAIL_PATTERN.test((value ?? '').trim())
+}
+
+/**
+ * Minimum viable password rule shared by every form that sets/resets a
+ * password: at least 8 characters, containing at least one letter and one
+ * digit. Kept client-side only — the backend does not currently enforce
+ * complexity beyond length on account creation.
+ */
+export function isValidPassword(value) {
+  return typeof value === 'string' && value.length >= 8 && /[A-Za-z]/.test(value) && /\d/.test(value)
+}

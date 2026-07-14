@@ -4,20 +4,20 @@ import { decodeTokenPayload } from './sessionStorage'
 export {
   TOKEN_KEY, USER_KEY,
   decodeTokenPayload, isTokenExpired, tokenTtlMs,
-  persistSession, readStoredSession, clearSession,
+  persistSession, readStoredSession, clearSession, updateStoredUser,
 } from './sessionStorage'
 
 
 const authService = {
   /**
    * POST /auth/login -> { access_token, token_type, role, full_name }
-   * There is no GET /auth/me on the backend, so the rest of the profile
-   * (id, email) is read straight out of the JWT payload, which already
-   * carries { user_id, email, role } (see backend/core/security.py).
-   * company_codes has no self-service endpoint for non-admins yet — admins
-   * implicitly have access to every code (mirrors backend/core/dependencies.py
-   * get_user_company_codes), accountants get an empty list until the
-   * backend exposes one.
+   * The rest of the profile (id, email) is read straight out of the JWT
+   * payload, which already carries { user_id, email, role } (see
+   * backend/core/security.py). company_codes has no self-service endpoint
+   * for non-admins yet — admins implicitly have access to every code
+   * (mirrors backend/core/dependencies.py get_user_company_codes),
+   * accountants get an empty list here (the profile modal fetches the real
+   * list for the logged-in user via getMe() below).
    */
   async login({ email, password }) {
     const { data } = await api.post('/auth/login', { email, password })
@@ -48,43 +48,44 @@ const authService = {
 
   /**
    * POST /auth/forgot-password -> { message }
-   * The backend doesn't implement this route yet (services/email_service.py
-   * is an empty stub), so this currently 404s. It's wired to the contract
-   * the backend is expected to expose, so once that lands this starts
-   * working with no frontend changes. Until then, a 404 is translated into
-   * a clear "not available yet" message instead of a raw "Not Found".
+   * Always resolves with a generic message (whether or not the email is
+   * registered) \u2014 the backend intentionally avoids confirming which emails
+   * exist. Real failures (network/server errors) reject normally and are
+   * surfaced via api.js's response interceptor.
    */
   async forgotPassword({ email }) {
-    try {
-      const { data } = await api.post('/auth/forgot-password', { email })
-      return { message: data?.message }
-    } catch (err) {
-      if (err.status === 404) {
-        throw new Error('Password reset isn\u2019t available yet. Please contact an administrator.')
-      }
-      throw err
-    }
+    const { data } = await api.post('/auth/forgot-password', { email })
+    return { message: data?.message }
   },
 
   /**
    * POST /auth/reset-password -> { message }
-   * Same situation as forgotPassword above \u2014 not implemented server-side yet.
    */
   async resetPassword({ token, password }) {
-    try {
-      const { data } = await api.post('/auth/reset-password', { token, password })
-      return { message: data?.message }
-    } catch (err) {
-      if (err.status === 404) {
-        throw new Error('Password reset isn\u2019t available yet. Please contact an administrator.')
-      }
-      throw err
-    }
+    const { data } = await api.post('/auth/reset-password', { token, password })
+    return { message: data?.message }
   },
 
   async logout() {
     // Stateless JWT — nothing to invalidate server-side yet.
     return Promise.resolve()
+  },
+
+  /**
+   * GET /auth/me -> full UserOut (id, full_name, email, role, is_active,
+   * created_at, company_codes). Works for any role, unlike /admin/users/*
+   * which requires Admin — this is how the profile modal gets fields
+   * (created_at, real is_active/company_codes) that aren't in the JWT.
+   */
+  async getMe() {
+    const { data } = await api.get('/auth/me')
+    return data
+  },
+
+  /** PATCH /auth/me -> UserOut. Only full_name is self-editable. */
+  async updateProfile({ full_name }) {
+    const { data } = await api.patch('/auth/me', { full_name })
+    return data
   },
 }
 

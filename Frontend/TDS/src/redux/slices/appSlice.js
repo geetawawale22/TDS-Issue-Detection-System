@@ -13,8 +13,12 @@ const initialSelectedCode = initialCompanyCodes.includes(storedCompanyCode)
   ? storedCompanyCode
   : initialCompanyCodes[0] ?? null
 
+// Start collapsed on phone-sized viewports so the off-canvas sidebar
+// (see AppLayout.css's <=768px rule) doesn't cover the page on first load.
+const initialSidebarCollapsed = typeof window !== 'undefined' && window.innerWidth <= 768
+
 const initialState = {
-  sidebarCollapsed: false,
+  sidebarCollapsed: initialSidebarCollapsed,
   syncStatus:       'synced',
   lastSyncTime:     '8 minutes ago',
   workspaceName:    'Meridian Holdings Pvt Ltd',
@@ -33,6 +37,9 @@ const appSlice = createSlice({
   reducers: {
     toggleSidebar(state) {
       state.sidebarCollapsed = !state.sidebarCollapsed
+    },
+    setSidebarCollapsed(state, action) {
+      state.sidebarCollapsed = action.payload
     },
     setSyncStatus(state, action) {
       state.syncStatus = action.payload
@@ -62,7 +69,7 @@ const appSlice = createSlice({
 })
 
 export const {
-  toggleSidebar, setSyncStatus, setLastSyncTime,
+  toggleSidebar, setSidebarCollapsed, setSyncStatus, setLastSyncTime,
   setAvailableCompanyCodes, setSelectedCompanyCode, clearCompanyCodes,
 } = appSlice.actions
 export default appSlice.reducer

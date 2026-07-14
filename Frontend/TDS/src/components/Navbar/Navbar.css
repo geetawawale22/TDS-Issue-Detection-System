@@ -112,6 +112,15 @@
   cursor: pointer;
 }
 
+.navbar-menu-btn {
+  display: none;
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .navbar-menu-btn { display: flex; }
+}
+
 @media (max-width: 640px) {
   .navbar-meta { display: none; }
 }

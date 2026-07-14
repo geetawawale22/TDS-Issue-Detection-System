@@ -1,0 +1,116 @@
+.profile-menu {
+  position: relative;
+}
+
+.profile-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 60;
+
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top right;
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.profile-menu-dropdown.is-open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.profile-menu-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px;
+}
+
+.profile-menu-header-avatar {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--color-primary-50);
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-primary-100);
+}
+
+.profile-menu-header-info {
+  min-width: 0;
+}
+
+.profile-menu-header-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-menu-header-role {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+  margin-top: 1px;
+}
+
+.profile-menu-header-company {
+  font-size: 11px;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  margin-top: 3px;
+}
+
+.profile-menu-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 2px 0;
+}
+
+.profile-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--border-radius-sm);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-text);
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.profile-menu-item:hover,
+.profile-menu-item:focus-visible {
+  background: var(--color-bg);
+}
+
+.profile-menu-item--danger {
+  color: var(--color-danger);
+}
+
+.profile-menu-item--danger:hover,
+.profile-menu-item--danger:focus-visible {
+  background: var(--color-danger-bg);
+}
+
+@media (max-width: 480px) {
+  .profile-menu-dropdown {
+    width: 220px;
+  }
+}

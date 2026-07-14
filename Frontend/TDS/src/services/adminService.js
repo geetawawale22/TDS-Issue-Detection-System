@@ -15,9 +15,15 @@ const adminService = {
     return data
   },
 
-  /** payload: { full_name, email, password, role } — role is 'admin' | 'accountant' */
+  /** payload: { full_name, username, email, role } — role is 'admin' | 'accountant'. No password: user sets it via the invite link emailed after creation. */
   async createUser(payload) {
     const { data } = await api.post('/admin/users', payload)
+    return data
+  },
+
+  /** payload: partial { full_name, email, role } — only provided fields are updated */
+  async updateUser(userId, payload) {
+    const { data } = await api.patch(`/admin/users/${userId}`, payload)
     return data
   },
 
@@ -36,6 +42,11 @@ const adminService = {
 
   async activateUser(userId) {
     const { data } = await api.patch(`/admin/users/${userId}/activate`)
+    return data
+  },
+
+  async deleteUser(userId) {
+    const { data } = await api.delete(`/admin/users/${userId}`)
     return data
   },
 

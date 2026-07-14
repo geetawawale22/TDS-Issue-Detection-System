@@ -38,6 +38,20 @@
 .data-table-wrapper {
   overflow-x: auto;
   width: 100%;
+
+  /* Scroll-shadow hint: the two "cover" gradients scroll WITH the content
+     (background-attachment: local) and fade to nothing once you've reached
+     that edge, while the two shadow gradients stay put (attachment: scroll)
+     so a hint is visible on whichever side still has more to scroll to. */
+  background:
+    linear-gradient(to right, var(--color-surface) 30%, rgba(255, 255, 255, 0)) 0 0,
+    linear-gradient(to left, var(--color-surface) 30%, rgba(255, 255, 255, 0)) 100% 0,
+    linear-gradient(to right, rgba(17, 24, 39, 0.12), rgba(255, 255, 255, 0) 100%) 0 0,
+    linear-gradient(to left, rgba(17, 24, 39, 0.12), rgba(255, 255, 255, 0) 100%) 100% 0;
+  background-repeat: no-repeat;
+  background-color: var(--color-surface);
+  background-size: 24px 100%, 24px 100%, 10px 100%, 10px 100%;
+  background-attachment: local, local, scroll, scroll;
 }
 
 .data-table {
@@ -375,6 +389,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   margin-bottom: 14px;
   gap: 12px;
 }
@@ -409,14 +424,20 @@
 
 @media (max-width: 1280px) { .kpi-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 768px)  { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px)  { .kpi-grid { grid-template-columns: 1fr; } }
 
 .kpi-card {
+  position: relative;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--border-radius);
-  padding: 12px 14px;
+  padding: 14px 34px 12px;
+  min-height: 112px;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   gap: 6px;
   box-shadow: var(--shadow-sm);
 }
@@ -424,10 +445,14 @@
 .kpi-icon-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  width: 100%;
 }
 
 .kpi-icon-box {
+  position: absolute;
+  top: 10px;
+  right: 10px;
   height: 28px;
   width: 28px;
   border-radius: 8px;
@@ -464,6 +489,7 @@
   font-family: var(--font-mono);
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 2px;
 }
 
@@ -521,6 +547,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--color-border);
 }
@@ -641,6 +669,10 @@
   .summary-grid-3, .summary-grid-4 { grid-template-columns: repeat(2, 1fr); }
 }
 
+@media (max-width: 480px) {
+  .summary-grid-3, .summary-grid-4 { grid-template-columns: 1fr; }
+}
+
 /* ── Buttons ──────────────────────────────────────────── */
 .btn {
   display: inline-flex;
@@ -686,6 +718,16 @@
 .btn-sm { height: 28px; padding: 0 10px; font-size: 11.5px; }
 .btn-lg { height: 38px; padding: 0 20px; font-size: 14px; }
 
+.btn-icon {
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  padding: 0;
+  width: 28px;
+  justify-content: center;
+}
+.btn-icon:hover { background: var(--color-bg); color: var(--color-text); }
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -724,4 +766,33 @@
   font-size: 12.5px;
   color: var(--color-text-muted);
   margin-bottom: 16px;
+}
+
+/* ── Modal (generic — used by Settings user modals, profile modal, etc.) ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 50;
+}
+
+.modal-card {
+  width: min(380px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+.modal-actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .modal-actions { flex-direction: column; }
+  .modal-actions .btn { width: 100%; }
 }

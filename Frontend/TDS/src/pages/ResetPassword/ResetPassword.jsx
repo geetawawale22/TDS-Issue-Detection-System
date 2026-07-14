@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Eye, EyeOff, AlertCircle, ShieldCheck, ArrowLeft } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
+import { isValidPassword } from '@/utils/utils'
 import '../Login/Login.css'
 import '../ForgotPassword/ForgotPassword.css'
 
 function validate(values) {
   const errors = {}
   if (!values.password) errors.password = 'Password is required.'
-  else if (values.password.length < 8) errors.password = 'Password must be at least 8 characters.'
+  else if (!isValidPassword(values.password)) errors.password = 'Password must be at least 8 characters and include a letter and a number.'
   if (!values.confirm) errors.confirm = 'Please confirm your password.'
   else if (values.password !== values.confirm) errors.confirm = 'Passwords do not match.'
   return errors
@@ -57,7 +58,7 @@ export default function ResetPassword() {
               <label className="form-label">New password</label>
               <div className="form-pw-wrapper">
                 <input type={showPw ? 'text' : 'password'} className={`form-input form-input--pw ${errors.password ? 'error' : ''}`}
-                  placeholder="Min. 8 characters" value={values.password}
+                  placeholder="Min. 8 characters incl. a letter & number" value={values.password}
                   onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))} autoFocus autoComplete="new-password" />
                 <button type="button" className="form-pw-toggle" onClick={() => setShowPw(!showPw)}>
                   {showPw ? <EyeOff size={15} /> : <Eye size={15} />}

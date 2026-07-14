@@ -57,3 +57,16 @@ export function clearSession() {
     s.removeItem(USER_KEY)
   })
 }
+
+/** Merges a patch into whichever storage (local/session) currently holds the user, so an edited profile survives a page refresh. */
+export function updateStoredUser(patch) {
+  ;[localStorage, sessionStorage].forEach((s) => {
+    const existing = s.getItem(USER_KEY)
+    if (!existing) return
+    try {
+      s.setItem(USER_KEY, JSON.stringify({ ...JSON.parse(existing), ...patch }))
+    } catch {
+      // corrupt stored value — leave as-is, next login will overwrite it
+    }
+  })
+}

@@ -1,4 +1,3 @@
-import { useNavigate } from 'react-router-dom'
 import { useSelector } from 'react-redux'
 import {
   Activity, AlertOctagon, AlertTriangle, CheckCircle2,
@@ -8,26 +7,11 @@ import IssuesBySectionChart from '@/components/Charts/IssuesBySectionChart'
 import ComplianceHealthChart from '@/components/Charts/ComplianceHealthChart'
 import MonthlyTrendChart from '@/components/Charts/MonthlyTrendChart'
 import TopVendorsChart from '@/components/Charts/TopVendorsChart'
-import DataTable from '@/components/Common/DataTable'
-import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
 import { issues } from '@/data/mockData'
-import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import '@/components/Common/Common.css'
 import './Dashboard.css'
 
-const recentIssues = issues.slice(0, 5)
-
-const columns = [
-  { key: 'id',     header: 'Issue ID',  render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.id}</span> },
-  { key: 'vendor', header: 'Vendor',    render: (r) => <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</span> },
-  { key: 'section',header: 'Section',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
-  { key: 'transactionAmount', header: 'Amount', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.transactionAmount)}</span> },
-  { key: 'severity', header: 'Severity', render: (r) => <StatusBadge label={formatStatusLabel(r.severity)} tone={severityToTone(r.severity)} /> },
-  { key: 'status',   header: 'Status',   render: (r) => <StatusBadge label={formatStatusLabel(r.status)}   tone={issueStatusToTone(r.status)}   /> },
-]
-
 export default function Dashboard() {
-  const navigate = useNavigate()
   const { financialYear, lastSyncTime, dataSource } = useSelector((s) => s.app)
   const firstName = useSelector((s) => s.auth.user?.name?.split(' ')[0]) ?? 'there'
 
@@ -150,20 +134,6 @@ export default function Dashboard() {
           </div>
           <TopVendorsChart />
         </div>
-      </div>
-
-      {/* Recent Issues */}
-      <div className="table-card">
-        <div className="table-card-header">
-          <div>
-            <div className="table-card-title">Recent Issues</div>
-            <div className="table-card-sub">Latest flags from automated reconciliation</div>
-          </div>
-          <button className="btn btn-outline btn-sm" onClick={() => navigate('/issues')}>
-            View all →
-          </button>
-        </div>
-        <DataTable columns={columns} data={recentIssues} onRowClick={() => navigate('/issues')} pageSize={5} />
       </div>
     </div>
   )

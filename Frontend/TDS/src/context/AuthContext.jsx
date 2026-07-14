@@ -5,6 +5,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { setCredentials, clearCredentials, setAuthLoading, setAuthError } from '@/redux/slices/authSlice'
 import { setAvailableCompanyCodes, clearCompanyCodes } from '@/redux/slices/appSlice'
 import authService, { persistSession, clearSession, tokenTtlMs } from '@/services/authService'
+import { MESSAGES } from '@/utils/messages'
 
 const AuthContext = createContext(null)
 
@@ -25,7 +26,7 @@ export function AuthProvider({ children }) {
     clearSession()
     dispatch(clearCredentials())
     dispatch(clearCompanyCodes())
-    toast.error('Your session has expired. Please sign in again.', { duration: 5000 })
+    toast.error(MESSAGES.SESSION_EXPIRED, { duration: 5000 })
     navigate('/login?reason=session_expired', { replace: true })
   }
 
@@ -42,7 +43,7 @@ export function AuthProvider({ children }) {
       dispatch(setCredentials({ token, user }))
       dispatch(setAvailableCompanyCodes(user.companyCodes ?? []))
       scheduleAutoLogout(token)
-      toast.success(`Welcome back, ${user.name}!`, { duration: 3000 })
+      toast.success(MESSAGES.LOGIN_SUCCESS(user.name), { duration: 3000 })
       navigate('/dashboard', { replace: true })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Login failed.'
@@ -70,7 +71,7 @@ export function AuthProvider({ children }) {
     try {
       const { message } = await authService.forgotPassword(payload)
       dispatch(setAuthLoading(false))
-      toast.success(message || 'Reset link sent!')
+      toast.success(message || MESSAGES.EMAIL_SENT)
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Request failed.'
@@ -85,7 +86,7 @@ export function AuthProvider({ children }) {
     try {
       const { message } = await authService.resetPassword(payload)
       dispatch(setAuthLoading(false))
-      toast.success(message || 'Password reset successfully!')
+      toast.success(message || MESSAGES.PASSWORD_CHANGED)
       navigate('/login', { replace: true })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Reset failed.'
@@ -100,7 +101,7 @@ export function AuthProvider({ children }) {
     clearSession()
     dispatch(clearCredentials())
     dispatch(clearCompanyCodes())
-    toast.success('Signed out successfully.')
+    toast.success(MESSAGES.LOGOUT_SUCCESS)
     navigate('/login', { replace: true })
   }, [dispatch, navigate])
 

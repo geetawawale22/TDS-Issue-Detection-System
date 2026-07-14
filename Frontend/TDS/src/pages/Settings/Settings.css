@@ -187,6 +187,7 @@
 }
 
 @media (max-width: 900px) { .settings-roles-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .settings-roles-grid { grid-template-columns: 1fr; } }
 
 .settings-role-footer {
   display: flex;
@@ -231,4 +232,87 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* ── Company codes ────────────────────────────────────── */
+.settings-user-codes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Clickable pill — toggles grant/revoke of a company code directly in the row */
+.company-code-badge--toggle {
+  font-size: 10.5px;
+  font-family: var(--font-mono, monospace);
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+
+.company-code-badge--toggle.is-granted {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.company-code-badge--toggle:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.company-code-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.company-code-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+/* ── Form validation ──────────────────────────────────── */
+.settings-input.error { border-color: var(--color-danger); }
+
+.form-error {
+  display: block;
+  font-size: 11px;
+  color: var(--color-danger);
+  margin-top: 4px;
+}
+
+/* Generic .modal-overlay / .modal-card / .modal-actions now live in
+   components/Common/Common.css so non-Settings pages (e.g. the profile
+   dropdown) can reuse them too. */
+
+/* ── Responsive ───────────────────────────────────────── */
+/* Wrap user rows earlier than the field-row breakpoint below: with the
+   avatar, company-code badges, status badge, and two buttons all sharing
+   the row, the name/email column gets squeezed to an awkward width (and
+   the name can wrap mid-word) well before 640px. */
+@media (max-width: 900px) {
+  .settings-user-row {
+    flex-wrap: wrap;
+  }
+  .settings-user-info { min-width: 180px; }
+  .settings-user-role { width: auto; }
+}
+
+@media (max-width: 640px) {
+  .settings-field-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .settings-field-label { width: auto; }
 }

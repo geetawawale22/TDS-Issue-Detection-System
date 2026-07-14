@@ -1,8 +1,9 @@
-import { Bell, Search, CalendarDays, Database, RefreshCw, Building2 } from 'lucide-react'
+import { Bell, Search, CalendarDays, Database, RefreshCw, Building2, ShieldCheck, Menu } from 'lucide-react'
 import { useSelector, useDispatch } from 'react-redux'
 import { useAuth } from '@/context/AuthContext'
-import { setSelectedCompanyCode } from '@/redux/slices/appSlice'
-import { initials } from '@/utils/utils'
+import { setSelectedCompanyCode, toggleSidebar } from '@/redux/slices/appSlice'
+import { capitalize } from '@/utils/utils'
+import ProfileMenu from './ProfileMenu'
 import './Navbar.css'
 
 export default function Navbar() {
@@ -12,8 +13,22 @@ export default function Navbar() {
 
   return (
     <div className="navbar">
+      <button className="navbar-icon-btn navbar-menu-btn" title="Menu" onClick={() => dispatch(toggleSidebar())}>
+        <Menu size={16} />
+      </button>
+
       {/* Left: meta info */}
       <div className="navbar-meta">
+        {user?.role && (
+          <>
+            <div className="navbar-meta-item">
+              <ShieldCheck size={13} className="navbar-meta-icon" />
+              <span className="navbar-meta-label">Role</span>
+              <span className="navbar-meta-value">{capitalize(user.role)}</span>
+            </div>
+            <div className="navbar-meta-divider" />
+          </>
+        )}
         {availableCompanyCodes.length > 0 && (
           <>
             <div className="navbar-meta-item">
@@ -68,9 +83,7 @@ export default function Navbar() {
           <Bell size={15} />
           <span className="navbar-badge">3</span>
         </button>
-        <div className="navbar-user-avatar" title={user?.name}>
-          {initials(user?.name ?? 'U')}
-        </div>
+        <ProfileMenu />
       </div>
     </div>
   )

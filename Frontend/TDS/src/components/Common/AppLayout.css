@@ -51,6 +51,10 @@
   padding: 16px 20px 20px;
 }
 
+.sidebar-backdrop {
+  display: none;
+}
+
 @media (max-width: 768px) {
   .sidebar-column {
     position: fixed;
@@ -65,5 +69,12 @@
   }
   .page-scroll-area {
     padding: 12px 14px 16px;
+  }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 24, 39, 0.35);
+    z-index: 40;
   }
 }

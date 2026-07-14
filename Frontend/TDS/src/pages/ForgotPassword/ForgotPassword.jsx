@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertCircle, ShieldCheck, ArrowLeft } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
+import { isValidEmail } from '@/utils/utils'
 import '../Login/Login.css'
 import './ForgotPassword.css'
 
 function validate(email) {
   if (!email.trim()) return 'Email is required.'
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Enter a valid email address.'
+  if (!isValidEmail(email)) return 'Enter a valid email address.'
   return null
 }
 
