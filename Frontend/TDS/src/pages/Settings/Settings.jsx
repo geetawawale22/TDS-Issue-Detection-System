@@ -120,7 +120,11 @@ export default function Settings() {
         }
       }
 
-      toast.success(MESSAGES.USER_CREATED)
+      if (created.invite_email_sent === false) {
+        toast.error(MESSAGES.INVITE_EMAIL_FAILED)
+      } else {
+        toast.success(MESSAGES.USER_CREATED)
+      }
       setShowCreateModal(false)
       loadUsers()
       return true

@@ -1,16 +1,18 @@
+import os
 import logging
+from hashlib import sha256
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from core.dependencies import require_admin
 from db.database import get_db
-from db.models import User
+from db.models import User, PasswordSetupToken
 from schemas.auth import ForgotPasswordRequest, LoginRequest,MessageResponse,ResetPasswordRequest,TokenResponse
 from schemas.user import UserCreate, UserOut
-from core.security import create_access_token,create_password_reset_token,decode_password_reset_token,hash_password,password_fingerprint,verify_password,decode_invite_token
-from services.email_service import send_password_reset_email
+from core.security import create_access_token,create_invite_token,create_password_reset_token,decode_password_reset_token,hash_password,password_fingerprint,verify_password,decode_invite_token
+from services.email_service import send_invite_email, send_password_reset_email
 from pydantic import BaseModel
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -97,8 +99,32 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         except Exception:
             # Do not expose delivery/configuration details to an unauthenticated caller.
             logger.exception("Unable to send password-reset email for user_id=%s", user.id)
+    elif user and user.hashed_password is None:
+        # Invite was never completed (or the original invite email never
+        # arrived) — resend a fresh invite link instead of silently doing
+        # nothing, so the user has a way to self-serve into their account.
+        logger.info("Resending invite for never-activated user_id=%s", user.id)
+        invite_token = create_invite_token(user.id)
+        try:
+            expiry_hours = int(os.getenv("INVITE_EXPIRE_HOURS", 48))
+            audit_row = PasswordSetupToken(
+                user_id=user.id,
+                token_hash=sha256(invite_token.encode("utf-8")).hexdigest(),
+                token_type="invite",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=expiry_hours),
+            )
+            db.add(audit_row)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to write invite audit log for user_id=%s", user.id)
+        try:
+            send_invite_email(user.email, user.full_name, invite_token)
+            logger.info("Invite email resent by SMTP for user_id=%s", user.id)
+        except Exception:
+            logger.exception("Unable to resend invite email for user_id=%s", user.id)
     else:
-        logger.info("Password reset requested for an unknown or inactive account")
+        logger.info("Password reset requested for an unknown or deactivated account")
 
     return MessageResponse(message="If an account exists for this email, a password reset link has been sent.")
 

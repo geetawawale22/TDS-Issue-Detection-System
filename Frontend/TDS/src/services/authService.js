@@ -66,6 +66,16 @@ const authService = {
     return { message: data?.message }
   },
 
+  /**
+   * POST /auth/set-password -> { message }
+   * First-time password setup for a newly invited user (as opposed to
+   * resetPassword, which is for an existing password being replaced).
+   */
+  async setPassword({ token, password }) {
+    const { data } = await api.post('/auth/set-password', { token, new_password: password })
+    return { message: data?.message }
+  },
+
   async logout() {
     // Stateless JWT — nothing to invalidate server-side yet.
     return Promise.resolve()

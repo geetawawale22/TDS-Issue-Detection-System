@@ -10,6 +10,7 @@ import AppLayout from '@/components/Common/AppLayout'
 import Login from '@/pages/Login/Login'
 import ForgotPassword from '@/pages/ForgotPassword/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword/ResetPassword'
+import SetPassword from '@/pages/SetPassword/SetPassword'
 
 import Dashboard from '@/pages/Dashboard/Dashboard'
 import Issues from '@/pages/Issues/Issues'
@@ -46,6 +47,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password/:token" element={<ResetPassword />} />
+            <Route path="/set-password/:token" element={<SetPassword />} />
 
             <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
               <Route path="/dashboard" element={<Dashboard />} />

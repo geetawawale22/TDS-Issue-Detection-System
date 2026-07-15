@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from db.database import get_db
 from db.models import User, CompanyCodeAccess, PasswordSetupToken
-from schemas.user import UserCreate, UserOut, CompanyCodeAssign
+from schemas.user import UserCreate, UserOut, UserCreateOut, CompanyCodeAssign
 from core.dependencies import require_admin
 from services.email_service import send_invite_email
 from datetime import datetime, timedelta, timezone
@@ -28,7 +28,7 @@ def _serialize_user(user: User, db: Session) -> User:
     return user
 
 
-@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post("/users", response_model=UserCreateOut, status_code=status.HTTP_201_CREATED)
 def create_user(
     user_in: UserCreate,
     db: Session = Depends(get_db),
@@ -87,14 +87,21 @@ def create_user(
         db.rollback()
         logger.exception("Failed to write invite audit log for user_id=%s", new_user.id)
 
+    invite_email_sent = True
     try:
         send_invite_email(new_user.email, new_user.full_name, invite_token)
     except Exception:
-        # SMTP not configured or send failed — user created successfully.
-        # Admin should be told to share the link manually or fix SMTP config.
+        # SMTP not configured, send failed, or the recipient's mail server
+        # silently dropped it (e.g. corporate spam/phishing filtering) —
+        # user created successfully either way. Tell the admin so they can
+        # share the link manually instead of the new user being stuck with
+        # no visible error anywhere.
+        invite_email_sent = False
         logger.exception("Failed to send invite email for user_id=%s", new_user.id)
 
-    return _serialize_user(new_user, db)
+    result = UserCreateOut.model_validate(_serialize_user(new_user, db))
+    result.invite_email_sent = invite_email_sent
+    return result
 
 
 @router.get("/users", response_model=List[UserOut])

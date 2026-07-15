@@ -95,6 +95,20 @@ export function AuthProvider({ children }) {
     }
   }, [dispatch, navigate])
 
+  const setPassword = useCallback(async (payload) => {
+    dispatch(setAuthLoading(true))
+    try {
+      const { message } = await authService.setPassword(payload)
+      dispatch(setAuthLoading(false))
+      toast.success(message || MESSAGES.PASSWORD_SET)
+      navigate('/login', { replace: true })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not set password.'
+      dispatch(setAuthError(message))
+      toast.error(message)
+    }
+  }, [dispatch, navigate])
+
   const logout = useCallback(async () => {
     if (logoutTimerRef.current) clearTimeout(logoutTimerRef.current)
     await authService.logout()
@@ -110,7 +124,7 @@ export function AuthProvider({ children }) {
       user: authState.user, token: authState.token,
       isAuthenticated: authState.isAuthenticated, isLoading: authState.isLoading,
       error: authState.error, permissions: authState.permissions,
-      login, signup, forgotPassword, resetPassword, logout,
+      login, signup, forgotPassword, resetPassword, setPassword, logout,
     }}>
       {children}
     </AuthContext.Provider>

@@ -36,6 +36,14 @@ class UserOut(BaseModel):
     class Config:
         from_attributes = True
 
+
+class UserCreateOut(UserOut):
+    """Response for user creation — adds delivery status so the admin
+    knows immediately if the invite email failed to send, instead of
+    only finding out once the new user says they never got it."""
+    invite_email_sent: bool = True
+
+
 class CompanyCodeAssign(BaseModel):
     """Used when Admin assigns a company code to a user."""
     user_id: int
