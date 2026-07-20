@@ -22,7 +22,7 @@ def send_invite_email(recipient: str, full_name: str, invite_token: str) -> None
     if not all((smtp_host, smtp_from, smtp_username, smtp_password)):
         raise RuntimeError("SMTP is not configured for invite emails")
 
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    frontend_url = os.getenv("FRONTEND_URL", "http://192.168.10.148:5173").rstrip("/")
     invite_url = f"{frontend_url}/set-password/{invite_token}"
 
     message = EmailMessage()
@@ -64,7 +64,7 @@ def send_password_reset_email(recipient: str, reset_token: str) -> None:
     if not all((smtp_host, smtp_from, smtp_username, smtp_password)):
         raise RuntimeError("SMTP is not configured for password-reset emails")
 
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    frontend_url = os.getenv("FRONTEND_URL", "http://192.168.10.148:5173").rstrip("/")
     reset_url = f"{frontend_url}/reset-password/{reset_token}"
 
     message = EmailMessage()

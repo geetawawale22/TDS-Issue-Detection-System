@@ -14,7 +14,7 @@ def seed_admin():
         # Check whether admin already exists
         existing_admin = (
             db.query(User)
-            .filter(User.email == "admin@krios.com")
+            .filter(User.email == "samrudhi.neve@kriosispl.com")
             .first()
         )
  

@@ -736,6 +736,19 @@ gl_tds_not_applicable:
       - "A/P SERVICE DOMESTIC VENDOR"
       - "A/P EXPENSES DOMESTIC VENDOR"
 
+  confirmed_exclusion_cases_mahindra_v2:
+    reason: >
+      Confirmed TDS-not-applicable cases from Mahindra's exclusion
+      reference list (12-case table) — insurance, telephone, CSR,
+      RTO, and other specific business exclusions.
+    accounts:
+      - "25610001"   # Insurance premium payment
+      - "54120001"   # Telephone Expenses - Factory
+      - "54120002"   # Telephone Expenses - Office
+      - "54530001"   # CSR Activity Expense
+      - "54130001"   # Travelling Expenses Domestic - Fare (EBIX)
+      - "54060004"   # RTO Charges
+
 
 # ============================================================
 # OUT OF SCOPE SECTIONS — THIS RELEASE
