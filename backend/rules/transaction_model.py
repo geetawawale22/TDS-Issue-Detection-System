@@ -38,6 +38,14 @@ class Transaction(BaseModel):
     basic_amount: float                            # TDS calculation base (assumed GST-excluded)
     debit_credit: Optional[str] = None            # H / S
 
+    # --- Flags (POC-derived logic, populated during ingestion or later confirmed by Mahindra) ---
+    is_advance_payment: Optional[bool] = None      # True if doc_type indicates advance (e.g. KZ)
+    is_provision_entry: Optional[bool] = None       # True for year-end provision entries
+    is_non_filer: Optional[bool] = None              # Section 206AB — vendor hasn't filed ITR
+    has_form_15g_15h: Optional[bool] = None
+    is_transporter: Optional[bool] = None            # 194C transporter exemption
+    residential_status: Optional[str] = None         # "Resident" / "Non-Resident"
+
     # --- TDS Applicable (what SHOULD have been deducted) ---
     tds_applicable_section: Optional[str] = None   # not yet confirmed by Mahindra
     tds_applicable_rate: Optional[float] = None
