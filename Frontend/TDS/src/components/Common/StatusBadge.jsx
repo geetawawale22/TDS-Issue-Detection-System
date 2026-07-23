@@ -26,6 +26,12 @@ export function correctionStatusToTone(status) {
   return 'neutral'
 }
 
+export function panStatusToTone(status) {
+  if (status === 'Active')   return 'success'
+  if (status === 'Inactive') return 'warning'
+  return 'danger' // 'Deactivated' / 'Invalid Format'
+}
+
 export default function StatusBadge({ label, tone = 'neutral', className = '' }) {
   return (
     <span className={`status-badge status-badge--${tone} ${className}`}>

@@ -258,30 +258,34 @@ export default function Settings() {
             </div>
 
             <div className="filter-bar" style={{ boxShadow: 'none', margin: '0 16px 10px' }}>
-              <div className="filter-bar-label"><Search size={13} />Search</div>
-              <input
-                className="filter-input"
-                value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
-                placeholder="Search name or email…"
-              />
-              <select
-                className="filter-select"
-                value={userStatusFilter}
-                onChange={(e) => setUserStatusFilter(e.target.value)}
-              >
-                <option value="all">All Statuses</option>
-                <option value="active">Active</option>
-                <option value="deactivated">Deactivated</option>
-              </select>
-              {(userSearch || userStatusFilter !== 'all') && (
-                <button
-                  className="filter-reset-btn"
-                  onClick={() => { setUserSearch(''); setUserStatusFilter('all') }}
+              <div className="filter-bar-top">
+                <div className="filter-bar-label"><Search size={13} />Search</div>
+                <input
+                  className="filter-input"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="Search name or email…"
+                />
+              </div>
+              <div className="filter-bar-controls">
+                <select
+                  className="filter-select"
+                  value={userStatusFilter}
+                  onChange={(e) => setUserStatusFilter(e.target.value)}
                 >
-                  <RotateCcw size={12} />Reset
-                </button>
-              )}
+                  <option value="all">All Statuses</option>
+                  <option value="active">Active</option>
+                  <option value="deactivated">Deactivated</option>
+                </select>
+                {(userSearch || userStatusFilter !== 'all') && (
+                  <button
+                    className="filter-reset-btn"
+                    onClick={() => { setUserSearch(''); setUserStatusFilter('all') }}
+                  >
+                    <RotateCcw size={12} />Reset
+                  </button>
+                )}
+              </div>
             </div>
 
             {usersLoading && <div style={{ padding: 16, fontSize: 12.5, color: 'var(--color-text-muted)' }}>Loading users…</div>}

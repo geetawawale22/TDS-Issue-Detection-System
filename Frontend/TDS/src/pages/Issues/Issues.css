@@ -19,3 +19,93 @@
   display: flex;
   flex-direction: column;
 }
+
+/* ── Issue Type cell (table) — plain readable label, no raw-code styling ── */
+.issue-type-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.issue-type-cell svg { flex-shrink: 0; }
+.issue-type-text { overflow: hidden; text-overflow: ellipsis; }
+
+.issue-type-cell--high   { color: #991B1B; }
+.issue-type-cell--medium { color: #92400E; }
+.issue-type-cell--low    { color: #065F46; }
+
+.issues-count-label {
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  padding: 10px 16px 0;
+}
+
+/* ── "Corrected" status treatment (folded into Doc No. cell, no separate Status column) ── */
+.corrected-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #059669;
+}
+
+/* ── Details column — one-line truncated preview of the issue detail ── */
+.issue-details-preview {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+/* ── Summary strip ─────────────────────────────────────── */
+.issues-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+@media (max-width: 900px) { .issues-summary-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .issues-summary-grid { grid-template-columns: 1fr; } }
+
+.issues-summary-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.issues-summary-card svg { flex-shrink: 0; }
+
+.issues-summary-value {
+  font-size: 19px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  line-height: 1.1;
+}
+
+.issues-summary-label {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 1px;
+}
+
+.issues-summary-card--danger  svg { color: var(--color-danger); }
+.issues-summary-card--warning svg { color: #D97706; }
+.issues-summary-card--success svg { color: #059669; }

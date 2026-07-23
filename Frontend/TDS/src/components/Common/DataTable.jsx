@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { Fragment, useState, useMemo } from 'react'
 import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import './Common.css'
 
@@ -8,6 +8,8 @@ export default function DataTable({
   onRowClick,
   pageSize = 10,
   emptyState = null,
+  expandedRowKey,
+  renderExpandedRow,
 }) {
   const [page, setPage] = useState(1)
   const [sortKey, setSortKey] = useState(null)
@@ -78,19 +80,31 @@ export default function DataTable({
                 </td>
               </tr>
             ) : (
-              pageData.map((row, i) => (
-                <tr
-                  key={row.id ?? i}
-                  onClick={() => onRowClick && onRowClick(row)}
-                  style={{ cursor: onRowClick ? 'pointer' : 'default' }}
-                >
-                  {columns.map((col) => (
-                    <td key={col.key || col.header}>
-                      {col.render ? col.render(row) : row[col.key]}
-                    </td>
-                  ))}
-                </tr>
-              ))
+              pageData.map((row, i) => {
+                const rowKey = row.id ?? i
+                const isExpanded = renderExpandedRow && expandedRowKey === rowKey
+                return (
+                  <Fragment key={rowKey}>
+                    <tr
+                      onClick={() => onRowClick && onRowClick(row)}
+                      style={{ cursor: onRowClick ? 'pointer' : 'default' }}
+                    >
+                      {columns.map((col) => (
+                        <td key={col.key || col.header}>
+                          {col.render ? col.render(row, (currentPage - 1) * pageSize + i) : row[col.key]}
+                        </td>
+                      ))}
+                    </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={columns.length} style={{ padding: 0 }}>
+                          {renderExpandedRow(row)}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })
             )}
           </tbody>
         </table>
@@ -111,9 +125,9 @@ export default function DataTable({
             </button>
             {getPages().map((p, i) => (
               p === '...'
-                ? <span key={i} className="table-page-btn" style={{ border: 'none', cursor: 'default' }}>…</span>
+                ? <span key={`ellipsis-${i}`} className="table-page-btn" style={{ border: 'none', cursor: 'default' }}>…</span>
                 : <button
-                    key={p}
+                    key={`page-${p}`}
                     className={`table-page-btn ${currentPage === p ? 'active' : ''}`}
                     onClick={() => setPage(p)}
                   >{p}</button>

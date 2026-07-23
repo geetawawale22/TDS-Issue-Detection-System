@@ -49,6 +49,23 @@
   border: 1px solid rgba(255,255,255,0.25);
 }
 
+.auth-brand-logo-card {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.92);
+  margin-bottom: 16px;
+}
+
+.auth-brand-logo {
+  height: 32px;
+  width: auto;
+  display: block;
+  object-fit: contain;
+}
+
 .auth-brand-name {
   font-size: 22px;
   font-weight: 700;

@@ -1,4 +1,6 @@
-export const sections = ['194C', '194J', '194H', '194I', '194Q', '192', '194A', '194D']
+import { pickWeightedScenario, simulatePanVerification } from './issueTypes'
+
+export const sections = ['194C', '194J', '194H', '194I', '194Q', '192', '194A', '194D', '195']
 
 export const vendorNames = [
   'Apex Logistics Pvt Ltd', 'Meridian Consulting Group', 'Bluewave Technologies',
@@ -8,6 +10,13 @@ export const vendorNames = [
   'Ironclad Security Services', 'Quantum Data Systems', 'Silverline Equipment Leasing',
   'Eastwood Realty Group', 'Cascade Engineering Works', 'Highline Media Productions',
   'Westbrook Insurance Brokers', 'Riverside Catering Co.',
+]
+
+// Overseas vendors used for non-resident-specific issue types (Wrong Section
+// for Non-Resident, DTAA / Form 197 rate mismatches).
+export const nonResidentVendorNames = [
+  'Accenture Ireland Ltd', 'SAP SE Germany', 'Microsoft Corporation (USA)',
+  'Cognizant Technology Solutions (US)', 'Nomura Holdings Japan',
 ]
 
 function seededRandom(seed) {
@@ -21,26 +30,79 @@ function seededRandom(seed) {
 const rand = seededRandom(42)
 const randomFrom = (arr) => arr[Math.floor(rand() * arr.length)]
 
+function generatePan() {
+  return `AAAC${String.fromCharCode(65 + Math.floor(rand() * 26))}${1000 + Math.floor(rand() * 9000)}${String.fromCharCode(65 + Math.floor(rand() * 26))}`
+}
+
+// A handful of vendors are reserved as always having a missing/malformed
+// PAN, so the PAN-format rule scenarios (PAN_MISSING_*, PAN_CORRECT) always
+// pick a vendor whose PAN genuinely justifies that narrative — rather than
+// firing for a vendor whose PAN is otherwise fine elsewhere in the data.
+const PAN_ISSUE_VENDORS = vendorNames.slice(0, 3)
+
+// PAN validity/verification is a per-VENDOR fact, computed once here and
+// looked up by every issue for that vendor — not re-rolled per issue. This
+// is also the seed for the `pan` redux slice, which is what "Verify PAN"
+// actually mutates at runtime.
+export const vendorDirectory = Object.fromEntries(
+  [...vendorNames, ...nonResidentVendorNames].map((name, i) => {
+    const pan = PAN_ISSUE_VENDORS.includes(name)
+      ? (i % 2 === 0 ? '' : 'AAAC123XQ') // missing, or malformed (wrong digit/letter layout)
+      : generatePan()
+    const verification = simulatePanVerification(pan, rand)
+    return [name, {
+      vendorId: `VND-${1000 + i}`,
+      pan: verification.pan,
+      panStatus: verification.status,
+      panAadhaarLinked: verification.aadhaarLinked,
+      panIsMocked: verification.isMocked,
+      panCheckedAt: new Date(2026, Math.floor(rand() * 5), 1 + Math.floor(rand() * 28)).toISOString(),
+    }]
+  })
+)
+
 export const issues = Array.from({ length: 48 }, (_, i) => {
-  const expectedRate = [1, 2, 5, 10, 0.1][Math.floor(rand() * 5)]
-  const appliedRate = rand() > 0.5 ? expectedRate : Math.max(0, expectedRate - (1 + Math.floor(rand() * 3)))
-  const transactionAmount = Math.floor(50000 + rand() * 4500000)
-  const severity = appliedRate === expectedRate ? 'low' : appliedRate < expectedRate - 2 ? 'high' : 'medium'
+  const scenario = pickWeightedScenario(rand)
+  const gen = scenario.generate({ rand, randomFrom, vendorNames, nonResidentVendorNames, panIssueVendors: PAN_ISSUE_VENDORS, sections })
+
+  const expectedRate = gen.expectedRateOverride ?? [1, 2, 5, 10, 0.1][Math.floor(rand() * 5)]
+  const appliedRate = gen.appliedRateOverride ?? (rand() > 0.5 ? expectedRate : Math.max(0, expectedRate - (1 + Math.floor(rand() * 3))))
+  const baseAmount = Math.floor(50000 + rand() * 4500000)
+  const tdsAmount = gen.tdsAmountOverride ?? Math.round((baseAmount * appliedRate) / 100)
+  const source = rand() > 0.35 ? 'GL' : 'PO'
   const statusPool = ['open', 'in_review', 'resolved', 'rejected']
+
+  const caseObj = { vendor: gen.vendor, section: gen.section, expectedRate, appliedRate, baseAmount, tdsAmount, extra: gen.extra }
+  const issueDetail = scenario.buildMessage(caseObj)
+  const recommendedAction = scenario.buildAction(caseObj)
+
+  const vendorInfo = vendorDirectory[gen.vendor]
+
   return {
     id: `ISS-${String(2400 + i).padStart(5, '0')}`,
-    vendor: randomFrom(vendorNames),
-    vendorId: `VND-${1000 + Math.floor(rand() * 20)}`,
-    section: randomFrom(sections),
-    transactionAmount,
+    docNo: source === 'GL' ? String(6000000000 + Math.floor(rand() * 100)) : 'N/A',
+    vendor: gen.vendor,
+    vendorId: vendorInfo.vendorId,
+    vendorPan: vendorInfo.pan || '—',
+    section: gen.section,
+    source,
+    transactionAmount: baseAmount,
+    baseAmount,
+    tdsAmount,
     expectedRate,
     appliedRate,
-    taxImpact: Math.round((transactionAmount * (expectedRate - appliedRate)) / 100),
-    severity,
+    taxImpact: Math.round((baseAmount * (expectedRate - appliedRate)) / 100),
+    issueType: scenario.id,
+    issueTypeLabel: scenario.label,
+    category: scenario.category,
+    isViolation: scenario.isViolation,
+    severity: scenario.severity,
     status: randomFrom(statusPool),
     date: new Date(2026, Math.floor(rand() * 5), 1 + Math.floor(rand() * 28)).toISOString(),
-    description: `TDS deducted at ${appliedRate}% against the applicable rate of ${expectedRate}% under Section ${randomFrom(sections)}, resulting in a short deduction flagged during automated reconciliation.`,
-    suggestedCorrection: `Recompute deduction at ${expectedRate}% and file a correction statement for the affected quarter to reconcile the shortfall.`,
+    description: issueDetail,
+    suggestedCorrection: recommendedAction,
+    issueDetail,
+    recommendedAction,
   }
 })
 
@@ -52,7 +114,7 @@ export const vendors = vendorNames.map((name, i) => {
   return {
     id: `VND-${1000 + i}`,
     name,
-    pan: `AAAC${String.fromCharCode(65 + Math.floor(rand() * 26))}${1000 + Math.floor(rand() * 9000)}${String.fromCharCode(65 + Math.floor(rand() * 26))}`,
+    pan: vendorDirectory[name].pan || '—',
     section: randomFrom(sections),
     threshold,
     currentAmount,
@@ -62,29 +124,37 @@ export const vendors = vendorNames.map((name, i) => {
   }
 })
 
-const timelineStages = ['Original Entry', 'Suggested Correction', 'Approved', 'Applied']
-
-export const corrections = Array.from({ length: 24 }, (_, i) => {
-  const statusPool = ['pending', 'approved', 'rejected', 'applied']
-  const status = randomFrom(statusPool)
-  const stageIndex = status === 'pending' ? 1 : status === 'rejected' ? 2 : status === 'approved' ? 2 : 3
-  return {
-    id: `COR-${String(3100 + i).padStart(5, '0')}`,
-    vendor: randomFrom(vendorNames),
-    section: randomFrom(sections),
-    originalEntry: `₹${(10000 + Math.floor(rand() * 400000)).toLocaleString('en-IN')} @ ${[1, 2, 5][Math.floor(rand() * 3)]}%`,
-    suggestedEntry: `₹${(10000 + Math.floor(rand() * 400000)).toLocaleString('en-IN')} @ ${[2, 5, 10][Math.floor(rand() * 3)]}%`,
-    reviewer: randomFrom(['Anita Rao', 'Karthik Iyer', 'Priya Menon', 'Suresh Nair', 'Divya Krishnan']),
-    status,
-    taxImpact: Math.floor(2000 + rand() * 80000),
-    date: new Date(2026, Math.floor(rand() * 5), 1 + Math.floor(rand() * 28)).toISOString(),
-    timeline: timelineStages.map((stage, idx) => ({
-      stage,
-      completed: idx <= stageIndex,
-      date: idx <= stageIndex ? new Date(2026, Math.floor(rand() * 5), 1 + Math.floor(rand() * 28)).toLocaleDateString('en-IN') : undefined,
-    })),
-  }
-})
+// GL Correction Audit Trail — derived from actually-resolved issues (the
+// same "Corrected" issues shown on the Issues page), not a separate
+// disconnected mock. Every resolved, GL-sourced issue where the correct
+// rate exceeds what was applied implies a real three-posting GL trail:
+// the original (wrong) entry, a reversal of it, and a correction entry at
+// the right rate — which is exactly what needs to be deposited as a
+// shortfall.
+export const glCorrections = issues
+  .filter((issue) => issue.status === 'resolved' && issue.source === 'GL')
+  .map((issue, i) => {
+    const wrongTds = issue.tdsAmount
+    const correctTds = Math.round((issue.baseAmount * issue.expectedRate) / 100)
+    const originalDate = new Date(issue.date)
+    const correctionDate = new Date(originalDate)
+    correctionDate.setDate(correctionDate.getDate() + 30 + Math.floor(rand() * 150))
+    return {
+      id: issue.id,
+      vendor: issue.vendor,
+      section: issue.section,
+      originalDoc: issue.docNo,
+      reversalDoc: String(6100000000 + i),
+      correctionDoc: String(6200000000 + i),
+      originalDate: originalDate.toISOString(),
+      correctionDate: correctionDate.toISOString(),
+      baseAmount: issue.baseAmount,
+      wrongTds,
+      correctTds,
+      shortfall: correctTds - wrongTds,
+    }
+  })
+  .filter((c) => c.shortfall > 0)
 
 export const reports = [
   { id: 'RPT-01', name: 'Compliance Summary', type: 'Summary', description: 'A consolidated view of compliance health across all sections and vendors for the selected period.', lastGenerated: '2 hours ago', period: 'FY 2025-26, Q4' },

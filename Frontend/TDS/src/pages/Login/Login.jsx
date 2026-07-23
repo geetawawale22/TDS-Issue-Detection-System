@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { Eye, EyeOff, AlertCircle, ShieldCheck } from 'lucide-react'
+import { Eye, EyeOff, AlertCircle } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { isValidEmail } from '@/utils/utils'
+import mahindraLogo from '@/assets/mahindra-logo.png'
 import './Login.css'
 
 function validate(values) {
@@ -50,8 +51,8 @@ export default function Login() {
     <div className="auth-page">
       <div className="auth-side-panel">
         <div className="auth-brand">
-          <div className="auth-brand-icon">
-            <ShieldCheck size={28} strokeWidth={2.3} color="#fff" />
+          <div className="auth-brand-logo-card">
+            <img src={mahindraLogo} alt="Mahindra" className="auth-brand-logo" />
           </div>
           <h2 className="auth-brand-name">TDS Intelligence</h2>
           <p className="auth-brand-sub">Compliance Platform</p>

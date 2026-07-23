@@ -1,35 +1,32 @@
 import { useState } from 'react'
-import { Clock, CheckCircle2, XCircle, IndianRupee, Download, X } from 'lucide-react'
+import { Download, ChevronDown, ChevronRight, Circle, Undo2, CheckCircle2 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
-import StatusBadge, { correctionStatusToTone } from '@/components/Common/StatusBadge'
-import Timeline from '@/components/Common/Timeline'
-import { corrections } from '@/data/mockData'
-import { formatCurrency, formatStatusLabel } from '@/utils/utils'
+import { glCorrections } from '@/data/mockData'
+import { formatCurrency, formatDate } from '@/utils/utils'
 import '@/components/Common/Common.css'
 import './CorrectionCenter.css'
 
 export default function CorrectionCenter() {
-  const [selected, setSelected] = useState(corrections[0])
+  const [expandedId, setExpandedId] = useState(null)
 
-  const pending   = corrections.filter((c) => c.status === 'pending')
-  const approved  = corrections.filter((c) => c.status === 'approved' || c.status === 'applied')
-  const rejected  = corrections.filter((c) => c.status === 'rejected')
-  const taxImpact = corrections.reduce((s, c) => s + c.taxImpact, 0)
-
-  const summaryCards = [
-    { label: 'Pending',    value: pending.length.toString(),  icon: Clock,        tone: 'warning' },
-    { label: 'Approved',   value: approved.length.toString(), icon: CheckCircle2, tone: 'success' },
-    { label: 'Rejected',   value: rejected.length.toString(), icon: XCircle,      tone: 'danger'  },
-    { label: 'Tax Impact', value: formatCurrency(taxImpact),  icon: IndianRupee,  tone: 'default' },
-  ]
+  const totalShortfall = glCorrections.reduce((sum, c) => sum + c.shortfall, 0)
 
   const columns = [
-    { key: 'id',             header: 'ID',       render: (r) => <span className="font-mono" style={{ fontSize: 11 }}>{r.id}</span> },
-    { key: 'vendor',         header: 'Vendor',   render: (r) => <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</span> },
-    { key: 'originalEntry',  header: 'Original', render: (r) => <span className="font-mono" style={{ fontSize: 11 }}>{r.originalEntry}</span> },
-    { key: 'suggestedEntry', header: 'Suggested',render: (r) => <span className="font-mono" style={{ fontSize: 11, color: 'var(--color-success)' }}>{r.suggestedEntry}</span> },
-    { key: 'reviewer',       header: 'Reviewer', render: (r) => <span style={{ fontSize: 12 }}>{r.reviewer}</span> },
-    { key: 'status',         header: 'Status',   render: (r) => <StatusBadge label={formatStatusLabel(r.status)} tone={correctionStatusToTone(r.status)} /> },
+    { key: 'vendor', header: 'Vendor', render: (r) => (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500, fontSize: 12.5 }}>
+        {expandedId === r.id ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {r.vendor}
+      </div>
+    )},
+    { key: 'section',        header: 'Section',                  render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
+    { key: 'originalDoc',     header: 'Original Doc',             render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.originalDoc}</span> },
+    { key: 'reversalDoc',     header: 'Reversal Doc',             render: (r) => <span className="font-mono" style={{ fontSize: 11.5, color: '#B45309' }}>{r.reversalDoc}</span> },
+    { key: 'correctionDoc',   header: 'Correction Doc',           render: (r) => <span className="font-mono" style={{ fontSize: 11.5, color: '#059669' }}>{r.correctionDoc}</span> },
+    { key: 'originalDate',    header: 'Original Date',            render: (r) => <span style={{ fontSize: 11.5 }}>{formatDate(r.originalDate)}</span> },
+    { key: 'correctionDate',  header: 'Correction Date',          render: (r) => <span style={{ fontSize: 11.5 }}>{formatDate(r.correctionDate)}</span> },
+    { key: 'wrongTds',        header: 'Wrong TDS (₹)',            render: (r) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-danger)', fontWeight: 600 }}>{formatCurrency(r.wrongTds)}</span> },
+    { key: 'correctTds',      header: 'Correct TDS (₹)',          render: (r) => <span className="font-mono" style={{ fontSize: 11.5, color: '#059669', fontWeight: 600 }}>{formatCurrency(r.correctTds)}</span> },
+    { key: 'shortfall',       header: 'Shortfall to Deposit (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 12, color: 'var(--color-danger)', fontWeight: 700 }}>{formatCurrency(r.shortfall)}</span> },
   ]
 
   return (
@@ -45,73 +42,67 @@ export default function CorrectionCenter() {
         <button className="btn btn-outline"><Download size={14} />Export</button>
       </div>
 
-      <div className="summary-grid-4">
-        {summaryCards.map((c) => (
-          <div key={c.label} className="kpi-card">
-            <div className="kpi-icon-row">
-              <span className="kpi-label">{c.label}</span>
-              <div className={`kpi-icon-box ${c.tone}`}><c.icon size={14} /></div>
-            </div>
-            <span className="kpi-value" style={{ fontSize: 18 }}>{c.value}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="correction-split">
-        <div className="table-card">
-          <div className="table-card-header">
-            <div>
-              <div className="table-card-title">Correction Table</div>
-              <div className="table-card-sub">Click a row to view the correction timeline</div>
+      <div className="table-card">
+        <div className="table-card-header">
+          <div>
+            <div className="table-card-title">GL Correction Audit Trail</div>
+            <div className="table-card-sub">
+              <strong>{glCorrections.length}</strong> correction{glCorrections.length === 1 ? '' : 's'} found · Total additional TDS to deposit: <strong className="correction-total-shortfall">{formatCurrency(totalShortfall)}</strong>
             </div>
           </div>
-          <DataTable columns={columns} data={corrections} onRowClick={(row) => setSelected(row)} pageSize={9} />
         </div>
 
-        <div className="correction-detail-panel">
-          {selected ? (
-            <>
-              <div className="correction-detail-header">
-                <div style={{ minWidth: 0 }}>
-                  <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{selected.id}</div>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--color-text)', margin: '2px 0 6px' }}>{selected.vendor}</div>
-                  <StatusBadge label={formatStatusLabel(selected.status)} tone={correctionStatusToTone(selected.status)} />
-                </div>
-                <button className="issue-drawer-close" onClick={() => setSelected(null)}><X size={14} /></button>
-              </div>
-
-              <div className="correction-detail-body">
-                <div className="issue-drawer-section-title">Correction Timeline</div>
-                <Timeline stages={selected.timeline} />
-
-                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
-                  {[
-                    { label: 'Original Entry',  value: selected.originalEntry,  color: '' },
-                    { label: 'Suggested Entry', value: selected.suggestedEntry, color: 'color: var(--color-success)' },
-                    { label: 'Tax Impact',      value: formatCurrency(selected.taxImpact), bold: true },
-                    { label: 'Reviewer',        value: selected.reviewer },
-                  ].map(({ label, value, bold }) => (
-                    <div key={label} className="issue-drawer-row">
-                      <span className="issue-drawer-row-label">{label}</span>
-                      <span className={`issue-drawer-row-value ${bold ? 'font-bold' : ''}`}>{value}</span>
-                    </div>
-                  ))}
-                </div>
-
-                {selected.status === 'pending' && (
-                  <div className="correction-actions">
-                    <button className="btn btn-danger btn-sm" style={{ flex: 1 }}>Reject</button>
-                    <button className="btn btn-primary btn-sm" style={{ flex: 1 }}>Approve</button>
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <div style={{ padding: 32, textAlign: 'center', fontSize: 13, color: 'var(--color-text-muted)' }}>
-              Select a correction to view its timeline.
+        <DataTable
+          columns={columns}
+          data={glCorrections}
+          onRowClick={(row) => setExpandedId((id) => (id === row.id ? null : row.id))}
+          pageSize={12}
+          expandedRowKey={expandedId}
+          renderExpandedRow={(row) => (
+            <div className="audit-subtable-wrap">
+              <table className="audit-subtable">
+                <thead>
+                  <tr>
+                    <th>Entry Type</th>
+                    <th>Doc No.</th>
+                    <th>Date</th>
+                    <th>Base Amount (₹)</th>
+                    <th>TDS (₹)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="audit-subtable-row audit-subtable-row--original">
+                    <td><span className="audit-entry-type"><Circle size={8} fill="currentColor" />Original</span></td>
+                    <td className="font-mono">{row.originalDoc}</td>
+                    <td>{formatDate(row.originalDate)}</td>
+                    <td className="font-mono">{formatCurrency(row.baseAmount)}</td>
+                    <td className="font-mono">{formatCurrency(row.wrongTds)}</td>
+                  </tr>
+                  <tr className="audit-subtable-row audit-subtable-row--reversal">
+                    <td><span className="audit-entry-type"><Undo2 size={12} />Reversal</span></td>
+                    <td className="font-mono">{row.reversalDoc}</td>
+                    <td>{formatDate(row.correctionDate)}</td>
+                    <td className="font-mono">−{formatCurrency(row.baseAmount)}</td>
+                    <td className="font-mono">+{formatCurrency(row.wrongTds)}</td>
+                  </tr>
+                  <tr className="audit-subtable-row audit-subtable-row--correction">
+                    <td><span className="audit-entry-type"><CheckCircle2 size={12} />Correction</span></td>
+                    <td className="font-mono">{row.correctionDoc}</td>
+                    <td>{formatDate(row.correctionDate)}</td>
+                    <td className="font-mono">{formatCurrency(row.baseAmount)}</td>
+                    <td className="font-mono">{formatCurrency(row.correctTds)}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           )}
-        </div>
+          emptyState={
+            <div className="empty-state">
+              <div className="empty-state-title">No corrections found</div>
+              <div className="empty-state-desc">Resolved issues with a rate shortfall will appear here once posted to the GL.</div>
+            </div>
+          }
+        />
       </div>
     </div>
   )
