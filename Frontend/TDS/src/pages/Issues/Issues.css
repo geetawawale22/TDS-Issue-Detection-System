@@ -36,7 +36,7 @@
 .issue-type-cell svg { flex-shrink: 0; }
 .issue-type-text { overflow: hidden; text-overflow: ellipsis; }
 
-.issue-type-cell--high   { color: #991B1B; }
+.issue-type-cell--high   { color: var(--color-primary-dark); }
 .issue-type-cell--medium { color: #92400E; }
 .issue-type-cell--low    { color: #065F46; }
 
@@ -55,17 +55,6 @@
   font-size: 10.5px;
   font-weight: 600;
   color: #059669;
-}
-
-/* ── Details column — one-line truncated preview of the issue detail ── */
-.issue-details-preview {
-  display: block;
-  font-size: 12px;
-  color: var(--color-text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 260px;
 }
 
 /* ── Summary strip ─────────────────────────────────────── */
@@ -109,3 +98,9 @@
 .issues-summary-card--danger  svg { color: var(--color-danger); }
 .issues-summary-card--warning svg { color: #D97706; }
 .issues-summary-card--success svg { color: #059669; }
+
+.issues-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

@@ -1,9 +1,22 @@
 export function formatCurrency(amount) {
+  const value = Number(amount)
+  if (!Number.isFinite(value)) {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(0)
+  }
+
+  // Keep exact paise when present (e.g. 45437.78); whole rupees stay without .00
+  const hasDecimals = Math.abs(value % 1) > 1e-9
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    maximumFractionDigits: 0,
-  }).format(amount)
+    minimumFractionDigits: hasDecimals ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(value)
 }
 
 export function formatDate(isoString) {

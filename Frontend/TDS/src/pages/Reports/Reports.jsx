@@ -1,8 +1,11 @@
 import { useState } from 'react'
+import { useSelector } from 'react-redux'
 import {
   FileBarChart, FileSpreadsheet, Eye, Download, ShieldAlert,
   Gauge, ClipboardCheck, CalendarRange, Search,
 } from 'lucide-react'
+import LiveDataBadge from '@/components/Common/LiveDataBadge'
+import { selectDashboardKpis, selectIsLive } from '@/redux/slices/issuesSlice'
 import { reports } from '@/data/mockData'
 import '@/components/Common/Common.css'
 import './Reports.css'
@@ -25,11 +28,22 @@ const typeColors = {
 
 export default function Reports() {
   const [search, setSearch] = useState('')
+  const isLive = useSelector(selectIsLive)
+  const kpis = useSelector(selectDashboardKpis)
+  const fileName = useSelector((s) => s.issues.uploadMeta?.fileName)
 
   const filtered = reports.filter((r) =>
     r.name.toLowerCase().includes(search.toLowerCase()) ||
     r.type.toLowerCase().includes(search.toLowerCase())
-  )
+  ).map((r) => {
+    if (!isLive) return r
+    return {
+      ...r,
+      lastGenerated: 'Just now',
+      period: fileName ? `SAP · ${fileName}` : 'Latest SAP upload',
+      description: `${r.description} Live run: ${kpis.issuesFound.toLocaleString()} issues across ${Number(kpis.transactions).toLocaleString()} transactions.`,
+    }
+  })
 
   return (
     <div>
@@ -41,14 +55,17 @@ export default function Reports() {
           </div>
           <h1 className="page-title">Reports</h1>
         </div>
-        <div className="reports-search-wrapper">
-          <Search size={14} className="reports-search-icon" />
-          <input
-            className="filter-input reports-search"
-            placeholder="Search reports…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+        <div className="issues-header-actions">
+          <LiveDataBadge />
+          <div className="reports-search-wrapper">
+            <Search size={14} className="reports-search-icon" />
+            <input
+              className="filter-input reports-search"
+              placeholder="Search reports…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
         </div>
       </div>
 
@@ -80,13 +97,13 @@ export default function Reports() {
                   <span className="font-mono">{report.lastGenerated}</span>
                 </div>
                 <div className="report-actions">
-                  <button className="btn btn-outline btn-sm report-action-btn">
+                  <button className="btn btn-outline btn-sm report-action-btn" type="button">
                     <Eye size={12} />View
                   </button>
-                  <button className="btn btn-outline btn-sm report-action-btn">
+                  <button className="btn btn-outline btn-sm report-action-btn" type="button">
                     <Download size={12} />PDF
                   </button>
-                  <button className="btn btn-outline btn-sm report-action-btn">
+                  <button className="btn btn-outline btn-sm report-action-btn" type="button">
                     <FileSpreadsheet size={12} />Excel
                   </button>
                 </div>

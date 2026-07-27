@@ -1,7 +1,7 @@
 /* ── Dashboard Welcome Banner ─────────────────────────── */
 .dashboard-banner {
   border-radius: var(--border-radius);
-  background: linear-gradient(135deg, #7a1616 0%, #991B1B 60%, #b52020 100%);
+  background: linear-gradient(135deg, #7A0E1F 0%, #E01330 60%, #FF4B60 100%);
   padding: 14px 18px;
   margin-bottom: 12px;
   position: relative;

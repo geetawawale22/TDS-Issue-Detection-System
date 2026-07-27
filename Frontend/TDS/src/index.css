@@ -1,12 +1,12 @@
 /* ── Global CSS Variables ─────────────────────────────────────────────────── */
 :root {
-  /* Colors */
-  --color-primary:       #991B1B;
-  --color-primary-dark:  #7a1616;
-  --color-primary-light: #fdf2f2;
-  --color-primary-50:    #fef2f2;
-  --color-primary-100:   #fee2e2;
-  --color-primary-700:   #b91c1c;
+  /* Colors — Mahindra red */
+  --color-primary:       #E01330;
+  --color-primary-dark:  #B10F26;
+  --color-primary-light: #FFF1F2;
+  --color-primary-50:    #FFF1F2;
+  --color-primary-100:   #FFDBDF;
+  --color-primary-700:   #B10F26;
 
   --color-bg:            #F8FAFC;
   --color-surface:       #ffffff;

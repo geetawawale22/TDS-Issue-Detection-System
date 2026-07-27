@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo } from 'react'
+import { Fragment, useState, useMemo, useEffect } from 'react'
 import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import './Common.css'
 
@@ -27,6 +27,12 @@ export default function DataTable({
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize))
   const currentPage = Math.min(page, totalPages)
+
+  // Reset to page 1 when the dataset / filters change
+  useEffect(() => {
+    setPage(1)
+  }, [data])
+
   const pageData = sorted.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
   function handleSort(key) {

@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutGrid, AlertTriangle, Gauge, GitPullRequestArrow,
@@ -26,6 +28,23 @@ export default function Sidebar() {
   const displayName = user?.name ?? 'User'
   const displayRole = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Viewer'
 
+  // Collapsed nav items only show an icon, so on hover/focus we flyout the
+  // label. Rendered via a portal on document.body (position: fixed) rather
+  // than an absolutely-positioned child, because .sidebar-nav scrolls
+  // vertically (overflow-y: auto), which per the CSS overflow spec forces
+  // overflow-x to clip too — an in-place tooltip would be cut off at the
+  // sidebar's right edge instead of floating over the page content.
+  const [tooltip, setTooltip] = useState(null)
+
+  function showTooltip(e, label) {
+    if (!collapsed) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    setTooltip({ label, top: rect.top + rect.height / 2, left: rect.right + 12 })
+  }
+  function hideTooltip() {
+    setTooltip(null)
+  }
+
   return (
     <div className="sidebar">
       {/* Logo */}
@@ -47,10 +66,14 @@ export default function Sidebar() {
           <NavLink
             key={item.path}
             to={item.path}
-            title={collapsed ? item.label : undefined}
+            aria-label={collapsed ? item.label : undefined}
             className={({ isActive }) =>
               `sidebar-nav-item${isActive ? ' active' : ''}${collapsed ? ' collapsed' : ''}`
             }
+            onMouseEnter={(e) => showTooltip(e, item.label)}
+            onMouseLeave={hideTooltip}
+            onFocus={(e) => showTooltip(e, item.label)}
+            onBlur={hideTooltip}
           >
             {({ isActive }) => (
               <>
@@ -62,6 +85,13 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+
+      {collapsed && tooltip && createPortal(
+        <div className="sidebar-tooltip-portal" style={{ top: tooltip.top, left: tooltip.left }}>
+          {tooltip.label}
+        </div>,
+        document.body,
+      )}
 
       {/* Collapse toggle */}
       <button

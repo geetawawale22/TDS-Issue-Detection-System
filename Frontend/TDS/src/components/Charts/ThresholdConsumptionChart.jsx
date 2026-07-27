@@ -1,11 +1,14 @@
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, ReferenceLine } from 'recharts'
-import { thresholdConsumptionTrend } from '@/data/mockData'
+import { useSelector } from 'react-redux'
+import { selectThresholdConsumptionTrend } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
 export default function ThresholdConsumptionChart() {
+  const data = useSelector(selectThresholdConsumptionTrend)
+
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <AreaChart data={thresholdConsumptionTrend} margin={{ top: 2, right: 4, left: -20, bottom: 0 }}>
+      <AreaChart data={data} margin={{ top: 2, right: 4, left: -20, bottom: 0 }}>
         <defs>
           <linearGradient id="consumptionGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.2} />

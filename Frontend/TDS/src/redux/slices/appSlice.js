@@ -47,6 +47,9 @@ const appSlice = createSlice({
     setLastSyncTime(state, action) {
       state.lastSyncTime = action.payload
     },
+    setDataSourceLabel(state, action) {
+      state.dataSource = action.payload
+    },
     setAvailableCompanyCodes(state, action) {
       state.availableCompanyCodes = action.payload
       if (!action.payload.includes(state.selectedCompanyCode)) {
@@ -69,7 +72,7 @@ const appSlice = createSlice({
 })
 
 export const {
-  toggleSidebar, setSidebarCollapsed, setSyncStatus, setLastSyncTime,
+  toggleSidebar, setSidebarCollapsed, setSyncStatus, setLastSyncTime, setDataSourceLabel,
   setAvailableCompanyCodes, setSelectedCompanyCode, clearCompanyCodes,
 } = appSlice.actions
 export default appSlice.reducer

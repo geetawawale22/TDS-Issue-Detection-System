@@ -1,11 +1,14 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { topVendorsWithIssues } from '@/data/mockData'
+import { useSelector } from 'react-redux'
+import { selectTopVendors } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
 export default function TopVendorsChart() {
+  const data = useSelector(selectTopVendors)
+
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <BarChart data={topVendorsWithIssues} layout="vertical" margin={{ top: 2, right: 12, left: 8, bottom: 0 }}>
+      <BarChart data={data} layout="vertical" margin={{ top: 2, right: 12, left: 8, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E5E7EB" />
         <XAxis type="number" tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />
         <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: '#64748B', fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} width={90} />

@@ -4,7 +4,7 @@ from hashlib import sha256
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from core.dependencies import require_admin
+from core.dependencies import require_admin, get_current_user
 from db.database import get_db
 from db.models import User, PasswordSetupToken
 from schemas.auth import ForgotPasswordRequest, LoginRequest,MessageResponse,ResetPasswordRequest,TokenResponse
@@ -50,6 +50,35 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         full_name=user.full_name,
     )
 
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str
+
+
+@router.get("/me", response_model=UserOut)
+def read_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Returns the logged-in user's own profile — any role, unlike /admin/users/*."""
+    db.refresh(current_user)
+    return current_user
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me(
+    payload: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Self-service profile edit. Only full_name is editable here — role,
+    company codes, and active status are admin-managed (see api/admin.py)."""
+    full_name = payload.full_name.strip()
+    if not full_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Full name is required")
+
+    current_user.full_name = full_name
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 
 
 class SetPasswordRequest(BaseModel):

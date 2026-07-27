@@ -1,10 +1,16 @@
 import { useMemo, useState } from 'react'
+import { useSelector } from 'react-redux'
 import { AlertOctagon, Gauge, ShieldCheck, Download } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { thresholdStatusToTone } from '@/components/Common/StatusBadge'
 import ProgressBar from '@/components/Common/ProgressBar'
 import ThresholdConsumptionChart from '@/components/Charts/ThresholdConsumptionChart'
-import { vendors, thresholdSectionBreakdown } from '@/data/mockData'
+import LiveDataBadge from '@/components/Common/LiveDataBadge'
+import {
+  selectThresholdVendors,
+  selectThresholdSectionBreakdown,
+  selectIsLive,
+} from '@/redux/slices/issuesSlice'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import '@/components/Common/Common.css'
@@ -12,6 +18,9 @@ import './ThresholdMonitoring.css'
 
 export default function ThresholdMonitoring() {
   const [search, setSearch] = useState('')
+  const vendors = useSelector(selectThresholdVendors)
+  const thresholdSectionBreakdown = useSelector(selectThresholdSectionBreakdown)
+  const isLive = useSelector(selectIsLive)
 
   const exceeded = vendors.filter((v) => v.status === 'exceeded')
   const near      = vendors.filter((v) => v.status === 'near')
@@ -19,7 +28,7 @@ export default function ThresholdMonitoring() {
 
   const filtered = useMemo(
     () => vendors.filter((v) => v.name.toLowerCase().includes(search.toLowerCase())),
-    [search]
+    [search, vendors],
   )
 
   const summaryCards = [
@@ -54,8 +63,17 @@ export default function ThresholdMonitoring() {
           </div>
           <h1 className="page-title">Threshold Monitoring</h1>
         </div>
-        <button className="btn btn-outline"><Download size={14} />Export</button>
+        <div className="issues-header-actions">
+          <LiveDataBadge />
+          <button className="btn btn-outline" type="button"><Download size={14} />Export</button>
+        </div>
       </div>
+
+      {isLive && (
+        <p className="sap-hint" style={{ border: '1px solid var(--color-border)', borderRadius: 8, marginBottom: 10, background: 'var(--color-surface)' }}>
+          Vendor thresholds are derived from your latest SAP upload (issue amounts by vendor + section).
+        </p>
+      )}
 
       <div className="summary-grid-3">
         {summaryCards.map((c) => (
@@ -75,7 +93,9 @@ export default function ThresholdMonitoring() {
           <div className="chart-card-header">
             <div>
               <p className="chart-title">Threshold Consumption Trend</p>
-              <p className="chart-subtitle">Average across vendors, last 6 months</p>
+              <p className="chart-subtitle">
+                {isLive ? 'From SAP upload posting months' : 'Average across vendors, last 6 months'}
+              </p>
             </div>
           </div>
           <ThresholdConsumptionChart />

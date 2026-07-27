@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDispatch } from 'react-redux'
 import toast from 'react-hot-toast'
-import { X } from 'lucide-react'
+import { X, Loader2, UserX } from 'lucide-react'
 import StatusBadge from '@/components/Common/StatusBadge'
 import authService, { updateStoredUser } from '@/services/authService'
 import { updateUser } from '@/redux/slices/authSlice'
@@ -24,6 +24,7 @@ export default function ProfileModal({ onClose }) {
   const [fullName, setFullName] = useState('')
   const [fullNameError, setFullNameError] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -43,7 +44,7 @@ export default function ProfileModal({ onClose }) {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [reloadKey])
 
   function validateFullName(value) {
     return value.trim() ? null : 'Full name is required.'
@@ -85,8 +86,23 @@ export default function ProfileModal({ onClose }) {
         </button>
         <h3 className="settings-card-title">My Profile</h3>
 
-        {loading && <div style={{ padding: '12px 0', fontSize: 12.5, color: 'var(--color-text-muted)' }}>Loading profile…</div>}
-        {loadError && <div style={{ padding: '12px 0', fontSize: 12.5, color: 'var(--color-danger)' }}>{loadError}</div>}
+        {loading && (
+          <div className="empty-state" style={{ padding: '32px 20px' }}>
+            <div className="empty-state-icon"><Loader2 size={18} className="spin" /></div>
+            <div className="empty-state-title">Loading your profile…</div>
+          </div>
+        )}
+
+        {loadError && (
+          <div className="empty-state" style={{ padding: '32px 20px' }}>
+            <div className="empty-state-icon" style={{ color: 'var(--color-danger)' }}><UserX size={18} /></div>
+            <div className="empty-state-title">Couldn't load your profile</div>
+            <div className="empty-state-desc">{loadError}</div>
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => setReloadKey((k) => k + 1)}>
+              Try again
+            </button>
+          </div>
+        )}
 
         {!loading && !loadError && profile && (
           <form onSubmit={handleSave} noValidate>

@@ -1,13 +1,16 @@
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts'
-import { complianceHealth } from '@/data/mockData'
+import { useSelector } from 'react-redux'
+import { selectComplianceHealth } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
 export default function ComplianceHealthChart() {
+  const data = useSelector(selectComplianceHealth)
+
   return (
     <ResponsiveContainer width="100%" height={200}>
       <PieChart>
         <Pie
-          data={complianceHealth}
+          data={data}
           cx="50%"
           cy="50%"
           innerRadius={55}
@@ -15,7 +18,7 @@ export default function ComplianceHealthChart() {
           paddingAngle={3}
           dataKey="value"
         >
-          {complianceHealth.map((entry, i) => (
+          {data.map((entry, i) => (
             <Cell key={i} fill={entry.color} />
           ))}
         </Pie>

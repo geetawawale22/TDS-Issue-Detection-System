@@ -1,4 +1,4 @@
-import { X, ShieldCheck, RotateCw, Loader2, CheckCheck, FileText, IdCard, ClipboardList, Lightbulb } from 'lucide-react'
+import { X, ShieldCheck, RotateCw, Loader2, CheckCheck, FileText, IdCard, Lightbulb } from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
 import StatusBadge, { severityToTone, issueStatusToTone, panStatusToTone } from './StatusBadge'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
@@ -8,15 +8,25 @@ import './Common.css'
 
 export default function IssueDrawer({ issue, open, onClose }) {
   const dispatch = useDispatch()
-  const panInfo = useSelector((s) => (issue ? s.pan[issue.vendorId] : undefined))
+  const panFromStore = useSelector((s) => (issue ? s.pan[issue.vendorId] : undefined))
+  const panInfo = panFromStore || (issue ? {
+    pan: issue.vendorPan && issue.vendorPan !== '—' ? issue.vendorPan : '',
+    status: issue.vendorPan && issue.vendorPan !== '—' ? 'Not verified' : 'Invalid Format',
+    aadhaarLinked: null,
+    checkedAt: null,
+    isMocked: true,
+    verifying: false,
+  } : undefined)
 
   function handleVerifyPan() {
     if (!issue || !panInfo || panInfo.verifying) return
-    dispatch(startVerifyPan(issue.vendorId))
+    const vendorId = issue.vendorId
+    const pan = panInfo.pan
+    dispatch(startVerifyPan(vendorId))
     // Simulate the latency of a real government PAN API round-trip.
     setTimeout(() => {
-      const result = simulatePanVerification(panInfo.pan)
-      dispatch(finishVerifyPan({ vendorId: issue.vendorId, result: { ...result, checkedAt: new Date().toISOString() } }))
+      const result = simulatePanVerification(pan)
+      dispatch(finishVerifyPan({ vendorId, result: { ...result, checkedAt: new Date().toISOString() } }))
     }, 900)
   }
 
@@ -44,6 +54,11 @@ export default function IssueDrawer({ issue, open, onClose }) {
             <div className="issue-drawer-body issue-drawer-body--horizontal">
               <div className="issue-drawer-col">
                 <div className="issue-drawer-section-title"><FileText size={13} />Issue Details</div>
+                {issue.plainEnglish && (
+                  <div className="issue-drawer-desc" style={{ marginBottom: 10 }}>
+                    {issue.plainEnglish}
+                  </div>
+                )}
                 <div className="issue-drawer-fields-card">
                   {[
                     { label: 'Issue Type',     value: issue.issueTypeLabel,                mono: false },
@@ -52,11 +67,18 @@ export default function IssueDrawer({ issue, open, onClose }) {
                     { label: 'Vendor ID',      value: issue.vendorId,                      mono: true },
                     { label: 'Section',        value: issue.section,                       mono: true },
                     { label: 'Date',           value: formatDate(issue.date),              mono: false },
-                    { label: 'Base Amount',    value: formatCurrency(issue.baseAmount),    mono: true },
-                    { label: 'TDS Amount',     value: formatCurrency(issue.tdsAmount),     mono: true },
-                    { label: 'Expected Rate',  value: `${issue.expectedRate}%`,             mono: true },
-                    { label: 'Applied Rate',   value: `${issue.appliedRate}%`,              mono: true },
-                    { label: 'Tax Impact',     value: formatCurrency(issue.taxImpact),      mono: true },
+                    ...(issue.thresholdAmount != null ? [
+                      { label: 'FY',            value: issue.financialYear || '—',         mono: true },
+                      { label: 'Txn Count',     value: String(issue.txnCount ?? '—'),      mono: true },
+                      { label: 'FY Threshold',  value: formatCurrency(issue.thresholdAmount), mono: true },
+                      { label: 'FY Cumulative', value: formatCurrency(issue.cumulativeBasic ?? issue.baseAmount), mono: true },
+                    ] : []),
+                    { label: issue.thresholdAmount != null ? 'FY Base Amount' : 'Base Amount',
+                      value: formatCurrency(issue.baseAmount), mono: true },
+                    { label: 'TDS Amount',     value: formatCurrency(Math.abs(Number(issue.tdsAmount) || 0)), mono: true },
+                    { label: 'Expected Rate',  value: issue.expectedRate == null ? '—' : `${issue.expectedRate}%`, mono: true },
+                    { label: 'Applied Rate',   value: issue.appliedRate == null ? '—' : `${issue.appliedRate}%`, mono: true },
+                    { label: 'Tax Impact',     value: formatCurrency(Math.abs(Number(issue.taxImpact) || 0)), mono: true },
                   ].map(({ label, value, mono }) => (
                     <div className="issue-drawer-row" key={label}>
                       <span className="issue-drawer-row-label">{label}</span>
@@ -103,9 +125,6 @@ export default function IssueDrawer({ issue, open, onClose }) {
                     This issue has been corrected. A reversal and corrected entry have been posted in the GL for this document.
                   </div>
                 )}
-                <div className="issue-drawer-section-title"><ClipboardList size={13} />Issue Detail</div>
-                <div className="issue-drawer-desc">{issue.issueDetail}</div>
-
                 <div className="issue-drawer-section-title"><Lightbulb size={13} />Recommended Action</div>
                 <div className="issue-drawer-desc" style={{ borderColor: 'var(--color-success-border)', background: 'var(--color-success-bg)' }}>
                   {issue.status === 'resolved' ? (

@@ -7,11 +7,13 @@ import {
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
 import IssueDrawer from '@/components/Common/IssueDrawer'
+import SapUploadPanel from '@/components/Common/SapUploadPanel'
+import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
   setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters,
+  selectActiveIssues, selectActiveVendors, selectActiveSections,
 } from '@/redux/slices/issuesSlice'
-import { issues, sections, vendorNames } from '@/data/mockData'
 import { groupedScenarioOptions } from '@/data/issueTypes'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
 import '@/components/Common/Common.css'
@@ -27,18 +29,30 @@ export default function Issues() {
   const dispatch = useDispatch()
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
-    issueTypeFilter, selectedIssueId, drawerOpen,
+    issueTypeFilter, selectedIssueId, drawerOpen, dataSource,
   } = useSelector((s) => s.issues)
 
+  const issues = useSelector(selectActiveIssues)
+  const vendorNames = useSelector(selectActiveVendors)
+  const sections = useSelector(selectActiveSections)
+
   const filtered = useMemo(() => issues.filter((issue) => {
-    if (searchQuery && !issue.vendor.toLowerCase().includes(searchQuery.toLowerCase()) && !issue.id.toLowerCase().includes(searchQuery.toLowerCase()) && !issue.docNo.toLowerCase().includes(searchQuery.toLowerCase())) return false
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase()
+      if (
+        !issue.vendor?.toLowerCase().includes(q) &&
+        !issue.id?.toLowerCase().includes(q) &&
+        !String(issue.docNo ?? '').toLowerCase().includes(q) &&
+        !String(issue.vendorId ?? '').toLowerCase().includes(q)
+      ) return false
+    }
     if (vendorFilter    !== 'all' && issue.vendor    !== vendorFilter)    return false
     if (sectionFilter   !== 'all' && issue.section   !== sectionFilter)   return false
     if (severityFilter  !== 'all' && issue.severity  !== severityFilter)  return false
     if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
     if (issueTypeFilter !== 'all' && issue.issueType !== issueTypeFilter) return false
     return true
-  }), [searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
+  }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
 
@@ -46,7 +60,7 @@ export default function Issues() {
     high: issues.filter((i) => i.severity === 'high').length,
     medium: issues.filter((i) => i.severity === 'medium').length,
     low: issues.filter((i) => i.severity === 'low').length,
-  }), [])
+  }), [issues])
 
   const columns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
@@ -74,16 +88,13 @@ export default function Issues() {
     { key: 'category', header: 'Issue Type', render: (r) => {
       const Icon = SEVERITY_ICON[r.severity] ?? AlertTriangle
       return (
-        <div className={`issue-type-cell issue-type-cell--${r.severity}`} title={r.issueTypeLabel}>
+        <div className={`issue-type-cell issue-type-cell--${r.severity}`} title={r.issueTypeLabel || r.category}>
           <Icon size={13} />
           <span className="issue-type-text">{r.category}</span>
         </div>
       )
     }},
     { key: 'severity', header: 'Severity', render: (r) => <StatusBadge label={formatStatusLabel(r.severity)} tone={severityToTone(r.severity)} /> },
-    { key: 'issueDetail', header: 'Details', render: (r) => (
-      <span className="issue-details-preview" title={r.issueDetail}>{r.issueDetail}</span>
-    )},
     { header: '', render: (r) => (
       <button className="issues-review-btn" onClick={() => dispatch(openDrawer(r.id))}>Review</button>
     )},
@@ -99,31 +110,36 @@ export default function Issues() {
           </div>
           <h1 className="page-title">Issues</h1>
         </div>
-        <button className="btn btn-outline">
-          <Download size={14} />Export
-        </button>
+        <div className="issues-header-actions">
+          <LiveDataBadge />
+          <button className="btn btn-outline" type="button">
+            <Download size={14} />Export
+          </button>
+        </div>
       </div>
+
+      <SapUploadPanel />
 
       {/* Summary strip */}
       <div className="issues-summary-grid">
         <div className="issues-summary-card issues-summary-card--danger">
           <AlertOctagon size={16} />
           <div>
-            <div className="issues-summary-value">{summary.high}</div>
+            <div className="issues-summary-value">{summary.high.toLocaleString()}</div>
             <div className="issues-summary-label">Require Immediate Action</div>
           </div>
         </div>
         <div className="issues-summary-card issues-summary-card--warning">
           <AlertTriangle size={16} />
           <div>
-            <div className="issues-summary-value">{summary.medium}</div>
+            <div className="issues-summary-value">{summary.medium.toLocaleString()}</div>
             <div className="issues-summary-label">Review Recommended</div>
           </div>
         </div>
         <div className="issues-summary-card issues-summary-card--success">
           <CheckCircle2 size={16} />
           <div>
-            <div className="issues-summary-value">{summary.low}</div>
+            <div className="issues-summary-value">{summary.low.toLocaleString()}</div>
             <div className="issues-summary-label">Informational</div>
           </div>
         </div>
@@ -145,7 +161,7 @@ export default function Issues() {
         <div className="filter-bar-controls">
           <select className="filter-select" value={vendorFilter} onChange={(e) => dispatch(setVendorFilter(e.target.value))}>
             <option value="all">All Vendors</option>
-            {vendorNames.slice(0, 12).map((v) => <option key={v} value={v}>{v}</option>)}
+            {vendorNames.slice(0, 40).map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
           <select className="filter-select" value={sectionFilter} onChange={(e) => dispatch(setSectionFilter(e.target.value))}>
             <option value="all">All Sections</option>
@@ -172,7 +188,10 @@ export default function Issues() {
       </div>
 
       <div className="table-card">
-        <div className="issues-count-label">Showing {filtered.length} issue{filtered.length === 1 ? '' : 's'}</div>
+        <div className="issues-count-label">
+          Showing {filtered.length.toLocaleString()} issue{filtered.length === 1 ? '' : 's'}
+          {dataSource === 'upload' ? ' from SAP upload' : ' (sample data)'}
+        </div>
         <DataTable
           columns={columns}
           data={filtered}
