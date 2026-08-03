@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api import auth
 from api import admin
+from api import issues
 
 app = FastAPI(title="TDS Issue Detection System")
 
@@ -15,6 +16,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(issues.router)
 
 
 @app.get("/")
@@ -29,5 +31,4 @@ def health_check():
         "service": "TDS Issue Detection System API",
         "version": "1.0.0"
     }
-
 

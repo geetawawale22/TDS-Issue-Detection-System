@@ -65,7 +65,13 @@ export default function IssueDrawer({ issue, open, onClose }) {
                     { label: 'Category',      value: issue.category,                      mono: false },
                     { label: 'Doc No.',        value: issue.docNo,                         mono: true },
                     { label: 'Vendor ID',      value: issue.vendorId,                      mono: true },
-                    { label: 'Section',        value: issue.section,                       mono: true },
+                    { label: 'Section (effective)', value: issue.section,                    mono: true },
+                    ...(issue.newSection ? [
+                      { label: 'New-law Section', value: issue.newSection,                  mono: true },
+                    ] : []),
+                    ...(issue.legacySection ? [
+                      { label: 'Legacy Section', value: issue.legacySection,                mono: true },
+                    ] : []),
                     { label: 'Date',           value: formatDate(issue.date),              mono: false },
                     ...(issue.thresholdAmount != null ? [
                       { label: 'FY',            value: issue.financialYear || '—',         mono: true },

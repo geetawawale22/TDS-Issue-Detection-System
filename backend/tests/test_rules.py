@@ -1,0 +1,138 @@
+from datetime import date
+
+from ingestion.sap_translator import _derive_vendor_category
+from rules.tds_rule_engine import (
+    _get_applicable_rate,
+    check_short_excess_tds,
+    check_pan_validity,
+    check_excess_tds_exceeds_invoice,
+)
+from rules.transaction_model import Transaction
+
+
+def _contractor_transaction(pan: str, rate: float) -> Transaction:
+    return Transaction(
+        doc_number="TEST-194C",
+        doc_type="KR",
+        posting_date=date(2026, 4, 1),
+        vendor_code="V001",
+        vendor_pan=pan,
+        vendor_category=_derive_vendor_category(pan),
+        bill_amount=100_000,
+        basic_amount=100_000,
+        tds_deducted_section="194C",
+        tds_deducted_rate=rate,
+    )
+
+
+def test_huf_pan_category_uses_individual_huf_rate_for_194c():
+    transaction = _contractor_transaction("ABCHP1234K", 1.0)
+
+    assert transaction.vendor_category == "HUF"
+    assert _get_applicable_rate(transaction) == 1.0
+    assert check_short_excess_tds(transaction) is None
+
+
+def test_firm_pan_category_uses_two_percent_rate_for_194c():
+    transaction = _contractor_transaction("ABCFA1234K", 1.0)
+
+    assert transaction.vendor_category == "Firm/Trust/AOP/Company"
+    assert _get_applicable_rate(transaction) == 2.0
+    assert check_short_excess_tds(transaction).category == "Short TDS Deducted"
+
+
+def test_missing_pan_and_non_filer_takes_the_higher_of_206aa_and_206ab():
+    """
+    Section 195 (non-resident) with a DTAA rate of 15% confirmed by
+    Mahindra as the applicable rate: 206AB would require max(2*15, 5)
+    = 30%, which is HIGHER than 206AA's flat 20%. The engine must
+    apply 30%, not stop at 206AA's 20%.
+    """
+    transaction = Transaction(
+        doc_number="TEST-195-NONFILER",
+        doc_type="KR",
+        posting_date=date(2026, 4, 1),
+        vendor_code="V002",
+        vendor_pan="",  # missing PAN
+        bill_amount=1_000_000,
+        basic_amount=1_000_000,
+        tds_deducted_section="195",
+        tds_applicable_rate=15.0,  # DTAA rate confirmed by Mahindra
+        tds_deducted_rate=20.0,   # only correct under plain 206AA
+        is_non_filer=True,
+    )
+
+    issue = check_pan_validity(transaction)
+
+    assert issue is not None
+    assert issue.category == "PAN Missing/Invalid — Short TDS Deducted"
+    assert "30" in issue.message  # required rate should be 30%, not 20%
+
+
+def test_missing_pan_without_non_filer_still_uses_plain_206aa_rate():
+    """
+    Sanity check: when the vendor is NOT a non-filer, 206AB must not
+    be considered at all — plain 206AA (20%) still governs on its own.
+    """
+    transaction = _contractor_transaction("", 20.0)
+    transaction.is_non_filer = False
+
+    issue = check_pan_validity(transaction)
+
+    assert issue is not None
+    assert issue.category == "PAN Missing/Invalid — Correctly Handled"
+
+
+def test_missing_pan_and_non_filer_where_206aa_is_still_higher():
+    """
+    For a low-rate section like 194C, 206AB's 2x rate (or 5% floor)
+    stays below 206AA's flat 20% — 206AA should still govern, and the
+    fix should not accidentally lower the required rate.
+    """
+    transaction = _contractor_transaction("", 20.0)
+    transaction.is_non_filer = True  # 2*1%=2%, floored to 5% — still < 20%
+
+    issue = check_pan_validity(transaction)
+
+    assert issue is not None
+    assert issue.category == "PAN Missing/Invalid — Correctly Handled"
+    assert "20" in issue.message
+
+
+def test_excess_tds_check_flags_when_tds_exceeds_full_invoice_amount():
+    """
+    TDS deducted (₹90,000) exceeds the full bill amount (₹80,000) —
+    structurally impossible, must be flagged regardless of rate math.
+    """
+    transaction = _contractor_transaction("ABCFA1234K", 2.0)
+    transaction.bill_amount = 80_000
+    transaction.tds_deducted_amount = 90_000
+
+    issue = check_excess_tds_exceeds_invoice(transaction)
+
+    assert issue is not None
+    assert issue.category == "Excess TDS Deducted — Exceeds Invoice Amount"
+
+
+def test_excess_tds_check_does_not_flag_normal_case():
+    """
+    TDS deducted (₹2,000 on a 2% rate) is well within the bill amount
+    (₹100,000) — this is the ordinary case and must not be flagged.
+    """
+    transaction = _contractor_transaction("ABCFA1234K", 2.0)
+    transaction.tds_deducted_amount = 2_000
+
+    assert check_excess_tds_exceeds_invoice(transaction) is None
+
+
+def test_excess_tds_check_does_not_flag_when_equal_to_bill_amount():
+    """
+    Boundary case: TDS deducted exactly equals the bill amount.
+    Not realistic in practice, but should not itself be flagged by
+    this specific structural check (it's on the boundary, not beyond it).
+    """
+    transaction = _contractor_transaction("ABCFA1234K", 2.0)
+    transaction.bill_amount = 50_000
+    transaction.tds_deducted_amount = 50_000
+
+    assert check_excess_tds_exceeds_invoice(transaction) is None

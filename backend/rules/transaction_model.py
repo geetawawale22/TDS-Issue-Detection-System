@@ -15,6 +15,7 @@ class Transaction(BaseModel):
     doc_number: str
     line_item_number: Optional[str] = None      # BUZEI — not yet confirmed by Mahindra
     doc_type: str                                 # KZ, RE, KR, AB, AC, KA etc.
+    transaction_kind: Optional[str] = None
     posting_date: date
     bill_date: Optional[date] = None
     bill_no: Optional[str] = None
@@ -29,13 +30,13 @@ class Transaction(BaseModel):
     person: Optional[str] = None
 
     # --- GL / Nature of Transaction ---
-    gl_account: str
+    gl_account: Optional[str] = None
     gl_description: Optional[str] = None
     hsn_sac_code: Optional[str] = None            # not yet confirmed by Mahindra
 
     # --- Amounts ---
     bill_amount: float
-    basic_amount: float                            # TDS calculation base (assumed GST-excluded)
+    basic_amount: Optional[float] = None          # TDS calculation base (assumed GST-excluded); may be absent in SAP extracts
     debit_credit: Optional[str] = None            # H / S
 
     # --- Flags (POC-derived logic, populated during ingestion or later confirmed by Mahindra) ---
@@ -52,7 +53,13 @@ class Transaction(BaseModel):
     tds_applicable_amount: Optional[float] = None
 
     # --- TDS Deducted (what WAS actually deducted) ---
-    tds_deducted_section: Optional[str] = None     # e.g. "194J" — actual IT Act section
+    # `tds_deducted_section` remains the legacy compatibility key used by the
+    # current YAML rule engine. The statutory/source references are preserved
+    # separately so post-1-Apr-2026 UI and audit records retain Section 393.
+    tds_raw_amount: Optional[float] = None
+    tds_deducted_section: Optional[str] = None
+    tds_legacy_section: Optional[str] = None
+    tds_new_section: Optional[str] = None          # e.g. "393(1)6(i)"
     tds_deducted_rate: Optional[float] = None      # e.g. 2.0 — actual percentage
     tds_deducted_amount: Optional[float] = None    # actual ₹ deducted — not yet confirmed by Mahindra
 
