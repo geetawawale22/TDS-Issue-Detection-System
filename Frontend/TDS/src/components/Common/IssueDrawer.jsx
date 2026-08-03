@@ -1,42 +1,18 @@
-import { X, ShieldCheck, RotateCw, Loader2, CheckCheck, FileText, IdCard, Lightbulb } from 'lucide-react'
-import { useDispatch, useSelector } from 'react-redux'
-import StatusBadge, { severityToTone, issueStatusToTone, panStatusToTone } from './StatusBadge'
-import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
-import { simulatePanVerification } from '@/data/issueTypes'
+import { X, CheckCheck, FileText, Lightbulb } from 'lucide-react'
+import StatusBadge, { severityToTone, issueStatusToTone } from './StatusBadge'
+import { getDisplayIssueType, getRecommendedAction } from '@/data/issueTypes'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import './Common.css'
 
 export default function IssueDrawer({ issue, open, onClose }) {
-  const dispatch = useDispatch()
-  const panFromStore = useSelector((s) => (issue ? s.pan[issue.vendorId] : undefined))
-  const panInfo = panFromStore || (issue ? {
-    pan: issue.vendorPan && issue.vendorPan !== '—' ? issue.vendorPan : '',
-    status: issue.vendorPan && issue.vendorPan !== '—' ? 'Not verified' : 'Invalid Format',
-    aadhaarLinked: null,
-    checkedAt: null,
-    isMocked: true,
-    verifying: false,
-  } : undefined)
-
-  function handleVerifyPan() {
-    if (!issue || !panInfo || panInfo.verifying) return
-    const vendorId = issue.vendorId
-    const pan = panInfo.pan
-    dispatch(startVerifyPan(vendorId))
-    // Simulate the latency of a real government PAN API round-trip.
-    setTimeout(() => {
-      const result = simulatePanVerification(pan)
-      dispatch(finishVerifyPan({ vendorId, result: { ...result, checkedAt: new Date().toISOString() } }))
-    }, 900)
-  }
-
   return (
-    <>
-      {open && <div className="issue-drawer-overlay" onClick={onClose} />}
-      <div className={`issue-drawer issue-drawer--${issue?.severity ?? 'medium'} ${open ? 'open' : ''}`}>
+    <div className={`issue-drawer-overlay ${open ? 'open' : ''}`} onClick={onClose}>
+      <div
+        className={`issue-drawer issue-drawer--${issue?.severity ?? 'medium'} ${open ? 'open' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         {issue ? (
           <>
-            <div className="issue-drawer-handle" />
             <div className="issue-drawer-header">
               <div style={{ minWidth: 0 }}>
                 <div className="issue-drawer-id">{issue.id}</div>
@@ -60,67 +36,58 @@ export default function IssueDrawer({ issue, open, onClose }) {
                   </div>
                 )}
                 <div className="issue-drawer-fields-card">
-                  {[
-                    { label: 'Issue Type',     value: issue.issueTypeLabel,                mono: false },
-                    { label: 'Category',      value: issue.category,                      mono: false },
-                    { label: 'Doc No.',        value: issue.docNo,                         mono: true },
-                    { label: 'Vendor ID',      value: issue.vendorId,                      mono: true },
-                    { label: 'Section (effective)', value: issue.section,                    mono: true },
-                    ...(issue.newSection ? [
-                      { label: 'New-law Section', value: issue.newSection,                  mono: true },
-                    ] : []),
-                    ...(issue.legacySection ? [
-                      { label: 'Legacy Section', value: issue.legacySection,                mono: true },
-                    ] : []),
-                    { label: 'Date',           value: formatDate(issue.date),              mono: false },
-                    ...(issue.thresholdAmount != null ? [
-                      { label: 'FY',            value: issue.financialYear || '—',         mono: true },
-                      { label: 'Txn Count',     value: String(issue.txnCount ?? '—'),      mono: true },
-                      { label: 'FY Threshold',  value: formatCurrency(issue.thresholdAmount), mono: true },
-                      { label: 'FY Cumulative', value: formatCurrency(issue.cumulativeBasic ?? issue.baseAmount), mono: true },
-                    ] : []),
-                    { label: issue.thresholdAmount != null ? 'FY Base Amount' : 'Base Amount',
-                      value: formatCurrency(issue.baseAmount), mono: true },
-                    { label: 'TDS Amount',     value: formatCurrency(Math.abs(Number(issue.tdsAmount) || 0)), mono: true },
-                    { label: 'Expected Rate',  value: issue.expectedRate == null ? '—' : `${issue.expectedRate}%`, mono: true },
-                    { label: 'Applied Rate',   value: issue.appliedRate == null ? '—' : `${issue.appliedRate}%`, mono: true },
-                    { label: 'Tax Impact',     value: formatCurrency(Math.abs(Number(issue.taxImpact) || 0)), mono: true },
-                  ].map(({ label, value, mono }) => (
-                    <div className="issue-drawer-row" key={label}>
-                      <span className="issue-drawer-row-label">{label}</span>
-                      <span className={`issue-drawer-row-value ${mono ? 'font-mono' : ''}`}>{value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="issue-drawer-col issue-drawer-col--divided">
-                <div className="issue-drawer-section-title"><IdCard size={13} />PAN Verification</div>
-                <div className="pan-verification-card">
-                  <div className="pan-verification-row">
-                    <span className="font-mono">{panInfo?.pan || '—'}</span>
-                    <StatusBadge label={panInfo?.status} tone={panStatusToTone(panInfo?.status)} />
-                  </div>
-                  <div className="issue-drawer-row">
-                    <span className="issue-drawer-row-label">Aadhaar Linked</span>
-                    <span className="issue-drawer-row-value">
-                      {panInfo?.aadhaarLinked == null ? '—' : panInfo.aadhaarLinked ? 'Yes' : 'No'}
-                    </span>
-                  </div>
-                  <div className="issue-drawer-row">
-                    <span className="issue-drawer-row-label">Checked On</span>
-                    <span className="issue-drawer-row-value">{formatDate(panInfo?.checkedAt)}</span>
-                  </div>
-                  <button className="pan-verify-btn" onClick={handleVerifyPan} disabled={panInfo?.verifying}>
-                    {panInfo?.verifying ? <Loader2 size={12} className="spin" /> : <RotateCw size={12} />}
-                    {panInfo?.verifying ? 'Verifying…' : 'Verify PAN'}
-                  </button>
-                  {panInfo?.isMocked && (
-                    <div className="pan-verification-mock-note">
-                      <ShieldCheck size={12} />
-                      Mock result — pending Mahindra's government PAN API credentials.
-                    </div>
-                  )}
+                  {(() => {
+                    const generalFields = [
+                      { label: 'Issue Type',     value: getDisplayIssueType(issue),          mono: false },
+                      { label: 'Doc No.',        value: issue.docNo,                         mono: true },
+                      { label: 'Vendor ID',      value: issue.vendorId,                      mono: true },
+                      { label: 'Section (effective)', value: issue.section,                    mono: true },
+                      ...(issue.newSection ? [
+                        { label: 'New-law Section', value: issue.newSection,                  mono: true },
+                      ] : []),
+                      ...(issue.legacySection ? [
+                        { label: 'Legacy Section', value: issue.legacySection,                mono: true },
+                      ] : []),
+                      { label: 'Date',           value: formatDate(issue.date),              mono: false },
+                      ...(issue.thresholdAmount != null ? [
+                        { label: 'FY',            value: issue.financialYear || '—',         mono: true },
+                        { label: 'Txn Count',     value: String(issue.txnCount ?? '—'),      mono: true },
+                        { label: 'FY Threshold',  value: formatCurrency(issue.thresholdAmount), mono: true },
+                        { label: 'FY Cumulative', value: formatCurrency(issue.cumulativeBasic ?? issue.baseAmount), mono: true },
+                      ] : []),
+                      { label: issue.thresholdAmount != null ? 'FY Base Amount' : 'Base Amount',
+                        value: formatCurrency(issue.baseAmount), mono: true },
+                      { label: 'TDS Amount',     value: formatCurrency(Math.abs(Number(issue.tdsAmount) || 0)), mono: true },
+                    ]
+                    const rateFields = [
+                      { label: 'Applied Rate',   value: issue.appliedRate == null ? '—' : `${issue.appliedRate}%`, mono: true },
+                      { label: 'Applied TDS Amount',
+                        value: (issue.appliedRate == null || issue.baseAmount == null) ? '—'
+                          : formatCurrency(issue.baseAmount * issue.appliedRate / 100), mono: true },
+                      { label: 'Expected Rate',  value: issue.expectedRate == null ? '—' : `${issue.expectedRate}%`, mono: true },
+                      { label: 'Expected TDS Amount',
+                        value: (issue.expectedRate == null || issue.baseAmount == null) ? '—'
+                          : formatCurrency(issue.baseAmount * issue.expectedRate / 100), mono: true },
+                    ]
+                    // Sits under the Applied/Expected TDS Amount column, not the rate column.
+                    const taxImpactRow = [null, { label: 'Tax Impact', value: formatCurrency(Math.abs(Number(issue.taxImpact) || 0)), mono: true }]
+                    const pairUp = (fields) => {
+                      const rows = []
+                      for (let i = 0; i < fields.length; i += 2) rows.push([fields[i], fields[i + 1]])
+                      return rows
+                    }
+                    const rows = [...pairUp(generalFields), ...pairUp(rateFields), taxImpactRow]
+                    return rows.map((pair, i) => (
+                      <div className="issue-drawer-row-pair" key={i}>
+                        {pair.map((field, j) => field ? (
+                          <div className="issue-drawer-row" key={field.label}>
+                            <span className="issue-drawer-row-label">{field.label}</span>
+                            <span className={`issue-drawer-row-value ${field.mono ? 'font-mono' : ''}`}>{field.value}</span>
+                          </div>
+                        ) : <div key={j} />)}
+                      </div>
+                    ))
+                  })()}
                 </div>
               </div>
 
@@ -135,7 +102,7 @@ export default function IssueDrawer({ issue, open, onClose }) {
                 <div className="issue-drawer-desc" style={{ borderColor: 'var(--color-success-border)', background: 'var(--color-success-bg)' }}>
                   {issue.status === 'resolved' ? (
                     <em>No action needed — already corrected via GL reversal.</em>
-                  ) : issue.recommendedAction}
+                  ) : getRecommendedAction(issue)}
                 </div>
               </div>
             </div>
@@ -146,6 +113,6 @@ export default function IssueDrawer({ issue, open, onClose }) {
           </div>
         )}
       </div>
-    </>
+    </div>
   )
 }

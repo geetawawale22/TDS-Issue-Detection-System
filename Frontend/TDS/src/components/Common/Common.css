@@ -284,53 +284,61 @@
   margin-top: 1px;
 }
 
-/* ── Issue Drawer ─────────────────────────────────────── */
+/* ── Issue Drawer (centered modal) ───────────────────────
+   Was a full-width bottom sheet; now a centered dialog like the app's
+   other modals (ProfileModal, user modals) for a more focused, less
+   "drawer-y" feel. The overlay is the flex-centering container and the
+   actual card is its child, so centering is trivial — stopPropagation
+   on the card (in JSX) keeps clicks inside it from closing via the
+   overlay's onClick. */
 .issue-drawer-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.3);
-  z-index: 100;
+  background: rgba(17, 24, 39, 0.45);
   backdrop-filter: blur(2px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
 }
 
-/* Horizontal bottom sheet — slides up from the bottom, full width, rather
-   than a narrow vertical panel sliding in from the side. */
+.issue-drawer-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .issue-drawer {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  width: 100%;
-  max-height: 68vh;
+  position: relative;
+  width: min(1080px, 100%);
+  max-height: min(760px, 88vh);
   background: var(--color-surface);
-  border-top: 1px solid var(--color-border);
-  border-radius: 16px 16px 0 0;
-  box-shadow: 0 -12px 32px -8px rgba(17, 24, 39, 0.22), var(--shadow-lg);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg), 0 24px 64px -12px rgba(17, 24, 39, 0.35);
   z-index: 101;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transform: translateY(100%);
-  transition: transform 280ms cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
+  transform: scale(0.96) translateY(8px);
+  transition: opacity 180ms ease, transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
 }
 
 .issue-drawer.open {
-  transform: translateY(0);
-}
-
-.issue-drawer-handle {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--color-border);
-  margin: 10px auto 0;
-  flex-shrink: 0;
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
 }
 
 .issue-drawer-header {
   position: relative;
-  padding: 14px 28px 16px 32px;
+  padding: 18px 28px 16px 32px;
   border-bottom: 1px solid var(--color-border);
+  border-radius: 16px 16px 0 0;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -393,16 +401,15 @@
   display: grid;
   /* minmax(0, Nfr), not a bare Nfr — a bare fr track's minimum is its
      content's min-content size, so a long wrapped value in one column
-     silently steals width from the others and the three columns end up
+     silently steals width from the other and the two columns end up
      visibly uneven. minmax(0, …) pins the floor to 0 so the fr ratio is
      what actually renders. */
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.3fr);
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
   gap: 0 32px;
   align-items: start;
 }
 
-@media (max-width: 1100px) { .issue-drawer-body--horizontal { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
-@media (max-width: 720px)  { .issue-drawer-body--horizontal { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 720px) { .issue-drawer-body--horizontal { grid-template-columns: minmax(0, 1fr); } }
 
 .issue-drawer-col { min-width: 0; }
 
@@ -415,11 +422,35 @@
   .issue-drawer-col--divided { border-left: none; padding-left: 0; border-top: 1px solid var(--color-border); padding-top: 16px; margin-top: 4px; }
 }
 
+/* Two-column field grid, not a single vertical stack — with the PAN
+   Verification column removed, Issue Details is the only field list left,
+   and stacking ~11+ rows in one column was tall enough to force the whole
+   drawer to scroll vertically. Pairing them side by side roughly halves
+   the height.
+   Rows are explicit pairs (.issue-drawer-row-pair), not one big auto-flow
+   grid, so specific fields (e.g. Applied Rate + Applied TDS Amount) always
+   land on the same row regardless of how many fields precede them. */
 .issue-drawer-fields-card {
+  display: flex;
+  flex-direction: column;
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--border-radius-sm);
   padding: 2px 12px;
+}
+
+.issue-drawer-row-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 20px;
+}
+
+@media (max-width: 480px) {
+  .issue-drawer-row-pair { grid-template-columns: 1fr; }
+}
+
+.issue-drawer-row-pair:last-child .issue-drawer-row {
+  border-bottom: none;
 }
 
 .corrected-banner {
@@ -510,27 +541,12 @@
   line-height: 1.4;
 }
 
-.pan-verify-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  align-self: flex-start;
-  height: 26px;
-  padding: 0 10px;
-  margin-top: 2px;
-  border-radius: var(--border-radius-sm);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--color-text);
-  cursor: pointer;
-  transition: background 150ms, border-color 150ms;
+.pan-verification-bulk-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--color-text-subtle);
+  line-height: 1.4;
 }
-
-.pan-verify-btn:hover:not(:disabled) { background: var(--color-bg); border-color: #CBD5E1; }
-.pan-verify-btn:disabled { opacity: 0.7; cursor: not-allowed; }
 
 .spin { animation: pan-spin 0.8s linear infinite; }
 

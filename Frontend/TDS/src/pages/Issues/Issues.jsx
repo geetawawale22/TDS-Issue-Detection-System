@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
-  AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck,
+  AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
@@ -14,7 +15,8 @@ import {
   setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters,
   selectActiveIssues, selectActiveVendors, selectActiveSections,
 } from '@/redux/slices/issuesSlice'
-import { groupedScenarioOptions } from '@/data/issueTypes'
+import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
+import { groupedScenarioOptions, getDisplayIssueType, simulatePanVerification } from '@/data/issueTypes'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
 import '@/components/Common/Common.css'
 import './Issues.css'
@@ -36,6 +38,46 @@ export default function Issues() {
   const vendorNames = useSelector(selectActiveVendors)
   const sections = useSelector(selectActiveSections)
 
+  // PAN is verified for every vendor in the loaded issue set at once, not
+  // per-issue (see IssueDrawer, which just displays the result) — this
+  // mirrors how a real bulk PAN-verification API call would work: one
+  // request per vendor, not one per issue row.
+  const [bulkVerifying, setBulkVerifying] = useState(false)
+
+  function handleVerifyAllPans() {
+    if (bulkVerifying) return
+    const vendorPanMap = new Map()
+    for (const issue of issues) {
+      if (issue.vendorId && issue.vendorId !== '—' && !vendorPanMap.has(issue.vendorId)) {
+        vendorPanMap.set(issue.vendorId, issue.vendorPan)
+      }
+    }
+    const vendorIds = [...vendorPanMap.keys()]
+    if (vendorIds.length === 0) {
+      toast('No vendors to verify')
+      return
+    }
+    setBulkVerifying(true)
+    vendorIds.forEach((id) => dispatch(startVerifyPan(id)))
+    // Simulate the latency of a real bulk government PAN API round-trip.
+    setTimeout(() => {
+      let active = 0, inactive = 0, invalid = 0
+      vendorIds.forEach((vendorId) => {
+        const result = simulatePanVerification(vendorPanMap.get(vendorId))
+        dispatch(finishVerifyPan({ vendorId, result: { ...result, checkedAt: new Date().toISOString() } }))
+        if (result.status === 'Active') active++
+        else if (result.status === 'Inactive') inactive++
+        else invalid++
+      })
+      setBulkVerifying(false)
+      toast.success(
+        `Verified ${vendorIds.length} vendor PAN${vendorIds.length === 1 ? '' : 's'} — ${active} active`
+        + (inactive ? `, ${inactive} inactive` : '')
+        + (invalid ? `, ${invalid} invalid format` : ''),
+      )
+    }, 900)
+  }
+
   const filtered = useMemo(() => issues.filter((issue) => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
@@ -50,7 +92,7 @@ export default function Issues() {
     if (sectionFilter   !== 'all' && issue.section   !== sectionFilter)   return false
     if (severityFilter  !== 'all' && issue.severity  !== severityFilter)  return false
     if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
-    if (issueTypeFilter !== 'all' && issue.issueType !== issueTypeFilter) return false
+    if (issueTypeFilter !== 'all' && getDisplayIssueType(issue) !== issueTypeFilter) return false
     return true
   }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
 
@@ -87,10 +129,11 @@ export default function Issues() {
     { key: 'tdsAmount',    header: 'TDS (₹)',  render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
     { key: 'category', header: 'Issue Type', render: (r) => {
       const Icon = SEVERITY_ICON[r.severity] ?? AlertTriangle
+      const displayType = getDisplayIssueType(r)
       return (
-        <div className={`issue-type-cell issue-type-cell--${r.severity}`} title={r.issueTypeLabel || r.category}>
+        <div className={`issue-type-cell issue-type-cell--${r.severity}`} title={displayType}>
           <Icon size={13} />
-          <span className="issue-type-text">{r.category}</span>
+          <span className="issue-type-text">{displayType}</span>
         </div>
       )
     }},
@@ -112,6 +155,10 @@ export default function Issues() {
         </div>
         <div className="issues-header-actions">
           <LiveDataBadge />
+          <button className="btn btn-outline" type="button" onClick={handleVerifyAllPans} disabled={bulkVerifying}>
+            {bulkVerifying ? <Loader2 size={14} className="spin" /> : <IdCard size={14} />}
+            {bulkVerifying ? 'Verifying PANs…' : 'Verify All PANs'}
+          </button>
           <button className="btn btn-outline" type="button">
             <Download size={14} />Export
           </button>
