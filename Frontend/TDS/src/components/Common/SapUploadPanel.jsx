@@ -213,7 +213,7 @@ export default function SapUploadPanel() {
               <span className="sap-dropzone-icon"><FileUp size={18} /></span>
               <div className="sap-dropzone-copy">
                 <strong>Drop file here, or browse</strong>
-                <span>CSV or Excel · up to about 10,000 rows</span>
+                <span>CSV or Excel · up to 25 MB</span>
               </div>
             </div>
           )}

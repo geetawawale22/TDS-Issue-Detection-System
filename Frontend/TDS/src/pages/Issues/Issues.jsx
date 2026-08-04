@@ -16,7 +16,7 @@ import {
   selectActiveIssues, selectActiveVendors, selectActiveSections,
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
-import { groupedScenarioOptions, getDisplayIssueType, simulatePanVerification } from '@/data/issueTypes'
+import { groupedScenarioOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
 import '@/components/Common/Common.css'
 import './Issues.css'
@@ -92,7 +92,7 @@ export default function Issues() {
     if (sectionFilter   !== 'all' && issue.section   !== sectionFilter)   return false
     if (severityFilter  !== 'all' && issue.severity  !== severityFilter)  return false
     if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
-    if (issueTypeFilter !== 'all' && getDisplayIssueType(issue) !== issueTypeFilter) return false
+    if (issueTypeFilter !== 'all' && !issueTypeFilter.split(MULTI_CATEGORY_DELIMITER).includes(getDisplayIssueType(issue))) return false
     return true
   }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
 

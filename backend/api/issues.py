@@ -35,7 +35,6 @@ from rules.tds_rule_engine import _get_applicable_rate, run_all_checks, check_th
 router = APIRouter(prefix="/issues", tags=["Issues"])
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-MAX_ROWS = 10_000
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".xlsm"}
 NEW_ACT_EFFECTIVE_DATE = date(2026, 4, 1)
 
@@ -200,8 +199,6 @@ async def upload_sap_file(
     frame = _read_upload(filename, content)
     if frame.empty:
         raise HTTPException(status_code=422, detail="The uploaded file has no transaction rows.")
-    if len(frame) > MAX_ROWS:
-        raise HTTPException(status_code=422, detail=f"The uploaded file has more than {MAX_ROWS:,} rows.")
 
     records = _normalise_records(frame)
     allowed_codes = set(get_user_company_codes(current_user, db))

@@ -287,7 +287,7 @@ export const RULE_SCENARIOS = [
   },
   {
     id: 'LDC_MISMATCH',
-    label: 'LDC Rate Mismatch',
+    label: 'Form 197 Rate Mismatch',
     group: 'Lower Deduction Certificate (Form 197)',
     category: 'TDS Deducted as per LDC — Mismatch',
     severity: 'high',
@@ -320,7 +320,7 @@ export const RULE_SCENARIOS = [
   // ---- Deduction timing (check_timing) ----
   {
     id: 'MISSED_ADVANCE',
-    label: 'Missed TDS (Advance Payment)',
+    label: 'Missed TDS (Advance)',
     group: 'Deduction Timing',
     category: 'TDS Not Deducted — Advance Payment',
     severity: 'high',
@@ -333,7 +333,7 @@ export const RULE_SCENARIOS = [
   },
   {
     id: 'MISSED_PROVISION',
-    label: 'Missed TDS (Provision Entry)',
+    label: 'Missed TDS (Provision)',
     group: 'Deduction Timing',
     category: 'TDS Not Deducted — Provision Entry',
     severity: 'high',
@@ -558,6 +558,23 @@ export function getRecommendedAction(issue) {
 }
 
 /**
+ * Some categories are distinct on the wire but read as one issue type to a
+ * user filtering the list (e.g. "PAN missing, so nothing was deducted" vs.
+ * "PAN missing, so only a fallback rate was deducted" are both just "PAN
+ * Missing (206AA)" from a filtering point of view). Each entry's `value` is
+ * a delimiter-joined set of the raw category strings it should match — see
+ * MULTI_CATEGORY_DELIMITER / Issues.jsx's filter predicate.
+ */
+export const MULTI_CATEGORY_DELIMITER = '||'
+const CATEGORY_MERGES = [
+  {
+    group: 'PAN Validation (206AA)',
+    label: 'PAN Missing (206AA)',
+    categories: ['PAN Missing/Invalid — TDS Not Deducted', 'PAN Missing/Invalid — Short TDS Deducted'],
+  },
+]
+
+/**
  * Groups scenarios by their rule area, in first-seen order — used to render
  * <optgroup> in the Issue Type filter. Option values are the rule engine's
  * `category` string (not the frontend-only `id`) so filtering works against
@@ -575,15 +592,31 @@ export function groupedScenarioOptions() {
   const groups = []
   const byGroup = new Map()
   const seenCategories = new Set()
-  for (const s of RULE_SCENARIOS) {
-    if (seenCategories.has(s.category)) continue
-    seenCategories.add(s.category)
-    if (!byGroup.has(s.group)) {
-      const entry = { group: s.group, options: [] }
-      byGroup.set(s.group, entry)
+
+  const getGroupEntry = (group) => {
+    if (!byGroup.has(group)) {
+      const entry = { group, options: [] }
+      byGroup.set(group, entry)
       groups.push(entry)
     }
-    byGroup.get(s.group).options.push([s.category, s.label])
+    return byGroup.get(group)
+  }
+
+  const mergeByCategory = new Map()
+  for (const merge of CATEGORY_MERGES) {
+    for (const c of merge.categories) mergeByCategory.set(c, merge)
+  }
+
+  for (const s of RULE_SCENARIOS) {
+    if (seenCategories.has(s.category)) continue
+    const merge = mergeByCategory.get(s.category)
+    if (merge) {
+      merge.categories.forEach((c) => seenCategories.add(c))
+      getGroupEntry(merge.group).options.push([merge.categories.join(MULTI_CATEGORY_DELIMITER), merge.label])
+      continue
+    }
+    seenCategories.add(s.category)
+    getGroupEntry(s.group).options.push([s.category, s.label])
   }
   return groups
 }

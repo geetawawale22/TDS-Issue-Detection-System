@@ -5,17 +5,21 @@ export function formatCurrency(amount) {
       style: 'currency',
       currency: 'INR',
       minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
+      maximumFractionDigits: 0,
     }).format(0)
   }
 
-  // Keep exact paise when present (e.g. 45437.78); whole rupees stay without .00
-  const hasDecimals = Math.abs(value % 1) > 1e-9
+  // Show the figure exactly as recorded (e.g. in an uploaded SAP/Excel
+  // extract) rather than forcing 2 decimal places — capping at 2 would
+  // silently round away a 3rd/4th decimal digit some source rows carry.
+  // Capped at 4 so genuine floating-point noise from later math (sums,
+  // rate * base computations) can't produce a long garbage tail.
+  const decimalDigits = Math.min((value.toString().split('.')[1] || '').length, 4)
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    minimumFractionDigits: hasDecimals ? 2 : 0,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: decimalDigits,
+    maximumFractionDigits: decimalDigits,
   }).format(value)
 }
 
