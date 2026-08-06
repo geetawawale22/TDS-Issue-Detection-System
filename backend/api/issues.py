@@ -29,7 +29,7 @@ from ingestion.sap_translator import (
     get_tds_section_raw,
     looks_like_descriptive_tds_section,
 )
-from rules.tds_rule_engine import _get_applicable_rate, run_all_checks, check_threshold_breach
+from rules.tds_rule_engine import _get_applicable_rate, run_all_checks, check_threshold_breach, check_missing_deduction
 
 
 router = APIRouter(prefix="/issues", tags=["Issues"])
@@ -45,6 +45,7 @@ ISSUE_TYPE_BY_CATEGORY = {
     "PAN Missing/Invalid — TDS Not Deducted": "PAN_MISSING_NOT_DEDUCTED",
     "PAN Missing/Invalid — Short TDS Deducted": "PAN_MISSING_SHORT",
     "PAN Missing/Invalid — Correctly Handled": "PAN_CORRECT",
+    "Wrong TDS Rate": "WRONG_TDS_RATE",
     "Short TDS Deducted": "SHORT_TDS",
     "Excess TDS Deducted": "EXCESS_TDS",
     "Wrong Section Applied": "WRONG_SECTION_HSN",
@@ -61,6 +62,7 @@ ISSUE_TYPE_BY_CATEGORY = {
     "TDS Not Applicable — Violation (Transporter Exemption)": "TRANSPORTER_VIOLATION",
     "TDS Not Deducted — Threshold Crossed": "THRESHOLD_CROSSED",
     "TDS Not Applicable — Premature Deduction": "PREMATURE_DEDUCTION",
+    "Possible Missed TDS Deduction": "MISSING_DEDUCTION"
 }
 
 
@@ -126,15 +128,22 @@ def _normalise_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
-    expected_rate = _get_applicable_rate(txn)
+    # Rule-specific overrides (PAN/206AA, inferred missing-deduction rates,
+    # LDC, etc.) must win over the base statutory section rate.
+    expected_rate = rule_issue.expected_rate
+    if expected_rate is None:
+        expected_rate = _get_applicable_rate(txn)
     applied_rate = txn.tds_deducted_rate
     # Bill amount is retained for display when SAP did not provide a taxable
     # base. It is never used to calculate tax impact or rule outcomes.
     base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
     tax_impact = 0.0
-    if txn.basic_amount is not None and expected_rate is not None and applied_rate is not None:
-        tax_impact = abs(txn.basic_amount * (expected_rate - applied_rate) / 100)
-
+    if txn.basic_amount is not None and expected_rate is not None:
+        # No rate recorded on the transaction means nothing was deducted —
+        # treat that as 0% for the purpose of measuring the shortfall.
+        reference_rate = applied_rate if applied_rate is not None else 0.0
+        tax_impact = abs(txn.basic_amount * (expected_rate - reference_rate) / 100)
+        
     category = rule_issue.category
     effective_section = (
         txn.tds_new_section
@@ -251,11 +260,16 @@ async def upload_sap_file(
             if include_informational or rule_issue.severity != "low":
                 issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
 
-    # Threshold checks operate across transactions, so associate each result
-    # with the first matching transaction for a useful row in the UI.
-    for rule_issue in check_threshold_breach(transactions):
+    # Threshold checks operate across transactions, so each result carries a
+    # representative transaction from its own vendor/section/FY group.
+    for txn, rule_issue in check_threshold_breach(transactions):
         if include_informational or rule_issue.severity != "low":
-            issues.append(_transaction_issue(len(issues) + 1, transactions[0], rule_issue))
+            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+
+
+    for txn, rule_issue in check_missing_deduction(transactions):
+        if include_informational or rule_issue.severity != "low":
+            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
 
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})

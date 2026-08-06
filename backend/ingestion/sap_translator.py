@@ -157,9 +157,6 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
         section_value = str(_get(row, "tds_section") or "").strip()
         rate_value = _parse_rate_percent(_get(row, "tds_rate"))
 
-        if not section_value or rate_value is None:
-            continue  # no real TDS section/rate on this row — skip
-
         pan = str(_get(row, "pan") or "").strip()
 
         txn = Transaction(
@@ -222,8 +219,6 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
 
     for row in raw_rows:
         rate = _safe_float(_get(row, "tds_rate"))
-        if rate is None:
-            continue  # no TDS rate was supplied on this export row
 
         raw_section_text = get_tds_section_raw(row)
         old_section, parsed_rate = decode_tds_section_string(raw_section_text)

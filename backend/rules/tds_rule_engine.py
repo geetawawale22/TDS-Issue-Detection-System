@@ -33,17 +33,31 @@ class TDSIssue:
     Represents the outcome of running a transaction through the
     rule engine. category matches Mahindra's own 8 classifications.
     """
-    def __init__(self, category: str, message: str, severity: str = "medium", issue_code: Optional[str] = None):
+    def __init__(
+        self,
+        category: str,
+        message: str,
+        severity: str = "medium",
+        issue_code: Optional[str] = None,
+        expected_rate: Optional[float] = None,
+    ):
         self.category = category
         self.message = message
         self.severity = severity  # "high", "medium", "low"
         self.issue_code = issue_code or category.upper().replace(" ", "_")
+        self.expected_rate = expected_rate
 
     def __repr__(self):
         return f"<TDSIssue category={self.category} severity={self.severity}>"
 
     def to_dict(self):
-        return {"issue_code": self.issue_code,"category": self.category, "message": self.message, "severity": self.severity}
+        return {
+            "issue_code": self.issue_code,
+            "category": self.category,
+            "message": self.message,
+            "severity": self.severity,
+            "expected_rate": self.expected_rate,
+        }
 
 
 # ============================================================
@@ -269,6 +283,7 @@ def check_pan_validity(txn: Transaction) -> Optional[TDSIssue]:
             category="PAN Missing/Invalid — TDS Not Deducted",
             message=f"Vendor PAN is {reason}. Section {rule_applied} requires {required_rate}% TDS, but nothing was deducted.",
             severity="high",
+            expected_rate=required_rate,
         )
 
     if txn.tds_deducted_rate < required_rate:
@@ -276,12 +291,14 @@ def check_pan_validity(txn: Transaction) -> Optional[TDSIssue]:
             category="PAN Missing/Invalid — Short TDS Deducted",
             message=f"Vendor PAN is {reason}. Section {rule_applied} requires {required_rate}% TDS, but only {txn.tds_deducted_rate}% was deducted.",
             severity="high",
+            expected_rate=required_rate,
         )
 
     return TDSIssue(
         category="PAN Missing/Invalid — Correctly Handled",
         message=f"Vendor PAN is {reason}, and the required {required_rate}% TDS ({rule_applied}) was correctly applied.",
         severity="low",
+        expected_rate=required_rate,
     )
 
 
@@ -360,15 +377,17 @@ def check_short_excess_tds(txn: Transaction) -> Optional[TDSIssue]:
 
     if deducted_rate < applicable_rate:
         return TDSIssue(
-            category="Short TDS Deducted",
+            category="Wrong TDS Rate",
             message=f"TDS deducted at {deducted_rate}%, but correct rate is {applicable_rate}% for section {section}.",
             severity="high",
+            expected_rate=applicable_rate,
         )
     elif deducted_rate > applicable_rate:
         return TDSIssue(
-            category="Excess TDS Deducted",
+            category="Wrong TDS Rate",
             message=f"TDS deducted at {deducted_rate}%, but correct rate is {applicable_rate}% for section {section}.",
-            severity="medium",
+            severity="high",
+            expected_rate=applicable_rate,
         )
 
     return None
@@ -388,6 +407,10 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
 
     if not txn.basic_amount or txn.basic_amount == 0:
         return None  # can't compute a meaningful rate without a base
+
+    applicable_rate = _get_applicable_rate(txn)
+    if applicable_rate is not None and txn.tds_deducted_rate != applicable_rate:
+        return None  # wrong-rate issue already carries the correct amount context
 
     expected_amount = txn.basic_amount * (txn.tds_deducted_rate / 100)
     actual_amount = txn.tds_deducted_amount
@@ -773,7 +796,7 @@ def _get_financial_year(d: date) -> str:
         return f"{d.year - 1}-{str(d.year)[-2:]}"
 
 
-def check_threshold_breach(transactions: list[Transaction]) -> list[TDSIssue]:
+def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
     """
     Categories: TDS Not Deducted / Short Deducted / TDS Not Applicable (threshold-based)
     Ported from POC validate_threshold + validate_50l_threshold.
@@ -789,7 +812,7 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[TDSIssue]:
     Confirmed rule: once threshold is crossed, TDS applies to the
     FULL cumulative amount, not just the excess.
     """
-    issues: list[TDSIssue] = []
+    issues: list[tuple[Transaction, TDSIssue]] = []
 
     groups: dict[tuple, list[Transaction]] = defaultdict(list)
     for txn in transactions:
@@ -841,6 +864,13 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[TDSIssue]:
         threshold_crossed = cumulative_basic_amount >= aggregate_threshold
 
         if threshold_crossed:
+            has_row_level_shortfall = any(
+                check_short_excess_tds(t) is not None or check_amount_consistency(t) is not None
+                for t in group_txns
+            )
+            if has_row_level_shortfall:
+                continue
+
             # Check MAGNITUDE, not just zero-vs-nonzero.
             statutory_rate = _get_applicable_rate(group_txns[0])
             if statutory_rate is not None:
@@ -859,7 +889,7 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[TDSIssue]:
                             f"only ₹{cumulative_tds_deducted:,.2f} was deducted across "
                             f"{len(group_txns)} transaction(s)."
                         )
-                    issues.append(TDSIssue(
+                    issues.append((group_txns[0], TDSIssue(
                         category=category,
                         message=(
                             f"Vendor PAN {pan}, Section {section}, FY {fy}: cumulative "
@@ -867,12 +897,12 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[TDSIssue]:
                             f"of ₹{aggregate_threshold:,.2f}, {detail}{incomplete_note}"
                         ),
                         severity="high",
-                    ))
+                    )))
             elif cumulative_tds_deducted == 0:
                 # No statutory rate available for this section (e.g. a
                 # DTAA-based rate like 195) — fall back to the zero-check
                 # rather than skipping the group entirely.
-                issues.append(TDSIssue(
+                issues.append((group_txns[0], TDSIssue(
                     category="TDS Not Deducted — Threshold Crossed",
                     message=(
                         f"Vendor PAN {pan}, Section {section}, FY {fy}: cumulative "
@@ -881,9 +911,9 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[TDSIssue]:
                         f"{len(group_txns)} transaction(s).{incomplete_note}"
                     ),
                     severity="high",
-                ))
+                )))
         elif cumulative_tds_deducted > 0:
-            issues.append(TDSIssue(
+            issues.append((group_txns[0], TDSIssue(
                 category="TDS Not Applicable — Premature Deduction",
                 message=(
                     f"Vendor PAN {pan}, Section {section}, FY {fy}: cumulative "
@@ -892,6 +922,88 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[TDSIssue]:
                     f"₹{cumulative_tds_deducted:,.2f} was deducted anyway.{incomplete_note}"
                 ),
                 severity="medium",
-            ))
+            )))
 
     return issues
+
+
+# ============================================================
+# CHECK 9 — Missing TDS Deduction (GL Cross-Reference)
+# ============================================================
+
+def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
+    """
+    Category: Possible Missed TDS Deduction
+
+    Batch-level check (same pattern as check_threshold_breach) — needs
+    to see all transactions first, to learn each GL account's normal
+    TDS behavior, before it can judge whether a blank-TDS row on that
+    same GL is suspicious.
+
+    We do not have a reliable, complete GL exclusion list yet
+    (config/gl_accounts.yaml is empty; the description-text list in
+    tds_sections.yaml doesn't match on gl_account — see check_tds_not_applicable).
+    Until Mahindra provides one, we use each GL account's own observed
+    behavior within THIS batch as the reference point: if most
+    transactions on a GL do have TDS deducted, a blank one on that same
+    GL is worth a human's attention. If a GL never has TDS on it
+    anywhere in the batch, we don't have enough evidence to say
+    anything, so we deliberately stay silent rather than guess.
+
+    Returns (transaction, issue) pairs so each flagged row is attached
+    to its own real transaction — not a shared/first transaction.
+    """
+    results: list[tuple[Transaction, TDSIssue]] = []
+
+    # ---- Step 1: learn each (company_code, gl_account)'s TDS behavior ----
+    gl_stats: dict[tuple, dict] = defaultdict(lambda: {
+        "with_tds": 0, "total": 0, "sample_section": None, "sample_rate": None
+    })
+
+    for txn in transactions:
+        if not txn.gl_account:
+            continue
+        key = (txn.company_code, txn.gl_account)
+        stats = gl_stats[key]
+        stats["total"] += 1
+        if txn.tds_deducted_section and txn.tds_deducted_rate:
+            stats["with_tds"] += 1
+            if stats["sample_section"] is None:  # keep one real example for the message
+                stats["sample_section"] = txn.tds_deducted_section
+                stats["sample_rate"] = txn.tds_deducted_rate
+
+    # ---- Step 2: evaluate each blank-TDS transaction against its GL's stats ----
+    for txn in transactions:
+        if txn.tds_deducted_section or txn.tds_deducted_rate:
+            continue  # already has TDS data — not this check's concern
+
+        if not txn.gl_account:
+            continue  # can't cross-reference without a GL account
+
+        if _is_gl_excluded(txn.gl_account):
+            continue  # genuinely excluded — check_tds_not_applicable already confirms this correctly
+
+        key = (txn.company_code, txn.gl_account)
+        stats = gl_stats[key]
+        if stats["total"] <= 1 or stats["with_tds"] == 0:
+            continue  # no corroborating evidence this GL is ever TDS-relevant — stay silent
+
+        coverage = stats["with_tds"] / stats["total"]
+        basic_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+        severity = "medium" if coverage >= 0.8 else "low"
+
+        results.append((txn, TDSIssue(
+            category="Possible Missed TDS Deduction",
+            message=(
+                f"GL {txn.gl_account} ({txn.gl_description or 'no description'}) shows TDS "
+                f"deducted at {stats['sample_rate']}% under {stats['sample_section']} on "
+                f"{stats['with_tds']} of {stats['total']} transactions in this batch, but not "
+                f"on this one (doc {txn.doc_number}, basic amount {basic_amount}). This may be "
+                f"a missed deduction, or the vendor's cumulative payments may not have crossed "
+                f"the applicable threshold yet — recommend manual review."
+            ),
+            severity=severity,
+            expected_rate=stats["sample_rate"],
+        )))
+
+    return results

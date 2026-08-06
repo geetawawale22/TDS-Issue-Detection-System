@@ -91,36 +91,21 @@ export const RULE_SCENARIOS = [
 
   // ---- Rate mismatch on the same section (check_short_excess_tds) ----
   {
-    id: 'SHORT_TDS',
-    label: 'Short TDS Deducted',
+    id: 'WRONG_TDS_RATE',
+    label: 'Wrong TDS Rate',
     group: 'Rate Mismatch',
-    category: 'Short TDS Deducted',
+    category: 'Wrong TDS Rate',
     severity: 'high',
     isViolation: true,
     generate: ({ rand, randomFrom, vendorNames, sections }) => {
       const expectedRate = [1, 2, 5, 10][Math.floor(rand() * 4)]
-      const appliedRate = Math.max(0, expectedRate - (1 + Math.floor(rand() * 3)))
+      const direction = rand() > 0.5 ? 1 : -1
+      const appliedRate = Math.max(0, expectedRate + direction * (1 + Math.floor(rand() * 3)))
       return { vendor: randomFrom(vendorNames), section: randomFrom(sections), expectedRateOverride: expectedRate, appliedRateOverride: appliedRate, extra: {} }
     },
     buildMessage: ({ appliedRate, expectedRate, section }) =>
       `TDS deducted at ${appliedRate}%, but correct rate is ${expectedRate}% for section ${section}.`,
-    buildAction: ({ expectedRate }) => `Recompute the deduction at ${expectedRate}% and file a correction statement for the affected quarter.`,
-  },
-  {
-    id: 'EXCESS_TDS',
-    label: 'Excess TDS Deducted',
-    group: 'Rate Mismatch',
-    category: 'Excess TDS Deducted',
-    severity: 'medium',
-    isViolation: true,
-    generate: ({ rand, randomFrom, vendorNames, sections }) => {
-      const expectedRate = [1, 2, 5][Math.floor(rand() * 3)]
-      const appliedRate = expectedRate + (1 + Math.floor(rand() * 3))
-      return { vendor: randomFrom(vendorNames), section: randomFrom(sections), expectedRateOverride: expectedRate, appliedRateOverride: appliedRate, extra: {} }
-    },
-    buildMessage: ({ appliedRate, expectedRate, section }) =>
-      `TDS deducted at ${appliedRate}%, but correct rate is ${expectedRate}% for section ${section}.`,
-    buildAction: () => `Refund/adjust the excess TDS deducted and correct the vendor's next statement.`,
+    buildAction: ({ expectedRate }) => `Correct the TDS rate to ${expectedRate}% and verify the deducted amount against that rate.`,
   },
   {
     id: 'SHORT_EXCESS_194J',
@@ -530,6 +515,7 @@ const CATEGORY_ACTIONS = {
   'PAN Missing/Invalid — TDS Not Deducted': 'Obtain a valid PAN from the vendor and deduct TDS at the Section 206AA rate immediately.',
   'PAN Missing/Invalid — Short TDS Deducted': 'Recompute and deduct the shortfall at the Section 206AA rate; correct the vendor PAN on record.',
   'PAN Missing/Invalid — Correctly Handled': 'No action required — Section 206AA rate correctly applied.',
+  'Wrong TDS Rate': 'Correct the TDS rate to the statutory rate for this section and verify the deducted amount against that rate.',
   'Short TDS Deducted': 'Recompute the deduction at the correct rate and file a correction statement for the affected quarter.',
   'Excess TDS Deducted': "Refund/adjust the excess TDS deducted and correct the vendor's next statement.",
   'Short/Excess TDS Deducted': 'Confirm whether this payment is technical (2%) or professional (10%) services and correct the deduction rate.',

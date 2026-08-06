@@ -3,9 +3,12 @@ from datetime import date
 from ingestion.sap_translator import _derive_vendor_category
 from rules.tds_rule_engine import (
     _get_applicable_rate,
+    check_amount_consistency,
     check_short_excess_tds,
+    check_threshold_breach,
     check_pan_validity,
     check_excess_tds_exceeds_invoice,
+    run_all_checks,
 )
 from rules.transaction_model import Transaction
 
@@ -38,7 +41,75 @@ def test_firm_pan_category_uses_two_percent_rate_for_194c():
 
     assert transaction.vendor_category == "Firm/Trust/AOP/Company"
     assert _get_applicable_rate(transaction) == 2.0
-    assert check_short_excess_tds(transaction).category == "Short TDS Deducted"
+    assert check_short_excess_tds(transaction).category == "Wrong TDS Rate"
+
+
+def test_wrong_rate_is_single_issue_with_expected_rate_context():
+    transaction = _contractor_transaction("ABCHP1234K", 2.0)
+    transaction.basic_amount = 40_000_000
+    transaction.bill_amount = 50_000_000
+    transaction.tds_deducted_amount = 400_000
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong TDS Rate"
+    assert issues[0].expected_rate == 1.0
+    assert check_amount_consistency(transaction) is None
+
+
+def test_wrong_amount_is_single_amount_mismatch_when_rate_is_correct():
+    transaction = _contractor_transaction("ABCHP1234K", 1.0)
+    transaction.basic_amount = 40_000_000
+    transaction.bill_amount = 50_000_000
+    transaction.tds_deducted_amount = 400
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Short/Excess TDS Deducted — Amount Mismatch"
+    assert "₹400.00 was actually deducted" in issues[0].message
+
+
+def test_threshold_shortfall_is_not_duplicated_when_row_level_issue_explains_it():
+    transactions = []
+    for idx in range(3):
+        transaction = _contractor_transaction("ABCHP1234K", 1.0)
+        transaction.doc_number = f"TEST-194C-{idx}"
+        transaction.basic_amount = 40_000_000
+        transaction.bill_amount = 50_000_000
+        transaction.tds_deducted_amount = 400_000
+        transactions.append(transaction)
+
+    transactions[0].tds_deducted_amount = 400
+
+    assert run_all_checks(transactions[0])[0].category == "Short/Excess TDS Deducted — Amount Mismatch"
+    assert check_threshold_breach(transactions) == []
+
+
+def test_premature_threshold_issue_carries_matching_transaction():
+    transaction = Transaction(
+        doc_number="TEST-194Q-THRESHOLD",
+        doc_type="KA",
+        posting_date=date(2025, 5, 8),
+        vendor_code="V004",
+        vendor_pan="AACCS3003",
+        bill_amount=33_750,
+        basic_amount=33_750,
+        tds_deducted_section="194Q",
+        tds_legacy_section="194Q",
+        tds_new_section="393(1)8(ii)",
+        tds_deducted_rate=0.1,
+        tds_deducted_amount=34,
+    )
+
+    issues = check_threshold_breach([transaction])
+
+    assert len(issues) == 1
+    issue_txn, issue = issues[0]
+    assert issue_txn.doc_number == "TEST-194Q-THRESHOLD"
+    assert issue_txn.tds_deducted_section == "194Q"
+    assert issue.category == "TDS Not Applicable — Premature Deduction"
 
 
 def test_missing_pan_and_non_filer_takes_the_higher_of_206aa_and_206ab():
@@ -81,6 +152,28 @@ def test_missing_pan_without_non_filer_still_uses_plain_206aa_rate():
 
     assert issue is not None
     assert issue.category == "PAN Missing/Invalid — Correctly Handled"
+
+
+def test_invalid_pan_for_194q_uses_five_percent_206aa_exception():
+    transaction = Transaction(
+        doc_number="TEST-194Q-PAN",
+        doc_type="KR",
+        posting_date=date(2026, 4, 1),
+        vendor_code="V003",
+        vendor_pan="INVALIDPAN",
+        bill_amount=33_750,
+        basic_amount=33_750,
+        tds_deducted_section="194Q",
+        tds_deducted_rate=0.1,
+        tds_deducted_amount=34,
+    )
+
+    issue = check_pan_validity(transaction)
+
+    assert issue is not None
+    assert issue.category == "PAN Missing/Invalid — Short TDS Deducted"
+    assert issue.expected_rate == 5.0
+    assert "requires 5.0% TDS" in issue.message
 
 
 def test_missing_pan_and_non_filer_where_206aa_is_still_higher():
