@@ -440,22 +440,6 @@ export const RULE_SCENARIOS = [
       `Cumulative payments ₹${extra.cumulative.toLocaleString('en-IN')} crossed the threshold of ₹${extra.threshold.toLocaleString('en-IN')} this financial year, requiring approx. ₹${extra.required.toLocaleString('en-IN')} TDS in total, but only ₹${extra.deducted.toLocaleString('en-IN')} was deducted across the linked transactions.`,
     buildAction: () => `Deduct the remaining shortfall now that the threshold has been crossed, and file a correction for prior transactions.`,
   },
-  {
-    id: 'PREMATURE_DEDUCTION',
-    label: 'Premature TDS Deduction',
-    group: 'Threshold Monitoring',
-    category: 'TDS Not Applicable — Premature Deduction',
-    severity: 'medium',
-    isViolation: true,
-    generate: ({ rand, randomFrom, vendorNames, sections }) => {
-      const threshold = Math.round(200000 + rand() * 300000)
-      const cumulative = Math.round(threshold * (0.4 + rand() * 0.3))
-      return { vendor: randomFrom(vendorNames), section: randomFrom(sections), extra: { cumulative, threshold } }
-    },
-    buildMessage: ({ extra, tdsAmount }) =>
-      `Cumulative payments ₹${extra.cumulative.toLocaleString('en-IN')} have NOT crossed the threshold of ₹${extra.threshold.toLocaleString('en-IN')}, but TDS of ₹${tdsAmount.toLocaleString('en-IN')} was deducted anyway.`,
-    buildAction: () => `Reverse the premature deduction and re-trigger TDS only after the vendor's cumulative payments cross the threshold.`,
-  },
 ]
 
 export function getScenario(id) {
@@ -536,7 +520,6 @@ const CATEGORY_ACTIONS = {
   'TDS Not Applicable — Violation (Transporter Exemption)': 'Refund/adjust the wrongly deducted TDS and mark the vendor as exempt under Section 194C(6).',
   'TDS Not Deducted — Threshold Crossed': 'Deduct TDS on the full cumulative amount now that the threshold has been crossed, and file a correction for prior transactions.',
   'TDS Short Deducted — Threshold Crossed': 'Deduct the remaining shortfall now that the threshold has been crossed, and file a correction for prior transactions.',
-  'TDS Not Applicable — Premature Deduction': "Reverse the premature deduction and re-trigger TDS only after the vendor's cumulative payments cross the threshold.",
 }
 
 export function getRecommendedAction(issue) {

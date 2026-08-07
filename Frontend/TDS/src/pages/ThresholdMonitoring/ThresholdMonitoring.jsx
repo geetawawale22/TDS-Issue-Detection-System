@@ -25,6 +25,7 @@ export default function ThresholdMonitoring() {
   const exceeded = vendors.filter((v) => v.status === 'exceeded')
   const near      = vendors.filter((v) => v.status === 'near')
   const safe      = vendors.filter((v) => v.status === 'safe')
+  const panIssues = vendors.filter((v) => v.status === 'pan_issue')
 
   const filtered = useMemo(
     () => vendors.filter((v) => v.name.toLowerCase().includes(search.toLowerCase())),
@@ -33,6 +34,7 @@ export default function ThresholdMonitoring() {
 
   const summaryCards = [
     { label: 'Exceeded',   value: exceeded.length, icon: AlertOctagon, tone: 'danger',  sub: 'Requires immediate review' },
+    { label: 'PAN Issues', value: panIssues.length, icon: AlertOctagon, tone: 'danger', sub: 'PAN missing or invalid' },
     { label: 'Near Limit', value: near.length,      icon: Gauge,        tone: 'warning', sub: 'Within 75–100% of limit' },
     { label: 'Safe',       value: safe.length,      icon: ShieldCheck,  tone: 'success', sub: 'Comfortably under threshold' },
   ]
@@ -45,11 +47,19 @@ export default function ThresholdMonitoring() {
       </div>
     )},
     { key: 'section',       header: 'Section',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
-    { key: 'threshold',     header: 'Threshold', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.threshold)}</span> },
+    { key: 'threshold',     header: 'Threshold', render: (r) => (
+      <span className="font-mono" style={{ fontSize: 11.5 }}>
+        {r.threshold == null ? 'Not determined' : formatCurrency(r.threshold)}
+      </span>
+    )},
     { key: 'currentAmount', header: 'Current',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.currentAmount)}</span> },
-    { key: 'status',        header: 'Status',    render: (r) => <StatusBadge label={formatStatusLabel(r.status)} tone={thresholdStatusToTone(r.status)} /> },
+    { key: 'status',        header: 'Status',    render: (r) => (
+      <StatusBadge label={r.status === 'pan_issue' ? 'PAN Issue' : formatStatusLabel(r.status)} tone={thresholdStatusToTone(r.status)} />
+    )},
     { key: 'progress',      header: 'Progress',  render: (r) => (
-      <div style={{ width: 130 }}><ProgressBar value={r.progress} showLabel /></div>
+      r.threshold == null
+        ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
+        : <div style={{ width: 130 }}><ProgressBar value={r.progress} showLabel /></div>
     )},
   ]
 
@@ -75,7 +85,7 @@ export default function ThresholdMonitoring() {
         </p>
       )}
 
-      <div className="summary-grid-3">
+      <div className="summary-grid-4">
         {summaryCards.map((c) => (
           <div key={c.label} className="kpi-card">
             <div className="kpi-icon-row">
@@ -114,7 +124,9 @@ export default function ThresholdMonitoring() {
               <YAxis tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />
               <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12, padding: '6px 10px' }} cursor={{ fill: '#F8FAFC' }} />
               <Bar dataKey="safe"     stackId="a" fill="#10B981" maxBarSize={28} name="Safe" />
+              <Bar dataKey="unclassified" stackId="a" fill="#94A3B8" maxBarSize={28} name="Unclassified" />
               <Bar dataKey="near"     stackId="a" fill="#F59E0B" maxBarSize={28} name="Near" />
+              <Bar dataKey="pan_issue" stackId="a" fill="#DC2626" maxBarSize={28} name="PAN Issue" />
               <Bar dataKey="exceeded" stackId="a" fill="#EF4444" radius={[4,4,0,0]} maxBarSize={28} name="Exceeded" />
             </BarChart>
           </ResponsiveContainer>

@@ -61,7 +61,6 @@ ISSUE_TYPE_BY_CATEGORY = {
     "TDS Not Applicable — Violation (Form 15G/15H)": "FORM_15G_VIOLATION",
     "TDS Not Applicable — Violation (Transporter Exemption)": "TRANSPORTER_VIOLATION",
     "TDS Not Deducted — Threshold Crossed": "THRESHOLD_CROSSED",
-    "TDS Not Applicable — Premature Deduction": "PREMATURE_DEDUCTION",
     "Possible Missed TDS Deduction": "MISSING_DEDUCTION"
 }
 

@@ -87,7 +87,7 @@ def test_threshold_shortfall_is_not_duplicated_when_row_level_issue_explains_it(
     assert check_threshold_breach(transactions) == []
 
 
-def test_premature_threshold_issue_carries_matching_transaction():
+def test_below_threshold_tds_deduction_is_not_flagged_as_premature():
     transaction = Transaction(
         doc_number="TEST-194Q-THRESHOLD",
         doc_type="KA",
@@ -105,11 +105,7 @@ def test_premature_threshold_issue_carries_matching_transaction():
 
     issues = check_threshold_breach([transaction])
 
-    assert len(issues) == 1
-    issue_txn, issue = issues[0]
-    assert issue_txn.doc_number == "TEST-194Q-THRESHOLD"
-    assert issue_txn.tds_deducted_section == "194Q"
-    assert issue.category == "TDS Not Applicable — Premature Deduction"
+    assert issues == []
 
 
 def test_missing_pan_and_non_filer_takes_the_higher_of_206aa_and_206ab():

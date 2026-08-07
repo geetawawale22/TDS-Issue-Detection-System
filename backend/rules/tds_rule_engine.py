@@ -802,12 +802,10 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
     Ported from POC validate_threshold + validate_50l_threshold.
 
     Groups transactions by vendor PAN + section + financial year,
-    tracks cumulative payment amount, and flags three scenarios:
+    tracks cumulative payment amount, and flags two scenarios:
       a) Threshold crossed but NO TDS was deducted at all.
       b) Threshold crossed but the TDS deducted falls short of what's
          required on the full cumulative amount (partial compliance).
-      c) TDS was deducted even though the aggregate hasn't crossed
-         the threshold yet (premature deduction).
 
     Confirmed rule: once threshold is crossed, TDS applies to the
     FULL cumulative amount, not just the excess.
@@ -912,17 +910,6 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
                     ),
                     severity="high",
                 )))
-        elif cumulative_tds_deducted > 0:
-            issues.append((group_txns[0], TDSIssue(
-                category="TDS Not Applicable — Premature Deduction",
-                message=(
-                    f"Vendor PAN {pan}, Section {section}, FY {fy}: cumulative "
-                    f"payments ₹{cumulative_basic_amount:,.2f} have NOT crossed the "
-                    f"threshold of ₹{aggregate_threshold:,.2f}, but TDS of "
-                    f"₹{cumulative_tds_deducted:,.2f} was deducted anyway.{incomplete_note}"
-                ),
-                severity="medium",
-            )))
 
     return issues
 

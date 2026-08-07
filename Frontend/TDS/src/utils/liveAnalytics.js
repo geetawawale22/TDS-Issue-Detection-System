@@ -95,6 +95,11 @@ export function deriveThresholdVendors(issues) {
   for (const issue of issues) {
     const vendorId = issue.vendorId || issue.vendor
     const section = issue.section || '—'
+    const hasKnownSection = section !== '—' && Object.prototype.hasOwnProperty.call(SECTION_THRESHOLDS, section)
+    const hasPanIssue = (
+      String(issue.issueType || '').startsWith('PAN_')
+      || /PAN Missing\/Invalid/i.test(issue.category || '')
+    )
     const key = `${vendorId}||${section}`
     if (!byKey.has(key)) {
       byKey.set(key, {
@@ -102,33 +107,38 @@ export function deriveThresholdVendors(issues) {
         name: issue.vendor || vendorId || 'Unknown',
         pan: issue.vendorPan || '—',
         section,
+        hasKnownSection,
         baseSum: 0,
         issueCount: 0,
         crossed: false,
-        premature: false,
+        panIssue: false,
       })
     }
     const row = byKey.get(key)
     row.baseSum += Number(issue.baseAmount) || 0
     row.issueCount += 1
+    row.panIssue = row.panIssue || hasPanIssue
     if (issue.issueType === 'THRESHOLD_CROSSED' || /Threshold Crossed/i.test(issue.category || '')) {
       row.crossed = true
-    }
-    if (issue.issueType === 'PREMATURE_DEDUCTION' || /Premature/i.test(issue.category || '')) {
-      row.premature = true
     }
   }
 
   return [...byKey.values()].map((row) => {
-    const threshold = SECTION_THRESHOLDS[row.section] ?? 100_000
+    const threshold = row.hasKnownSection ? SECTION_THRESHOLDS[row.section] : null
     const currentAmount = row.baseSum
-    let status = 'safe'
-    let progress
+    let status = row.hasKnownSection ? 'safe' : 'unclassified'
+    let progress = 0
 
-    if (row.crossed || (threshold > 0 && currentAmount >= threshold)) {
+    if (!row.hasKnownSection) {
+      status = 'unclassified'
+      progress = 0
+    } else if (row.panIssue) {
+      status = 'pan_issue'
+      progress = threshold > 0 ? Math.min(130, (currentAmount / threshold) * 100) : 0
+    } else if (row.crossed || (threshold > 0 && currentAmount >= threshold)) {
       status = 'exceeded'
       progress = threshold > 0 ? Math.min(130, (currentAmount / threshold) * 100) : 100
-    } else if (row.premature || (threshold > 0 && currentAmount >= threshold * 0.75)) {
+    } else if (threshold > 0 && currentAmount >= threshold * 0.75) {
       status = 'near'
       progress = threshold > 0 ? (currentAmount / threshold) * 100 : 80
     } else {
@@ -141,14 +151,14 @@ export function deriveThresholdVendors(issues) {
       name: row.name,
       pan: row.pan,
       section: row.section,
-      threshold: threshold || currentAmount || 1,
+      threshold,
       currentAmount,
       status,
       progress: Math.round(progress),
       issueCount: row.issueCount,
     }
   }).sort((a, b) => {
-    const rank = { exceeded: 0, near: 1, safe: 2 }
+    const rank = { exceeded: 0, pan_issue: 1, near: 2, unclassified: 3, safe: 4 }
     return (rank[a.status] - rank[b.status]) || (b.currentAmount - a.currentAmount)
   })
 }
@@ -157,7 +167,7 @@ export function deriveThresholdSectionBreakdown(vendors) {
   const map = new Map()
   for (const v of vendors) {
     if (!map.has(v.section)) {
-      map.set(v.section, { section: v.section, exceeded: 0, near: 0, safe: 0 })
+      map.set(v.section, { section: v.section, exceeded: 0, pan_issue: 0, near: 0, unclassified: 0, safe: 0 })
     }
     const row = map.get(v.section)
     row[v.status] = (row[v.status] || 0) + 1

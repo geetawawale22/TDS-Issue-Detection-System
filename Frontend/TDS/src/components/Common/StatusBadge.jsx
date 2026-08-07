@@ -15,7 +15,9 @@ export function issueStatusToTone(status) {
 
 export function thresholdStatusToTone(status) {
   if (status === 'exceeded') return 'danger'
+  if (status === 'pan_issue') return 'danger'
   if (status === 'near')     return 'warning'
+  if (status === 'unclassified') return 'neutral'
   return 'success'
 }
 
