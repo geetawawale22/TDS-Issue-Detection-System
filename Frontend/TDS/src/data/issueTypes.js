@@ -460,7 +460,7 @@ const AMOUNT_MISMATCH_CATEGORY = 'Short/Excess TDS Deducted — Amount Mismatch'
 export function getDisplayIssueType(issue) {
   // `category` first, not `issueTypeLabel`: this value doubles as the Issue
   // Type filter's matching key (see Issues.jsx), and the filter dropdown's
-  // option values come from `groupedScenarioOptions()`, which is keyed on
+  // option values come from `issueTypeFilterOptions()`, which is keyed on
   // `category`. Sample-data scenarios' `issueTypeLabel` is a separate,
   // differently-worded frontend label (e.g. "Amount Mismatch — Short" vs.
   // category "Short TDS Deducted — Amount Mismatch") — preferring it here
@@ -500,8 +500,6 @@ const CATEGORY_ACTIONS = {
   'PAN Missing/Invalid — Short TDS Deducted': 'Recompute and deduct the shortfall at the Section 206AA rate; correct the vendor PAN on record.',
   'PAN Missing/Invalid — Correctly Handled': 'No action required — Section 206AA rate correctly applied.',
   'Wrong TDS Rate': 'Correct the TDS rate to the statutory rate for this section and verify the deducted amount against that rate.',
-  'Short TDS Deducted': 'Recompute the deduction at the correct rate and file a correction statement for the affected quarter.',
-  'Excess TDS Deducted': "Refund/adjust the excess TDS deducted and correct the vendor's next statement.",
   'Short/Excess TDS Deducted': 'Confirm whether this payment is technical (2%) or professional (10%) services and correct the deduction rate.',
   'Short TDS Deducted — Amount Mismatch': 'Recheck the deduction calculation — the recorded amount is short of what the stated rate implies.',
   'Excess TDS Deducted — Amount Mismatch': 'Recheck the deduction calculation — the recorded amount exceeds what the stated rate implies.',
@@ -520,6 +518,8 @@ const CATEGORY_ACTIONS = {
   'TDS Not Applicable — Violation (Transporter Exemption)': 'Refund/adjust the wrongly deducted TDS and mark the vendor as exempt under Section 194C(6).',
   'TDS Not Deducted — Threshold Crossed': 'Deduct TDS on the full cumulative amount now that the threshold has been crossed, and file a correction for prior transactions.',
   'TDS Short Deducted — Threshold Crossed': 'Deduct the remaining shortfall now that the threshold has been crossed, and file a correction for prior transactions.',
+  'TDS Not Applicable — Premature Deduction': "Reverse the premature deduction and re-trigger TDS only after the vendor's cumulative payments cross the threshold.",
+  'Possible Missed TDS Deduction': "Review this transaction against the GL account's usual TDS pattern — deduct and file a correction if TDS was genuinely missed, or confirm the exemption/threshold reason if not.",
 }
 
 export function getRecommendedAction(issue) {
@@ -527,67 +527,73 @@ export function getRecommendedAction(issue) {
 }
 
 /**
- * Some categories are distinct on the wire but read as one issue type to a
- * user filtering the list (e.g. "PAN missing, so nothing was deducted" vs.
- * "PAN missing, so only a fallback rate was deducted" are both just "PAN
- * Missing (206AA)" from a filtering point of view). Each entry's `value` is
- * a delimiter-joined set of the raw category strings it should match — see
- * MULTI_CATEGORY_DELIMITER / Issues.jsx's filter predicate.
+ * Value delimiter for a filter option that should match more than one raw
+ * backend `category` string at once (see issueTypeFilterOptions below) —
+ * an <option value> has to be a single string, so multiple categories are
+ * joined with this and split back apart in Issues.jsx's filter predicate.
  */
 export const MULTI_CATEGORY_DELIMITER = '||'
-const CATEGORY_MERGES = [
-  {
-    group: 'PAN Validation (206AA)',
-    label: 'PAN Missing (206AA)',
-    categories: ['PAN Missing/Invalid — TDS Not Deducted', 'PAN Missing/Invalid — Short TDS Deducted'],
-  },
-]
 
 /**
- * Groups scenarios by their rule area, in first-seen order — used to render
- * <optgroup> in the Issue Type filter. Option values are the rule engine's
- * `category` string (not the frontend-only `id`) so filtering works against
- * whatever the backend actually returns — including for live uploaded data,
- * where the only reliable classifier on the wire is `category`, not a
- * frontend-coined id the backend may or may not know about.
+ * Issue Type filter's dropdown options — a fixed, flat list (no groups),
+ * using Mahindra's simplified naming style rather than RULE_SCENARIOS'
+ * grouping, but covering every category the backend rule engine can
+ * actually emit (see backend/rules/tds_rule_engine.py) so nothing it
+ * detects is ever unfilterable. Deliberately excludes "DTAA Rate
+ * Mismatch": no rule in that file checks DTAA rates at all, so it would
+ * always return zero results.
  *
- * A few scenarios intentionally share one category (e.g. GL/Form 15G/
- * Transporter "correctly handled" cases are all just "TDS Not Applicable"
- * on the wire — the backend can't tell them apart either), so this dedupes
- * by category and keeps only the first-seen label to avoid confusing
- * duplicate-looking options that would filter identically.
+ * A few entries combine multiple raw `category` strings the backend can
+ * emit (delimiter-joined — see MULTI_CATEGORY_DELIMITER) because they read
+ * as one issue type to someone filtering the list, even though the backend
+ * distinguishes them on the wire:
+ *   - "PAN Missing (206AA)" covers both the "nothing deducted" and
+ *     "fallback rate deducted" PAN-missing outcomes.
+ *   - "Amount Mismatch (Short/Excess)" is its own option, not folded into
+ *     "TDS Rate Mismatch": check_amount_consistency is a ₹-math cross-check
+ *     (stated rate vs. actual deducted amount), not a rate lookup, and in
+ *     practice is one of the most common categories on real SAP uploads.
+ *   - "TDS Not Applicable — Correctly Handled" is one option covering
+ *     three different clean confirmations (GL exclusion, Form 15G/15H,
+ *     Transporter exemption) — the backend reports all three as the exact
+ *     same "TDS Not Applicable" category, so it can't tell them apart
+ *     either.
+ *
+ * "Possible Missed TDS Deduction" (check_missing_deduction) is a batch-level
+ * check — it flags a blank-TDS row by cross-referencing it against how the
+ * rest of its GL account behaved elsewhere in the same upload — so it has no
+ * corresponding RULE_SCENARIOS mock entry (mock data is generated one issue
+ * at a time, with no "rest of the batch" to compare against). It only
+ * appears for real SAP uploads, but still needs a filter option so those
+ * rows aren't unfilterable.
  */
-export function groupedScenarioOptions() {
-  const groups = []
-  const byGroup = new Map()
-  const seenCategories = new Set()
-
-  const getGroupEntry = (group) => {
-    if (!byGroup.has(group)) {
-      const entry = { group, options: [] }
-      byGroup.set(group, entry)
-      groups.push(entry)
-    }
-    return byGroup.get(group)
-  }
-
-  const mergeByCategory = new Map()
-  for (const merge of CATEGORY_MERGES) {
-    for (const c of merge.categories) mergeByCategory.set(c, merge)
-  }
-
-  for (const s of RULE_SCENARIOS) {
-    if (seenCategories.has(s.category)) continue
-    const merge = mergeByCategory.get(s.category)
-    if (merge) {
-      merge.categories.forEach((c) => seenCategories.add(c))
-      getGroupEntry(merge.group).options.push([merge.categories.join(MULTI_CATEGORY_DELIMITER), merge.label])
-      continue
-    }
-    seenCategories.add(s.category)
-    getGroupEntry(s.group).options.push([s.category, s.label])
-  }
-  return groups
+export function issueTypeFilterOptions() {
+  return [
+    { label: 'TDS Deducted on Excluded GL Account', categories: ['TDS Not Applicable — Violation'] },
+    { label: 'TDS Not Applicable — Correctly Handled', categories: ['TDS Not Applicable'] },
+    { label: 'Form 197 Rate Mismatch', categories: ['TDS Deducted as per LDC — Mismatch'] },
+    { label: 'LDC Not Yet Valid', categories: ['LDC Not Yet Valid'] },
+    { label: 'LDC Expired', categories: ['LDC Expired'] },
+    { label: 'LDC — Correctly Applied', categories: ['TDS Deducted as per LDC'] },
+    { label: 'Missed TDS (Advance)', categories: ['TDS Not Deducted — Advance Payment'] },
+    { label: 'Missed TDS (Provision)', categories: ['TDS Not Deducted — Provision Entry'] },
+    { label: 'Missed TDS (Threshold Crossed)', categories: ['TDS Not Deducted — Threshold Crossed'] },
+    { label: 'Threshold Crossed — Short Deducted', categories: ['TDS Short Deducted — Threshold Crossed'] },
+    { label: 'PAN Missing (206AA)', categories: ['PAN Missing/Invalid — TDS Not Deducted', 'PAN Missing/Invalid — Short TDS Deducted'] },
+    { label: 'PAN Missing/Invalid — Correctly Handled', categories: ['PAN Missing/Invalid — Correctly Handled'] },
+    { label: 'Premature 194Q Deduction', categories: ['TDS Not Applicable — Premature Deduction'] },
+    { label: 'Non-Filer Higher Rate (206AB)', categories: ['Short TDS Deducted — Non-Filer (206AB)'] },
+    { label: 'Wrongful TDS (Form 15G/15H)', categories: ['TDS Not Applicable — Violation (Form 15G/15H)'] },
+    { label: 'TDS Rate Mismatch', categories: ['Wrong TDS Rate'] },
+    { label: '194J Rate Mismatch (Not 2% or 10%)', categories: ['Short/Excess TDS Deducted'] },
+    { label: 'Amount Mismatch (Short/Excess)', categories: ['Short TDS Deducted — Amount Mismatch', 'Excess TDS Deducted — Amount Mismatch'] },
+    { label: 'TDS Exceeds Full Invoice Amount', categories: ['Excess TDS Deducted — Exceeds Invoice Amount'] },
+    { label: 'Unnecessary TDS (Transporter)', categories: ['TDS Not Applicable — Violation (Transporter Exemption)'] },
+    { label: 'Wrong Section (Goods vs Services)', categories: ['Wrong Section Applied'] },
+    { label: 'Wrong Section (Non-Resident)', categories: ['Wrong Section Applied — Non-Resident'] },
+    { label: 'Wrong Section (Resident Misclassified)', categories: ['Wrong Section Applied — Resident'] },
+    { label: 'Possible Missed TDS Deduction', categories: ['Possible Missed TDS Deduction'] },
+  ].map(({ label, categories }) => [categories.join(MULTI_CATEGORY_DELIMITER), label])
 }
 
 /** 85% violations / 15% correctly-handled confirmations — an Issue Review feed should mostly surface exceptions. */

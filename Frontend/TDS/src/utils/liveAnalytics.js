@@ -181,7 +181,7 @@ export function deriveGlCorrections(issues) {
     .filter((i) => {
       if (!i.isViolation) return false
       const impact = Number(i.taxImpact) || 0
-      return impact > 0 || ['SHORT_TDS', 'PAN_MISSING_SHORT', 'NON_FILER_206AB', 'THRESHOLD_CROSSED'].includes(i.issueType)
+      return impact > 0 || ['WRONG_TDS_RATE', 'PAN_MISSING_SHORT', 'NON_FILER_206AB', 'THRESHOLD_CROSSED'].includes(i.issueType)
     })
     .slice(0, 200)
     .map((issue, idx) => {

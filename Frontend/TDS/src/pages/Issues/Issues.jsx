@@ -16,14 +16,14 @@ import {
   selectActiveIssues, selectActiveVendors, selectActiveSections,
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
-import { groupedScenarioOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
+import { issueTypeFilterOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
 import '@/components/Common/Common.css'
 import './Issues.css'
 
 const SEVERITY_OPTIONS = [['all','All Severity'],['high','High'],['medium','Medium'],['low','Low']]
 const STATUS_OPTIONS   = [['all','All Status'],['open','Open'],['in_review','In Review'],['resolved','Resolved'],['rejected','Rejected']]
-const ISSUE_TYPE_GROUPS = groupedScenarioOptions()
+const ISSUE_TYPE_OPTIONS = issueTypeFilterOptions()
 
 const SEVERITY_ICON = { high: AlertOctagon, medium: AlertTriangle, low: CheckCircle2 }
 
@@ -219,11 +219,7 @@ export default function Issues() {
           </select>
           <select className="filter-select" value={issueTypeFilter} onChange={(e) => dispatch(setIssueTypeFilter(e.target.value))}>
             <option value="all">All Issue Types</option>
-            {ISSUE_TYPE_GROUPS.map(({ group, options }) => (
-              <optgroup key={group} label={group}>
-                {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-              </optgroup>
-            ))}
+            {ISSUE_TYPE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
           <select className="filter-select" value={statusFilter} onChange={(e) => dispatch(setStatusFilter(e.target.value))}>
             {STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}

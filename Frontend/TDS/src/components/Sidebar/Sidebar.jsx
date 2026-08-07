@@ -3,12 +3,10 @@ import { createPortal } from 'react-dom'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutGrid, AlertTriangle, Gauge, GitPullRequestArrow,
-  FileBarChart, Settings, ShieldCheck, ChevronsLeft, LogOut,
+  FileBarChart, Settings, ShieldCheck, ChevronsLeft,
 } from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
 import { toggleSidebar } from '@/redux/slices/appSlice'
-import { useAuth } from '@/context/AuthContext'
-import { initials } from '@/utils/utils'
 import './Sidebar.css'
 
 const navItems = [
@@ -23,10 +21,6 @@ const navItems = [
 export default function Sidebar() {
   const collapsed = useSelector((s) => s.app.sidebarCollapsed)
   const dispatch  = useDispatch()
-  const { user, logout } = useAuth()
-
-  const displayName = user?.name ?? 'User'
-  const displayRole = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Viewer'
 
   // Collapsed nav items only show an icon, so on hover/focus we flyout the
   // label. Rendered via a portal on document.body (position: fixed) rather
@@ -102,29 +96,6 @@ export default function Sidebar() {
         <ChevronsLeft size={14} className={collapsed ? 'rotated' : ''} />
         {!collapsed && <span>Collapse</span>}
       </button>
-
-      {/* User row */}
-      <div className={`sidebar-user ${collapsed ? 'collapsed' : ''}`}>
-        <div className="sidebar-avatar">
-          {initials(displayName)}
-        </div>
-        {!collapsed && (
-          <>
-            <div className="sidebar-user-info">
-              <span className="sidebar-user-name">{displayName}</span>
-              <span className="sidebar-user-role">{displayRole}</span>
-            </div>
-            <button
-              className="sidebar-logout-btn"
-              onClick={logout}
-              title="Sign out"
-              aria-label="Sign out"
-            >
-              <LogOut size={14} />
-            </button>
-          </>
-        )}
-      </div>
     </div>
   )
 }
