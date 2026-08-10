@@ -1,18 +1,5 @@
 import { createSlice } from '@reduxjs/toolkit'
 import {
-  issues as mockIssues,
-  sections as mockSections,
-  vendorNames as mockVendors,
-  glCorrections as mockGlCorrections,
-  issuesBySection as mockIssuesBySection,
-  topVendorsWithIssues as mockTopVendors,
-  complianceHealth as mockComplianceHealth,
-  monthlyTrend as mockMonthlyTrend,
-  vendors as mockThresholdVendors,
-  thresholdSectionBreakdown as mockThresholdBreakdown,
-  thresholdConsumptionTrend as mockThresholdTrend,
-} from '@/data/mockData'
-import {
   deriveIssuesBySection,
   deriveTopVendors,
   deriveComplianceHealth,
@@ -24,6 +11,36 @@ import {
   deriveThresholdConsumptionTrend,
 } from '@/utils/liveAnalytics'
 
+const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
+
+function readLastUpload() {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(LAST_UPLOAD_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed.uploadedIssues)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function saveLastUpload(state) {
+  if (typeof window === 'undefined') return
+  const payload = {
+    uploadedIssues: state.uploadedIssues,
+    uploadMeta: state.uploadMeta,
+  }
+  window.localStorage.setItem(LAST_UPLOAD_STORAGE_KEY, JSON.stringify(payload))
+}
+
+function clearLastUpload() {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem(LAST_UPLOAD_STORAGE_KEY)
+}
+
+const lastUpload = readLastUpload()
 const initialState = {
   searchQuery:     '',
   vendorFilter:    'all',
@@ -34,9 +51,9 @@ const initialState = {
   selectedIssueId: null,
   drawerOpen:      false,
 
-  dataSource: 'sample',
-  uploadedIssues: [],
-  uploadMeta: null,
+  dataSource: lastUpload ? 'upload' : 'empty',
+  uploadedIssues: lastUpload?.uploadedIssues || [],
+  uploadMeta: lastUpload?.uploadMeta || null,
   uploadStatus: 'idle',
   uploadProgress: 0,
   uploadError: null,
@@ -94,6 +111,7 @@ const issuesSlice = createSlice({
       state.severityFilter = 'all'
       state.statusFilter = 'all'
       state.issueTypeFilter = 'all'
+      saveLastUpload(state)
     },
     uploadFailed: (state, action) => {
       state.uploadStatus = 'error'
@@ -101,7 +119,7 @@ const issuesSlice = createSlice({
       state.uploadProgress = 0
     },
     clearUpload: (state) => {
-      state.dataSource = 'sample'
+      state.dataSource = 'empty'
       state.uploadedIssues = []
       state.uploadMeta = null
       state.uploadStatus = 'idle'
@@ -109,6 +127,7 @@ const issuesSlice = createSlice({
       state.uploadError = null
       state.selectedIssueId = null
       state.drawerOpen = false
+      clearLastUpload()
     },
   },
 })
@@ -124,43 +143,34 @@ export function selectIsLive(state) {
 }
 
 export function selectActiveIssues(state) {
-  return state.issues.dataSource === 'upload'
-    ? state.issues.uploadedIssues
-    : mockIssues
+  return state.issues.uploadedIssues
 }
 
 export function selectActiveVendors(state) {
-  if (state.issues.dataSource === 'upload' && state.issues.uploadMeta?.vendors?.length) {
-    return state.issues.uploadMeta.vendors
-  }
-  return mockVendors
+  if (state.issues.uploadMeta?.vendors?.length) return state.issues.uploadMeta.vendors
+  return [...new Set(state.issues.uploadedIssues.map((i) => i.vendor).filter(Boolean))].sort()
 }
 
 export function selectActiveSections(state) {
-  if (state.issues.dataSource === 'upload' && state.issues.uploadMeta?.sections?.length) {
-    return state.issues.uploadMeta.sections
-  }
-  return mockSections
+  if (state.issues.uploadMeta?.sections?.length) return state.issues.uploadMeta.sections
+  return [...new Set(state.issues.uploadedIssues.map((i) => i.section).filter(Boolean))].sort()
 }
 
 export function selectDashboardKpis(state) {
   const issues = selectActiveIssues(state)
-  const stats = state.issues.dataSource === 'upload' ? state.issues.uploadMeta?.stats : null
+  const stats = state.issues.uploadMeta?.stats || null
   return deriveDashboardKpis(issues, stats)
 }
 
 export function selectIssuesBySection(state) {
-  if (state.issues.dataSource !== 'upload') return mockIssuesBySection
   return deriveIssuesBySection(state.issues.uploadedIssues)
 }
 
 export function selectTopVendors(state) {
-  if (state.issues.dataSource !== 'upload') return mockTopVendors
   return deriveTopVendors(state.issues.uploadedIssues)
 }
 
 export function selectComplianceHealth(state) {
-  if (state.issues.dataSource !== 'upload') return mockComplianceHealth
   return deriveComplianceHealth(
     state.issues.uploadedIssues,
     state.issues.uploadMeta?.stats?.transactionsBuilt,
@@ -168,28 +178,24 @@ export function selectComplianceHealth(state) {
 }
 
 export function selectMonthlyTrend(state) {
-  if (state.issues.dataSource !== 'upload') return mockMonthlyTrend
   return deriveMonthlyTrend(state.issues.uploadedIssues)
 }
 
 export function selectThresholdVendors(state) {
-  if (state.issues.dataSource !== 'upload') return mockThresholdVendors
   return deriveThresholdVendors(state.issues.uploadedIssues)
 }
 
 export function selectThresholdSectionBreakdown(state) {
-  if (state.issues.dataSource !== 'upload') return mockThresholdBreakdown
   return deriveThresholdSectionBreakdown(deriveThresholdVendors(state.issues.uploadedIssues))
 }
 
 export function selectThresholdConsumptionTrend(state) {
-  if (state.issues.dataSource !== 'upload') return mockThresholdTrend
   return deriveThresholdConsumptionTrend(state.issues.uploadedIssues)
 }
 
 export function selectGlCorrections(state) {
-  if (state.issues.dataSource !== 'upload') return mockGlCorrections
   return deriveGlCorrections(state.issues.uploadedIssues)
 }
 
 export default issuesSlice.reducer
+

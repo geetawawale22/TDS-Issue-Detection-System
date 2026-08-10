@@ -27,6 +27,23 @@ const ISSUE_TYPE_OPTIONS = issueTypeFilterOptions()
 
 const SEVERITY_ICON = { high: AlertOctagon, medium: AlertTriangle, low: CheckCircle2 }
 
+function SectionCell({ issue }) {
+  const oldSection = issue.legacySection || issue.ruleSection
+  const newSection = issue.newSection
+  const hasOldAndNew = oldSection && newSection && oldSection !== newSection
+
+  if (!hasOldAndNew) {
+    return <span className="font-mono issues-section-single">{issue.section}</span>
+  }
+
+  return (
+    <span className="font-mono issues-section-stack" title={`${oldSection} /${newSection}`}>
+      <span>{oldSection} /</span>
+      <span>{newSection}</span>
+    </span>
+  )
+}
+
 export default function Issues() {
   const dispatch = useDispatch()
   const {
@@ -124,7 +141,7 @@ export default function Issues() {
         <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId}</div>
       </div>
     )},
-    { key: 'section',      header: 'Section',  render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
+    { key: 'section',      header: 'Section',  render: (r) => <SectionCell issue={r} /> },
     { key: 'baseAmount',   header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount',    header: 'TDS (₹)',  render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
     { key: 'category', header: 'Issue Type', render: (r) => {
@@ -233,7 +250,7 @@ export default function Issues() {
       <div className="table-card">
         <div className="issues-count-label">
           Showing {filtered.length.toLocaleString()} issue{filtered.length === 1 ? '' : 's'}
-          {dataSource === 'upload' ? ' from SAP upload' : ' (sample data)'}
+          {dataSource === 'upload' ? ' from SAP upload' : ' awaiting SAP upload'}
         </div>
         <DataTable
           columns={columns}
@@ -254,3 +271,4 @@ export default function Issues() {
     </div>
   )
 }
+

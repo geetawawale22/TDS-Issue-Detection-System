@@ -110,15 +110,16 @@ export default function SapUploadPanel() {
 
   function handleClear() {
     dispatch(clearUpload())
-    dispatch(setDataSourceLabel('GCP BigQuery — finance-prod'))
-    dispatch(setLastSyncTime('8 minutes ago'))
+    dispatch(setDataSourceLabel('No SAP upload loaded'))
+    dispatch(setLastSyncTime('Not synced'))
+    dispatch(setSyncStatus('idle'))
     setSelectedFile(null)
     if (inputRef.current) inputRef.current.value = ''
-    toast('Showing sample demo data')
+    toast('Upload cleared')
   }
 
   const stats = uploadMeta?.stats
-  const showSampleHint = dataSource === 'sample' && uploadStatus === 'idle' && !uploadError
+  const showEmptyHint = dataSource === 'empty' && uploadStatus === 'idle' && !uploadError
 
   return (
     <section className="sap-upload">
@@ -128,7 +129,7 @@ export default function SapUploadPanel() {
           <p className="sap-upload-sub">
             {open
               ? 'Upload a CSV or Excel extract. TDS rules run on every transaction; exceptions appear in the table below.'
-              : 'Upload a SAP extract to run TDS rules on it, or keep browsing the sample data below.'}
+              : 'Upload a SAP extract to run TDS rules. Your last successful upload stays visible after refresh.'}
           </p>
         </div>
         <div className="sap-upload-header-actions">
@@ -247,7 +248,7 @@ export default function SapUploadPanel() {
           <div className="sap-upload-actions">
             {dataSource === 'upload' && (
               <button type="button" className="btn btn-outline" disabled={busy} onClick={handleClear}>
-                Sample data
+                Clear upload
               </button>
             )}
             <button
@@ -352,9 +353,9 @@ export default function SapUploadPanel() {
         </div>
       )}
 
-      {showSampleHint && (
+      {showEmptyHint && (
         <p className="sap-hint">
-          Showing sample demo data. Upload a SAP extract to replace it with live rule results.
+          No SAP upload loaded yet. Upload an extract to populate the issue table.
         </p>
       )}
       </>
@@ -362,3 +363,4 @@ export default function SapUploadPanel() {
     </section>
   )
 }
+

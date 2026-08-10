@@ -5,7 +5,17 @@ import { readStoredSession } from '@/services/sessionStorage'
 // page refresh doesn't reset it mid-session. Only meaningful once we know
 // which codes the logged-in user is actually allowed to see.
 const COMPANY_CODE_KEY = 'tds_selected_company_code'
+const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
 
+function readLastUploadMeta() {
+  if (typeof window === 'undefined') return null
+  try {
+    return JSON.parse(window.localStorage.getItem(LAST_UPLOAD_STORAGE_KEY) || 'null')?.uploadMeta || null
+  } catch {
+    return null
+  }
+}
+const lastUploadMeta = readLastUploadMeta()
 const storedSession = readStoredSession()
 const initialCompanyCodes = storedSession?.user?.companyCodes ?? []
 const storedCompanyCode = sessionStorage.getItem(COMPANY_CODE_KEY)
@@ -19,11 +29,11 @@ const initialSidebarCollapsed = typeof window !== 'undefined' && window.innerWid
 
 const initialState = {
   sidebarCollapsed: initialSidebarCollapsed,
-  syncStatus:       'synced',
-  lastSyncTime:     '8 minutes ago',
+  syncStatus:       lastUploadMeta ? 'synced' : 'idle',
+  lastSyncTime:     lastUploadMeta ? 'Last upload' : 'Not synced',
   workspaceName:    'Meridian Holdings Pvt Ltd',
   financialYear:    'FY 2025-26',
-  dataSource:       'GCP BigQuery — finance-prod',
+  dataSource:       lastUploadMeta?.fileName ? `SAP upload - ${lastUploadMeta.fileName}` : 'No SAP upload loaded',
 
   // Company codes the logged-in user has access to (admins: all of them),
   // and which one is currently selected for dashboard/issues/reports views.
@@ -76,3 +86,4 @@ export const {
   setAvailableCompanyCodes, setSelectedCompanyCode, clearCompanyCodes,
 } = appSlice.actions
 export default appSlice.reducer
+
