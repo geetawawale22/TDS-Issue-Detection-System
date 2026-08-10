@@ -1,6 +1,7 @@
 from datetime import date
 
-from ingestion.sap_translator import _derive_vendor_category
+from api.issues import _transaction_issue
+from ingestion.sap_translator import _derive_vendor_category, build_transactions_from_sap_export
 from rules.tds_rule_engine import (
     _get_applicable_rate,
     check_amount_consistency,
@@ -69,6 +70,119 @@ def test_wrong_amount_is_single_amount_mismatch_when_rate_is_correct():
     assert len(issues) == 1
     assert issues[0].category == "Short/Excess TDS Deducted — Amount Mismatch"
     assert "₹400.00 was actually deducted" in issues[0].message
+
+
+def test_classified_row_keeps_zero_basic_amount_instead_of_using_bill_amount():
+    transaction = Transaction(
+        doc_number="TEST-194H-ZERO-BASIC",
+        doc_type="TP",
+        posting_date=date(2025, 11, 7),
+        vendor_code="V005",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        bill_amount=24_415,
+        basic_amount=0,
+        tds_deducted_section="194H",
+        tds_deducted_rate=2.0,
+        tds_deducted_amount=0,
+    )
+
+    assert run_all_checks(transaction) == []
+
+
+def test_payment_type_contract_catches_wrong_section_194j_instead_of_194c():
+    transaction = Transaction(
+        doc_number="TEST-PAYTYPE-WRONG",
+        doc_type="KA",
+        transaction_kind="contract",
+        posting_date=date(2025, 5, 29),
+        vendor_code="V006",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        bill_amount=450_000,
+        basic_amount=450_000,
+        tds_deducted_section="194J",
+        tds_legacy_section="194J",
+        tds_deducted_rate=1.0,
+        tds_deducted_amount=4_500,
+    )
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong Section Applied"
+    assert "requires section 194C" in issues[0].message
+
+    ui_issue = _transaction_issue(1, transaction, issues[0])
+    assert ui_issue["expectedRate"] == 1.0
+    assert ui_issue["taxImpact"] == 0
+
+
+def test_payment_type_contract_accepts_194c():
+    transaction = Transaction(
+        doc_number="TEST-PAYTYPE-CORRECT",
+        doc_type="KA",
+        transaction_kind="contract",
+        posting_date=date(2025, 5, 29),
+        vendor_code="V006",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        bill_amount=450_000,
+        basic_amount=450_000,
+        tds_deducted_section="194C",
+        tds_legacy_section="194C",
+        tds_deducted_rate=1.0,
+        tds_deducted_amount=4_500,
+    )
+
+    assert run_all_checks(transaction) == []
+
+
+def test_tds_section_text_infers_purchase_and_flags_unrecognised_section():
+    transaction = build_transactions_from_sap_export([{
+        "Document_No": "TEST-PNS392",
+        "Document_Type": "KA",
+        "Posting_Date": "2025-05-29",
+        "Vendor_Code": "V006",
+        "PAN": "AAEPZ9355R",
+        "Bill_Amount": 450_000,
+        "Basic_Amount": 450_000,
+        "TDSSection": "Purc of Good-0.1%PMTCOM-PNS392",
+        "TDSRate": 0.1,
+        "TDSAmount": -450,
+    }])[0]
+
+    issues = run_all_checks(transaction)
+
+    assert transaction.transaction_kind == "purchase"
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong Section Applied"
+    assert issues[0].expected_section == "194Q"
+    assert "requires section 194Q" in issues[0].message
+    assert "not recognised" in issues[0].message
+
+
+def test_tds_section_text_infers_purchase_and_flags_wrong_legacy_section():
+    transaction = build_transactions_from_sap_export([{
+        "Document_No": "TEST-PURCHASE-AS-194J",
+        "Document_Type": "KA",
+        "Posting_Date": "2025-05-29",
+        "Vendor_Code": "V006",
+        "PAN": "AAEPZ9355R",
+        "Bill_Amount": 450_000,
+        "Basic_Amount": 450_000,
+        "TDSSection": "194J Purc of Good-0.1%",
+        "TDSRate": 0.1,
+        "TDSAmount": -450,
+    }])[0]
+
+    issues = run_all_checks(transaction)
+
+    assert transaction.transaction_kind == "purchase"
+    assert transaction.tds_deducted_section == "194J"
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong Section Applied"
+    assert "requires section 194Q" in issues[0].message
 
 
 def test_threshold_shortfall_is_not_duplicated_when_row_level_issue_explains_it():

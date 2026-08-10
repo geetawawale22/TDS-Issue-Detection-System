@@ -29,7 +29,15 @@ from ingestion.sap_translator import (
     get_tds_section_raw,
     looks_like_descriptive_tds_section,
 )
-from rules.tds_rule_engine import _get_applicable_rate, run_all_checks, check_threshold_breach, check_missing_deduction
+from rules.tds_rule_engine import (
+    PAYMENT_TYPE_TO_SECTION,
+    _get_applicable_rate,
+    _get_rate_for_section,
+    _get_tds_base_amount,
+    run_all_checks,
+    check_threshold_breach,
+    check_missing_deduction,
+)
 
 
 router = APIRouter(prefix="/issues", tags=["Issues"])
@@ -63,6 +71,12 @@ ISSUE_TYPE_BY_CATEGORY = {
     "TDS Not Deducted — Threshold Crossed": "THRESHOLD_CROSSED",
     "Possible Missed TDS Deduction": "MISSING_DEDUCTION"
 }
+
+
+def _normalise_payment_type(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.strip().lower().replace(" ", "_").replace("-", "_") or None
 
 
 def _is_blank(value: Any) -> bool:
@@ -131,23 +145,34 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     # LDC, etc.) must win over the base statutory section rate.
     expected_rate = rule_issue.expected_rate
     if expected_rate is None:
-        expected_rate = _get_applicable_rate(txn)
+        expected_rate = (
+            _get_rate_for_section(rule_issue.expected_section, txn)
+            if rule_issue.expected_section
+            else _get_applicable_rate(txn)
+        )
     applied_rate = txn.tds_deducted_rate
     # Bill amount is retained for display when SAP did not provide a taxable
     # base. It is never used to calculate tax impact or rule outcomes.
-    base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+    base_amount = _get_tds_base_amount(txn)
+    if base_amount is None:
+        base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
     tax_impact = 0.0
-    if txn.basic_amount is not None and expected_rate is not None:
+    tax_base_amount = _get_tds_base_amount(txn)
+    if tax_base_amount is not None and expected_rate is not None:
         # No rate recorded on the transaction means nothing was deducted —
         # treat that as 0% for the purpose of measuring the shortfall.
         reference_rate = applied_rate if applied_rate is not None else 0.0
-        tax_impact = abs(txn.basic_amount * (expected_rate - reference_rate) / 100)
+        tax_impact = abs(tax_base_amount * (expected_rate - reference_rate) / 100)
         
     category = rule_issue.category
     effective_section = (
         txn.tds_new_section
         if txn.posting_date >= NEW_ACT_EFFECTIVE_DATE and txn.tds_new_section
-        else txn.tds_legacy_section or txn.tds_deducted_section or txn.tds_new_section or "—"
+        else txn.tds_legacy_section
+        or txn.tds_deducted_section
+        or txn.tds_new_section
+        or rule_issue.expected_section
+        or "—"
     )
     return {
         "id": f"UPL-{issue_id:06d}",
@@ -164,7 +189,7 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "source": "GL" if txn.gl_account else "SAP",
         "transactionAmount": base_amount,
         "baseAmount": base_amount,
-        "baseAmountAvailable": txn.basic_amount is not None,
+        "baseAmountAvailable": _get_tds_base_amount(txn) is not None,
         "tdsAmount": txn.tds_deducted_amount or 0.0,
         "expectedRate": expected_rate,
         "appliedRate": applied_rate,
@@ -182,6 +207,80 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "recommendedAction": "Review the transaction and correct the TDS entry where required.",
         "suggestedCorrection": "Review the transaction and correct the TDS entry where required.",
     }
+
+
+def _threshold_section_for_transaction(txn) -> str:
+    payment_section = PAYMENT_TYPE_TO_SECTION.get(_normalise_payment_type(txn.transaction_kind))
+    return (
+        txn.tds_legacy_section
+        or txn.tds_deducted_section
+        or payment_section
+        or txn.tds_new_section
+        or "—"
+    )
+
+
+def _threshold_vendor_summaries(transactions) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for txn in transactions:
+        section = _threshold_section_for_transaction(txn)
+        vendor_id = txn.vendor_code or txn.vendor_name or "—"
+        key = f"{vendor_id}||{section}"
+        base_amount = _get_tds_base_amount(txn)
+        if base_amount is None:
+            base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+
+        if key not in grouped:
+            grouped[key] = {
+                "id": key,
+                "name": txn.vendor_name or txn.vendor_code or "Unknown vendor",
+                "vendorId": vendor_id,
+                "pan": txn.vendor_pan or "—",
+                "section": section,
+                "currentAmount": 0.0,
+                "rowCount": 0,
+            }
+
+        grouped[key]["currentAmount"] += float(base_amount or 0)
+        grouped[key]["rowCount"] += 1
+
+    return sorted(
+        grouped.values(),
+        key=lambda row: (row["name"], row["section"]),
+    )
+
+
+def _transaction_validation_row(txn, status: str, reason: str) -> dict[str, Any]:
+    base_amount = _get_tds_base_amount(txn)
+    if base_amount is None:
+        base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+
+    return {
+        "id": f"{status}:{txn.doc_number}:{txn.vendor_code}:{_threshold_section_for_transaction(txn)}",
+        "status": status,
+        "reason": reason,
+        "docNo": txn.doc_number or "—",
+        "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
+        "vendorId": txn.vendor_code or "—",
+        "vendorPan": txn.vendor_pan or "—",
+        "section": _threshold_section_for_transaction(txn),
+        "baseAmount": base_amount,
+        "tdsAmount": txn.tds_deducted_amount or 0.0,
+        "date": txn.posting_date.isoformat(),
+    }
+
+
+def _has_validation_signal(txn) -> bool:
+    return any((
+        txn.tds_deducted_section,
+        txn.tds_legacy_section,
+        txn.tds_new_section,
+        txn.tds_deducted_rate is not None,
+        txn.tds_applicable_section,
+        txn.tds_applicable_rate is not None,
+        txn.transaction_kind,
+    ))
 
 
 @router.post("/upload")
@@ -254,28 +353,69 @@ async def upload_sap_file(
         )
 
     issues: list[dict[str, Any]] = []
+    issue_reasons_by_transaction_id: dict[int, str] = {}
+    issue_transaction_ids: set[int] = set()
     for txn in transactions:
         for rule_issue in run_all_checks(txn):
             if include_informational or rule_issue.severity != "low":
                 issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+                issue_transaction_ids.add(id(txn))
+                issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
     # Threshold checks operate across transactions, so each result carries a
     # representative transaction from its own vendor/section/FY group.
     for txn, rule_issue in check_threshold_breach(transactions):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_transaction_ids.add(id(txn))
+            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
 
     for txn, rule_issue in check_missing_deduction(transactions):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_transaction_ids.add(id(txn))
+            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
+    threshold_vendors = _threshold_vendor_summaries(transactions)
+    insufficient_data_rows = sum(
+        id(txn) not in issue_transaction_ids and not _has_validation_signal(txn)
+        for txn in transactions
+    )
+    issue_rows = len(issue_transaction_ids)
+    passed_rows = max(0, len(transactions) - issue_rows - insufficient_data_rows)
+    validation_rows = []
+    for txn in transactions:
+        txn_id = id(txn)
+        if txn_id in issue_transaction_ids:
+            validation_rows.append(_transaction_validation_row(
+                txn,
+                "issue",
+                issue_reasons_by_transaction_id.get(txn_id, "Issue found"),
+            ))
+        elif not _has_validation_signal(txn):
+            validation_rows.append(_transaction_validation_row(
+                txn,
+                "insufficient",
+                "Missing section/rate/applicable section/payment type, so rules cannot validate this row.",
+            ))
+        else:
+            validation_rows.append(_transaction_validation_row(
+                txn,
+                "passed",
+                "Validated with no issue found.",
+            ))
+
     stats = {
         "rowsRead": len(records),
         "transactionsBuilt": len(transactions),
         "rowsSkipped": len(records) - len(transactions),
+        "passedRows": passed_rows,
+        "issueRows": issue_rows,
+        "insufficientDataRows": insufficient_data_rows,
+        "validatedRows": passed_rows + issue_rows,
         "issuesFound": len(issues),
         "high": sum(issue["severity"] == "high" for issue in issues),
         "medium": sum(issue["severity"] == "medium" for issue in issues),
@@ -290,6 +430,8 @@ async def upload_sap_file(
         "stats": stats,
         "vendors": vendors,
         "sections": sections,
+        "thresholdVendors": threshold_vendors,
+        "validationRows": validation_rows,
         "unrecognizedColumns": [],
         "errors": [],
     }

@@ -56,6 +56,7 @@ class Transaction(BaseModel):
     # `tds_deducted_section` remains the legacy compatibility key used by the
     # current YAML rule engine. The statutory/source references are preserved
     # separately so post-1-Apr-2026 UI and audit records retain Section 393.
+    tds_raw_section: Optional[str] = None
     tds_raw_amount: Optional[float] = None
     tds_deducted_section: Optional[str] = None
     tds_legacy_section: Optional[str] = None

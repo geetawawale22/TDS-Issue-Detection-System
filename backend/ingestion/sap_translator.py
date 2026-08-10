@@ -23,6 +23,7 @@ COLUMN_ALIASES = {
     "basic_amount": ("Basic_Amount", "basic_amount"),
     "posting_date": ("Posting_Date", "posting_date"),
     "doc_type": ("Document_Type", "doc_type"),
+    "transaction_kind": ("Payment_Type", "Nature_Of_Payment", "Transaction_Kind", "transaction_kind"),
     "doc_number": ("Document_No", "doc_number"),
     "tds_section_code": ("TDS_Section_Code",),
     "tds_section": ("TDS_Section", "TDSSection", "tds_section"),
@@ -156,12 +157,14 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
     for row in raw_rows:
         section_value = str(_get(row, "tds_section") or "").strip()
         rate_value = _parse_rate_percent(_get(row, "tds_rate"))
+        transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
 
         pan = str(_get(row, "pan") or "").strip()
 
         txn = Transaction(
             doc_number=str(_get(row, "doc_number") or ""),
             doc_type=str(_get(row, "doc_type") or ""),
+            transaction_kind=transaction_kind,
             posting_date=_parse_date(_get(row, "posting_date")),
             bill_date=_parse_date(_get(row, "bill_date")),
             bill_no=str(_get(row, "bill_no") or "").strip() or None,
@@ -182,6 +185,7 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
             basic_amount=float(_get(row, "basic_amount") or 0),
             debit_credit=str(_get(row, "debit_credit") or "").strip() or None,
 
+            tds_raw_section=section_value,
             tds_applicable_section=str(_get(row, "tds_applicable_section") or "").strip() or None,
             tds_applicable_rate=_safe_float(_get(row, "tds_applicable_rate")),
             tds_applicable_amount=_safe_float(_get(row, "tds_applicable_amount")),
@@ -213,7 +217,11 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
     such as LDC nil-rate, GL exclusions, and threshold checks; only a blank
     or unparseable rate means this export row has no TDS data to evaluate.
     """
-    from rules.tds_rule_engine import decode_tds_section_string, extract_new_section_reference
+    from rules.tds_rule_engine import (
+        decode_tds_section_string,
+        extract_new_section_reference,
+        infer_payment_type_from_tds_text,
+    )
 
     transactions: List[Transaction] = []
 
@@ -223,6 +231,9 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
         raw_section_text = get_tds_section_raw(row)
         old_section, parsed_rate = decode_tds_section_string(raw_section_text)
         new_section = extract_new_section_reference(raw_section_text)
+        transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
+        if transaction_kind is None:
+            transaction_kind = infer_payment_type_from_tds_text(raw_section_text)
 
         # Prefer the decoded section; fall back to rate column if text is missing
         final_rate = rate
@@ -239,6 +250,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
         txn = Transaction(
             doc_number=str(_get(row, "doc_number") or ""),
             doc_type=str(_get(row, "doc_type") or ""),
+            transaction_kind=transaction_kind,
             posting_date=_parse_date(_get(row, "posting_date")),
             bill_date=_parse_date(_get(row, "bill_date")),
             bill_no=str(_get(row, "bill_no") or "").strip() or None,
@@ -257,6 +269,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             bill_amount=_safe_float(_get(row, "bill_amount")) or 0.0,
             basic_amount=_safe_float(_get(row, "basic_amount")),  # None if blank — do NOT fall back to bill_amount (GST-inclusive), that produces false positives
 
+            tds_raw_section=raw_section_text,
             tds_deducted_section=old_section,
             tds_legacy_section=old_section,
             tds_new_section=new_section,

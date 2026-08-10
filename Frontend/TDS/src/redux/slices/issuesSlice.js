@@ -4,7 +4,7 @@ import {
   deriveTopVendors,
   deriveComplianceHealth,
   deriveDashboardKpis,
-  deriveThresholdVendors,
+  deriveThresholdVendorsFromUpload,
   deriveThresholdSectionBreakdown,
   deriveGlCorrections,
   deriveMonthlyTrend,
@@ -97,6 +97,8 @@ const issuesSlice = createSlice({
         stats: payload.stats,
         vendors: payload.vendors || [],
         sections: payload.sections || [],
+        thresholdVendors: payload.thresholdVendors || [],
+        validationRows: payload.validationRows || [],
         unrecognizedColumns: payload.unrecognizedColumns || [],
         errors: payload.errors || [],
       }
@@ -182,11 +184,14 @@ export function selectMonthlyTrend(state) {
 }
 
 export function selectThresholdVendors(state) {
-  return deriveThresholdVendors(state.issues.uploadedIssues)
+  return deriveThresholdVendorsFromUpload(
+    state.issues.uploadMeta?.thresholdVendors || [],
+    state.issues.uploadedIssues,
+  )
 }
 
 export function selectThresholdSectionBreakdown(state) {
-  return deriveThresholdSectionBreakdown(deriveThresholdVendors(state.issues.uploadedIssues))
+  return deriveThresholdSectionBreakdown(selectThresholdVendors(state))
 }
 
 export function selectThresholdConsumptionTrend(state) {
@@ -198,4 +203,3 @@ export function selectGlCorrections(state) {
 }
 
 export default issuesSlice.reducer
-

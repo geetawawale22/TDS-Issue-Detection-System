@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
-  AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2,
+  AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
@@ -46,9 +46,10 @@ function SectionCell({ issue }) {
 
 export default function Issues() {
   const dispatch = useDispatch()
+  const [validationView, setValidationView] = useState('issue')
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
-    issueTypeFilter, selectedIssueId, drawerOpen, dataSource,
+    issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta,
   } = useSelector((s) => s.issues)
 
   const issues = useSelector(selectActiveIssues)
@@ -114,12 +115,18 @@ export default function Issues() {
   }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
+  const validationRows = uploadMeta?.validationRows || []
 
-  const summary = useMemo(() => ({
-    high: issues.filter((i) => i.severity === 'high').length,
-    medium: issues.filter((i) => i.severity === 'medium').length,
-    low: issues.filter((i) => i.severity === 'low').length,
-  }), [issues])
+  const summary = useMemo(() => {
+    const stats = uploadMeta?.stats || {}
+    const issueRows = stats.issueRows ?? issues.length
+    const insufficientDataRows = stats.insufficientDataRows ?? 0
+    const skippedRows = stats.rowsSkipped ?? 0
+    const transactions = stats.transactionsBuilt ?? issues.length
+    const passedRows = stats.passedRows ?? Math.max(0, transactions - issueRows - insufficientDataRows)
+
+    return { passedRows, issueRows, insufficientDataRows, skippedRows }
+  }, [issues, uploadMeta])
 
   const columns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
@@ -160,6 +167,28 @@ export default function Issues() {
     )},
   ]
 
+  const validationColumns = [
+    { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
+    { key: 'docNo', header: 'Doc No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span> },
+    { key: 'vendor', header: 'Vendor', render: (r) => (
+      <div>
+        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
+        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId}</div>
+      </div>
+    )},
+    { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
+    { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
+    { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
+    { key: 'reason', header: 'Validation Result', render: (r) => (
+      <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{r.reason}</span>
+    )},
+  ]
+
+  const validationTableRows = useMemo(() => {
+    if (validationView === 'issue') return []
+    return validationRows.filter((row) => row.status === validationView)
+  }, [validationRows, validationView])
+
   return (
     <div>
       <div className="page-header">
@@ -186,27 +215,50 @@ export default function Issues() {
 
       {/* Summary strip */}
       <div className="issues-summary-grid">
-        <div className="issues-summary-card issues-summary-card--danger">
-          <AlertOctagon size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.high.toLocaleString()}</div>
-            <div className="issues-summary-label">Require Immediate Action</div>
-          </div>
-        </div>
-        <div className="issues-summary-card issues-summary-card--warning">
-          <AlertTriangle size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.medium.toLocaleString()}</div>
-            <div className="issues-summary-label">Review Recommended</div>
-          </div>
-        </div>
-        <div className="issues-summary-card issues-summary-card--success">
+        <button
+          className={`issues-summary-card issues-summary-card--success ${validationView === 'passed' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('passed')}
+        >
           <CheckCircle2 size={16} />
           <div>
-            <div className="issues-summary-value">{summary.low.toLocaleString()}</div>
-            <div className="issues-summary-label">Informational</div>
+            <div className="issues-summary-value">{summary.passedRows.toLocaleString()}</div>
+            <div className="issues-summary-label">Passed</div>
           </div>
-        </div>
+        </button>
+        <button
+          className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('issue')}
+        >
+          <AlertOctagon size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.issueRows.toLocaleString()}</div>
+            <div className="issues-summary-label">Issue Found</div>
+          </div>
+        </button>
+        <button
+          className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('insufficient')}
+        >
+          <AlertTriangle size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.insufficientDataRows.toLocaleString()}</div>
+            <div className="issues-summary-label">Insufficient Data</div>
+          </div>
+        </button>
+        <button
+          className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('skipped')}
+        >
+          <CircleSlash size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
+            <div className="issues-summary-label">Skipped</div>
+          </div>
+        </button>
       </div>
 
       {/* Filter bar */}
@@ -249,26 +301,42 @@ export default function Issues() {
 
       <div className="table-card">
         <div className="issues-count-label">
-          Showing {filtered.length.toLocaleString()} issue{filtered.length === 1 ? '' : 's'}
+          {validationView === 'issue'
+            ? `Showing ${filtered.length.toLocaleString()} issue${filtered.length === 1 ? '' : 's'}`
+            : `Showing ${validationTableRows.length.toLocaleString()} ${validationView} row${validationTableRows.length === 1 ? '' : 's'}`}
           {dataSource === 'upload' ? ' from SAP upload' : ' awaiting SAP upload'}
         </div>
-        <DataTable
-          columns={columns}
-          data={filtered}
-          pageSize={12}
-          emptyState={
-            <div className="empty-state">
-              <div className="empty-state-icon"><FileSearch size={20} /></div>
-              <div className="empty-state-title">No issues match your filters</div>
-              <div className="empty-state-desc">Try adjusting your search or filter criteria.</div>
-              <button className="btn btn-outline btn-sm" onClick={() => dispatch(resetFilters())}>Reset Filters</button>
-            </div>
-          }
-        />
+        {validationView === 'issue' ? (
+          <DataTable
+            columns={columns}
+            data={filtered}
+            pageSize={12}
+            emptyState={
+              <div className="empty-state">
+                <div className="empty-state-icon"><FileSearch size={20} /></div>
+                <div className="empty-state-title">No issues match your filters</div>
+                <div className="empty-state-desc">Try adjusting your search or filter criteria.</div>
+                <button className="btn btn-outline btn-sm" onClick={() => dispatch(resetFilters())}>Reset Filters</button>
+              </div>
+            }
+          />
+        ) : (
+          <DataTable
+            columns={validationColumns}
+            data={validationTableRows}
+            pageSize={12}
+            emptyState={
+              <div className="empty-state">
+                <div className="empty-state-icon"><FileSearch size={20} /></div>
+                <div className="empty-state-title">No rows in this bucket</div>
+                <div className="empty-state-desc">This validation category has no rows in the latest SAP upload.</div>
+              </div>
+            }
+          />
+        )}
       </div>
 
       <IssueDrawer issue={selectedIssue} open={drawerOpen} onClose={() => dispatch(closeDrawer())} />
     </div>
   )
 }
-

@@ -22,6 +22,23 @@ with open(CONFIG_PATH, "r") as f:
 SECTIONS = TDS_CONFIG["sections"]
 GL_NOT_APPLICABLE = TDS_CONFIG["gl_tds_not_applicable"]
 CROSS_RULES = TDS_CONFIG["cross_section_rules"]
+PAYMENT_TYPE_TO_SECTION = {
+    str(section_config.get("payment_type", "")).strip().lower(): section_code
+    for section_code, section_config in SECTIONS.items()
+    if section_config.get("payment_type")
+}
+PAYMENT_TYPE_TEXT_PATTERNS = (
+    ("purchase", (r"\bpurc(?:hase)?\b.*\bgood", r"\bgoods?\b")),
+    ("commission", (r"\bcomm(?:ission)?\b",)),
+    ("brokerage", (r"\bbrokerage\b",)),
+    ("contract", (r"\bcontract(?:or)?\b", r"\bind\s*/\s*huf\b.*\b1(?:\.0)?\s*%")),
+    ("professional", (r"\bprofessional\b",)),
+    ("technical", (r"\btechnical\b",)),
+    ("rent", (r"\brent\b",)),
+    ("interest", (r"\binterest\b",)),
+    ("dividend", (r"\bdividend\b",)),
+    ("ecommerce", (r"\be[- ]?commerce\b",)),
+)
 
 
 # ============================================================
@@ -40,12 +57,14 @@ class TDSIssue:
         severity: str = "medium",
         issue_code: Optional[str] = None,
         expected_rate: Optional[float] = None,
+        expected_section: Optional[str] = None,
     ):
         self.category = category
         self.message = message
         self.severity = severity  # "high", "medium", "low"
         self.issue_code = issue_code or category.upper().replace(" ", "_")
         self.expected_rate = expected_rate
+        self.expected_section = expected_section
 
     def __repr__(self):
         return f"<TDSIssue category={self.category} severity={self.severity}>"
@@ -57,6 +76,7 @@ class TDSIssue:
             "message": self.message,
             "severity": self.severity,
             "expected_rate": self.expected_rate,
+            "expected_section": self.expected_section,
         }
 
 
@@ -166,6 +186,18 @@ def decode_tds_section_string(raw_text: str) -> tuple:
     rate = float(rate_match.group(1)) if rate_match else None
 
     return old_section, rate
+
+
+def infer_payment_type_from_tds_text(raw_text: str) -> Optional[str]:
+    """Infer payment type from descriptive TDSSection text when no separate field exists."""
+    if not raw_text:
+        return None
+
+    for payment_type, patterns in PAYMENT_TYPE_TEXT_PATTERNS:
+        if any(re.search(pattern, raw_text, re.IGNORECASE) for pattern in patterns):
+            return payment_type
+
+    return None
 
 
 # ============================================================
@@ -324,7 +356,14 @@ def _get_applicable_rate(txn: Transaction) -> Optional[float]:
     if not txn.tds_deducted_section:
         return None
 
-    section_key = txn.tds_deducted_section.strip().upper()
+    return _get_rate_for_section(txn.tds_deducted_section, txn)
+
+
+def _get_rate_for_section(section: Optional[str], txn: Transaction) -> Optional[float]:
+    if not section:
+        return None
+
+    section_key = section.strip().upper()
     section_config = SECTIONS.get(section_key)
     if not section_config:
         return None
@@ -339,6 +378,24 @@ def _get_applicable_rate(txn: Transaction) -> Optional[float]:
             return rate_config["individual_huf"]
         else:
             return rate_config["others"]
+
+    return None
+
+
+def _get_tds_base_amount(txn: Transaction) -> Optional[float]:
+    """
+    Return the amount to use for TDS validation.
+
+    Prefer Basic_Amount whenever SAP provides it, including 0. A zero basic
+    amount is a real source value and must not be replaced by Bill_Amount.
+    Use Bill_Amount only when Basic_Amount is genuinely missing.
+    """
+    if txn.basic_amount is not None:
+        return txn.basic_amount
+
+    has_tds_classification = bool(txn.tds_deducted_section and txn.tds_deducted_rate is not None)
+    if has_tds_classification and txn.bill_amount and txn.bill_amount > 0:
+        return txn.bill_amount
 
     return None
 
@@ -405,27 +462,28 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     if txn.tds_deducted_amount is None or txn.tds_deducted_rate is None:
         return None  # need both to cross-check
 
-    if not txn.basic_amount or txn.basic_amount == 0:
+    base_amount = _get_tds_base_amount(txn)
+    if not base_amount:
         return None  # can't compute a meaningful rate without a base
 
     applicable_rate = _get_applicable_rate(txn)
     if applicable_rate is not None and txn.tds_deducted_rate != applicable_rate:
         return None  # wrong-rate issue already carries the correct amount context
 
-    expected_amount = txn.basic_amount * (txn.tds_deducted_rate / 100)
+    expected_amount = base_amount * (txn.tds_deducted_rate / 100)
     actual_amount = txn.tds_deducted_amount
 
     diff = abs(expected_amount - actual_amount)
     if diff <= 2:
         return None  # within rounding tolerance — fine
 
-    implied_rate = (actual_amount / txn.basic_amount) * 100
+    implied_rate = (actual_amount / base_amount) * 100
 
     return TDSIssue(
         category="Short/Excess TDS Deducted — Amount Mismatch",
         message=(
             f"Stated rate is {txn.tds_deducted_rate}%, which should give "
-            f"₹{expected_amount:,.2f} on a base of ₹{txn.basic_amount:,.2f}, "
+            f"₹{expected_amount:,.2f} on a base of ₹{base_amount:,.2f}, "
             f"but ₹{actual_amount:,.2f} was actually deducted "
             f"(implied rate: {implied_rate:.4f}%)."
         ),
@@ -507,6 +565,34 @@ def check_wrong_section_by_hsn(txn: Transaction) -> Optional[TDSIssue]:
         )
 
     return None
+
+
+def check_wrong_section_by_payment_type(txn: Transaction) -> Optional[TDSIssue]:
+    """
+    General wrong-section check using an independent payment/nature field.
+    Expected sections come from config/tds_sections.yaml payment_type values.
+    """
+    if not txn.transaction_kind:
+        return None
+
+    payment_type = txn.transaction_kind.strip().lower().replace(" ", "_").replace("-", "_")
+    expected_section = PAYMENT_TYPE_TO_SECTION.get(payment_type)
+    if expected_section is None:
+        return None
+
+    actual_section = (txn.tds_deducted_section or "").strip().upper()
+    if actual_section == expected_section:
+        return None
+
+    return TDSIssue(
+        category="Wrong Section Applied",
+        message=(
+            f"Payment type '{txn.transaction_kind}' requires section "
+            f"{expected_section}, but section {actual_section or 'not recognised'} was applied."
+        ),
+        severity="high",
+        expected_section=expected_section,
+    )
 
 
 def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
@@ -767,6 +853,11 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
         issues.append(non_filer_issue)
         return issues
 
+    payment_type_section_issue = check_wrong_section_by_payment_type(txn)
+    if payment_type_section_issue is not None:
+        issues.append(payment_type_section_issue)
+        return issues
+
     # 7. Normal transaction checks.
     normal_checks = [
         check_residential_status,
@@ -841,16 +932,16 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
         if not aggregate_threshold:
             continue
 
-        # A missing base is never treated as zero (false threshold call).
-        # But ONE transaction missing its base must not blank the WHOLE
-        # group — use whatever base amounts ARE known, and note if some
-        # were excluded.
-        known_base_txns = [t for t in group_txns if t.basic_amount is not None]
+        # A missing base is never treated as zero (false threshold call). When
+        # a classified TDS row has Basic_Amount=0 but Bill_Amount is present,
+        # use Bill_Amount as the only available base for threshold analysis.
+        txns_with_base = [(t, _get_tds_base_amount(t)) for t in group_txns]
+        known_base_txns = [(t, base) for t, base in txns_with_base if base is not None]
         unknown_base_count = len(group_txns) - len(known_base_txns)
         if not known_base_txns:
             continue  # no usable base at all — cannot evaluate this group
 
-        cumulative_basic_amount = sum(t.basic_amount for t in known_base_txns)
+        cumulative_basic_amount = sum(base for _, base in known_base_txns)
         cumulative_tds_deducted = sum(t.tds_deducted_amount or 0.0 for t in group_txns)
 
         incomplete_note = (

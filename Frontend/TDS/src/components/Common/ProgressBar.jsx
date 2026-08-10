@@ -1,9 +1,9 @@
 import './Common.css'
 
 export default function ProgressBar({ value, showLabel = false }) {
-  const clamped = Math.min(Math.max(value, 0), 130)
-  const display = Math.min(clamped, 100)
-  const tone = clamped >= 100 ? 'danger' : clamped >= 75 ? 'warning' : 'safe'
+  const actual = Number.isFinite(Number(value)) ? Math.max(Number(value), 0) : 0
+  const display = Math.min(actual, 100)
+  const tone = actual >= 100 ? 'danger' : actual >= 75 ? 'warning' : 'safe'
 
   return (
     <div className="progress-bar-container">
@@ -14,7 +14,7 @@ export default function ProgressBar({ value, showLabel = false }) {
         />
       </div>
       {showLabel && (
-        <span className="progress-bar-label">{clamped.toFixed(0)}%</span>
+        <span className="progress-bar-label">{actual.toFixed(0)}%</span>
       )}
     </div>
   )
