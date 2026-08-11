@@ -18,6 +18,7 @@ import {
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
 import { issueTypeFilterOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
+import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
 import './Issues.css'
 
@@ -200,6 +201,25 @@ export default function Issues() {
     }
   }, [issues, uploadMeta, adjustedValidationRows])
 
+  // Each KPI card's download exports exactly the rows behind that card's own
+  // number (Company/FY-scoped, like the count itself) — not whatever happens
+  // to be showing on the currently active tab, and not further narrowed by
+  // the filter-bar's Vendor/Section/etc, which only apply to what's on
+  // screen right now, not to "all Passed rows" as a concept.
+  function handleExportKpi(kind) {
+    const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
+    const exportSpec = {
+      passed: { rows: adjustedValidationRows.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
+      issue: { rows: issues, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
+      insufficient: { rows: adjustedValidationRows.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
+    }[kind]
+    if (!exportSpec || exportSpec.rows.length === 0) {
+      toast('No rows to export')
+      return
+    }
+    downloadCsv(`${fileBase}-${exportSpec.suffix}.csv`, exportSpec.columns, exportSpec.rows)
+  }
+
   const columns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
     { key: 'docNo',   header: 'Doc No.',  render: (r) => (
@@ -316,39 +336,63 @@ export default function Issues() {
 
       {/* Summary strip */}
       <div className="issues-summary-grid">
-        <button
-          className={`issues-summary-card issues-summary-card--success ${validationView === 'passed' ? 'issues-summary-card--active' : ''}`}
-          type="button"
-          onClick={() => setValidationView('passed')}
-        >
-          <CheckCircle2 size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.passedRows.toLocaleString()}</div>
-            <div className="issues-summary-label">Passed</div>
-          </div>
-        </button>
-        <button
-          className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue' ? 'issues-summary-card--active' : ''}`}
-          type="button"
-          onClick={() => setValidationView('issue')}
-        >
-          <AlertOctagon size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.issueRows.toLocaleString()}</div>
-            <div className="issues-summary-label">Issue Found</div>
-          </div>
-        </button>
-        <button
-          className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}
-          type="button"
-          onClick={() => setValidationView('insufficient')}
-        >
-          <AlertTriangle size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.insufficientDataRows.toLocaleString()}</div>
-            <div className="issues-summary-label">Insufficient Data</div>
-          </div>
-        </button>
+        <div className={`issues-summary-card issues-summary-card--success ${validationView === 'passed' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed')}>
+            <CheckCircle2 size={16} />
+            <div>
+              <div className="issues-summary-value">{summary.passedRows.toLocaleString()}</div>
+              <div className="issues-summary-label">Passed</div>
+            </div>
+          </button>
+          {summary.passedRows > 0 && (
+            <button
+              className="issues-summary-card-download"
+              type="button"
+              title="Download CSV of all Passed rows"
+              onClick={(e) => { e.stopPropagation(); handleExportKpi('passed') }}
+            >
+              <Download size={12} />
+            </button>
+          )}
+        </div>
+        <div className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('issue')}>
+            <AlertOctagon size={16} />
+            <div>
+              <div className="issues-summary-value">{summary.issueRows.toLocaleString()}</div>
+              <div className="issues-summary-label">Issues Found</div>
+            </div>
+          </button>
+          {summary.issueRows > 0 && (
+            <button
+              className="issues-summary-card-download"
+              type="button"
+              title="Download CSV of all Issues Found rows"
+              onClick={(e) => { e.stopPropagation(); handleExportKpi('issue') }}
+            >
+              <Download size={12} />
+            </button>
+          )}
+        </div>
+        <div className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('insufficient')}>
+            <AlertTriangle size={16} />
+            <div>
+              <div className="issues-summary-value">{summary.insufficientDataRows.toLocaleString()}</div>
+              <div className="issues-summary-label">Insufficient Data</div>
+            </div>
+          </button>
+          {summary.insufficientDataRows > 0 && (
+            <button
+              className="issues-summary-card-download"
+              type="button"
+              title="Download CSV of all Insufficient Data rows"
+              onClick={(e) => { e.stopPropagation(); handleExportKpi('insufficient') }}
+            >
+              <Download size={12} />
+            </button>
+          )}
+        </div>
         <button
           className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
           type="button"
@@ -431,6 +475,7 @@ export default function Issues() {
             columns={columns}
             data={filtered}
             pageSize={50}
+            showFloatingPager
             emptyState={
               <div className="empty-state">
                 <div className="empty-state-icon"><FileSearch size={20} /></div>
@@ -446,6 +491,7 @@ export default function Issues() {
             columns={validationColumns}
             data={validationTableRows}
             pageSize={50}
+            showFloatingPager
             emptyState={
               <div className="empty-state">
                 <div className="empty-state-icon"><FileSearch size={20} /></div>

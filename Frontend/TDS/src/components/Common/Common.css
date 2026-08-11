@@ -148,6 +148,32 @@
   gap: 4px;
 }
 
+/* Floating corner pager (see DataTable.jsx) — pinned to the bottom-right of
+   the screen the whole time a paginated table is on the page, regardless of
+   scroll position, so switching pages never requires scrolling down to
+   reach the "real" pagination bar first. Plain `position: fixed` rather
+   than `sticky`: sticky only "catches" once its own static position — right
+   after all the rows — nears the bottom of its container, which for a
+   50-row table means it wouldn't show up until you'd already scrolled
+   almost all the way down anyway, defeating the point. */
+.table-pagination-float {
+  position: fixed;
+  right: 24px;
+  bottom: 8px;
+  z-index: 40;
+}
+
+.table-pagination-float-inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 5px;
+  box-shadow: var(--shadow-md);
+}
+
 .table-page-btn {
   height: 28px;
   min-width: 28px;

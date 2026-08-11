@@ -10,6 +10,12 @@ export default function DataTable({
   emptyState = null,
   expandedRowKey,
   renderExpandedRow,
+  // Opt-in, not automatic: several tables on a page can each use DataTable
+  // (e.g. Issues' own validation-status tabs), and one floating corner
+  // button per paginated table would be visual noise / could stack on top
+  // of each other. Pass this only on the one table a page treats as its
+  // primary list.
+  showFloatingPager = false,
 }) {
   const [page, setPage] = useState(1)
   const [sortKey, setSortKey] = useState(null)
@@ -52,6 +58,38 @@ export default function DataTable({
       }
     }
     return pages
+  }
+
+  // Page-number buttons only, reused by both the floating corner widget and
+  // the full bottom bar.
+  function renderPageButtons() {
+    return (
+      <>
+        <button
+          className="table-page-btn"
+          disabled={currentPage === 1}
+          onClick={() => setPage(currentPage - 1)}
+        >
+          <ChevronLeft size={13} />
+        </button>
+        {getPages().map((p, i) => (
+          p === '...'
+            ? <span key={`ellipsis-${i}`} className="table-page-btn" style={{ border: 'none', cursor: 'default' }}>…</span>
+            : <button
+                key={`page-${p}`}
+                className={`table-page-btn ${currentPage === p ? 'active' : ''}`}
+                onClick={() => setPage(p)}
+              >{p}</button>
+        ))}
+        <button
+          className="table-page-btn"
+          disabled={currentPage === totalPages}
+          onClick={() => setPage(currentPage + 1)}
+        >
+          <ChevronRight size={13} />
+        </button>
+      </>
+    )
   }
 
   return (
@@ -116,36 +154,26 @@ export default function DataTable({
         </table>
       </div>
 
+      {/* Fixed to the bottom-right of the screen (not scroll-position
+          dependent) for as long as this table — often 50+ rows tall — is on
+          the page, so switching pages never requires scrolling down to
+          reach the "real" pagination bar first. Opt-in via
+          showFloatingPager (see prop docs above) so it only appears on a
+          page's one primary table, not every paginated table at once. */}
+      {showFloatingPager && totalPages > 1 && (
+        <div className="table-pagination-float">
+          <div className="table-pagination-float-inner">
+            {renderPageButtons()}
+          </div>
+        </div>
+      )}
+
       {totalPages > 1 && (
         <div className="table-pagination">
           <span className="table-pagination-info">
             {sorted.length === 0 ? 'No results' : `Showing ${(currentPage - 1) * pageSize + 1}–${Math.min(currentPage * pageSize, sorted.length)} of ${sorted.length}`}
           </span>
-          <div className="table-pagination-controls">
-            <button
-              className="table-page-btn"
-              disabled={currentPage === 1}
-              onClick={() => setPage(currentPage - 1)}
-            >
-              <ChevronLeft size={13} />
-            </button>
-            {getPages().map((p, i) => (
-              p === '...'
-                ? <span key={`ellipsis-${i}`} className="table-page-btn" style={{ border: 'none', cursor: 'default' }}>…</span>
-                : <button
-                    key={`page-${p}`}
-                    className={`table-page-btn ${currentPage === p ? 'active' : ''}`}
-                    onClick={() => setPage(p)}
-                  >{p}</button>
-            ))}
-            <button
-              className="table-page-btn"
-              disabled={currentPage === totalPages}
-              onClick={() => setPage(currentPage + 1)}
-            >
-              <ChevronRight size={13} />
-            </button>
-          </div>
+          <div className="table-pagination-controls">{renderPageButtons()}</div>
         </div>
       )}
     </div>

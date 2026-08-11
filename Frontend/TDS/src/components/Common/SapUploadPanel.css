@@ -322,19 +322,16 @@
 
 .sap-stats-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
 @media (max-width: 1000px) {
-  .sap-stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-@media (max-width: 520px) {
   .sap-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .sap-stat {
+  position: relative;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--border-radius-xs);
@@ -355,6 +352,34 @@
   font-size: 11px;
   color: var(--color-text-muted);
   font-weight: 500;
+}
+
+.sap-stat-download {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  border: none;
+  color: var(--color-text-muted);
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms, background 120ms, color 120ms;
+}
+
+.sap-stat:hover .sap-stat-download,
+.sap-stat-download:focus-visible {
+  opacity: 1;
+}
+
+.sap-stat-download:hover {
+  background: var(--color-bg);
+  color: var(--color-primary);
 }
 
 /* ── Banners / hints ───────────────────────────────────── */

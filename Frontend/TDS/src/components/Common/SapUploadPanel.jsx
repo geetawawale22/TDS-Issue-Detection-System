@@ -7,10 +7,12 @@ import {
 import toast from 'react-hot-toast'
 import issuesService from '@/services/issuesService'
 import {
-  uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload, selectActiveIssues,
+  uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
+  selectActiveIssues, selectActiveValidationRows,
 } from '@/redux/slices/issuesSlice'
 import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode } from '@/redux/slices/appSlice'
 import { seedPansFromIssues } from '@/redux/slices/panSlice'
+import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
 import './SapUploadPanel.css'
 
 const ACCEPTED = '.csv,.xlsx,.xls,.xlsm'
@@ -30,6 +32,7 @@ export default function SapUploadPanel() {
     uploadError, uploadMeta,
   } = useSelector((s) => s.issues)
   const activeIssues = useSelector(selectActiveIssues)
+  const activeValidationRows = useSelector(selectActiveValidationRows)
   const { availableCompanyCodes, selectedCompanyCode } = useSelector((s) => s.app)
 
   const companyCodeOptions = availableCompanyCodes.length > 1
@@ -132,6 +135,23 @@ export default function SapUploadPanel() {
 
   const stats = uploadMeta?.stats
   const showEmptyHint = dataSource === 'empty' && uploadStatus === 'idle' && !uploadError
+
+  // "Rows read" has no matching export — a row that failed to even become a
+  // transaction (see the Company/FY-scoping note on that card below) was
+  // never captured anywhere as an exportable record.
+  function handleExportStat(kind) {
+    const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
+    const exportSpec = {
+      transactions: { rows: activeValidationRows, columns: VALIDATION_CSV_COLUMNS, suffix: 'transactions' },
+      high: { rows: activeIssues.filter((i) => i.severity === 'high'), columns: ISSUE_CSV_COLUMNS, suffix: 'high-severity' },
+      medium: { rows: activeIssues.filter((i) => i.severity === 'medium'), columns: ISSUE_CSV_COLUMNS, suffix: 'medium-severity' },
+    }[kind]
+    if (!exportSpec || exportSpec.rows.length === 0) {
+      toast('No rows to export')
+      return
+    }
+    downloadCsv(`${fileBase}-${exportSpec.suffix}.csv`, exportSpec.columns, exportSpec.rows)
+  }
 
   return (
     <section className="sap-upload">
@@ -321,6 +341,21 @@ export default function SapUploadPanel() {
         </div>
       )}
 
+      {showEmptyHint && (
+        <p className="sap-hint">
+          No SAP upload loaded yet. Upload an extract to populate the issue table.
+        </p>
+      )}
+      </>
+      )}
+
+      {/* Stays visible when the panel is collapsed — collapsing is just for
+          hiding the drop zone/form once you've already run an upload, not
+          for hiding the result you came here to see. Placed after the form
+          (rather than between the header and the form) so the two KPI rows
+          — this one and Issues.jsx's Passed/Issue Found/Insufficient/Skipped
+          strip — sit next to each other instead of with the form wedged
+          between them. */}
       {dataSource === 'upload' && stats && (
         <div className="sap-results">
           <div className="sap-results-label">
@@ -331,31 +366,41 @@ export default function SapUploadPanel() {
             </span>
           </div>
           <div className="sap-stats-grid">
-            <div className="sap-stat">
+            <div className="sap-stat" title="Not scoped by Company/FY — a row that failed to become a transaction was never attributed to either.">
               <div className="sap-stat-value">{stats.rowsRead?.toLocaleString()}</div>
               <div className="sap-stat-label">Rows read</div>
             </div>
             <div className="sap-stat">
-              <div className="sap-stat-value">{stats.transactionsBuilt?.toLocaleString()}</div>
+              <div className="sap-stat-value">{activeValidationRows.length.toLocaleString()}</div>
               <div className="sap-stat-label">Transactions</div>
-            </div>
-            <div className="sap-stat">
-              <div className="sap-stat-value">{activeIssues.length.toLocaleString()}</div>
-              <div className="sap-stat-label">Issues found</div>
+              {activeValidationRows.length > 0 && (
+                <button className="sap-stat-download" type="button" title="Download CSV of all transactions" onClick={() => handleExportStat('transactions')}>
+                  <Download size={12} />
+                </button>
+              )}
             </div>
             <div className="sap-stat">
               <div className="sap-stat-value">{activeIssues.filter((i) => i.severity === 'high').length.toLocaleString()}</div>
               <div className="sap-stat-label">High</div>
+              {activeIssues.some((i) => i.severity === 'high') && (
+                <button className="sap-stat-download" type="button" title="Download CSV of all High severity issues" onClick={() => handleExportStat('high')}>
+                  <Download size={12} />
+                </button>
+              )}
             </div>
             <div className="sap-stat">
               <div className="sap-stat-value">{activeIssues.filter((i) => i.severity === 'medium').length.toLocaleString()}</div>
               <div className="sap-stat-label">Medium</div>
-            </div>
-            <div className="sap-stat">
-              <div className="sap-stat-value">{stats.rowsSkipped?.toLocaleString()}</div>
-              <div className="sap-stat-label">Skipped</div>
+              {activeIssues.some((i) => i.severity === 'medium') && (
+                <button className="sap-stat-download" type="button" title="Download CSV of all Medium severity issues" onClick={() => handleExportStat('medium')}>
+                  <Download size={12} />
+                </button>
+              )}
             </div>
           </div>
+          {/* "Issues found" and "Skipped" deliberately aren't repeated here —
+              the Passed/Issue Found/Insufficient Data/Skipped strip right
+              below is the single source of truth for those counts. */}
           {!!uploadMeta.errors?.length && (
             <div className="sap-banner sap-banner--warn">
               <AlertCircle size={14} />
@@ -363,14 +408,6 @@ export default function SapUploadPanel() {
             </div>
           )}
         </div>
-      )}
-
-      {showEmptyHint && (
-        <p className="sap-hint">
-          No SAP upload loaded yet. Upload an extract to populate the issue table.
-        </p>
-      )}
-      </>
       )}
     </section>
   )
