@@ -72,6 +72,32 @@ def test_wrong_amount_is_single_amount_mismatch_when_rate_is_correct():
     assert "₹400.00 was actually deducted" in issues[0].message
 
 
+def test_194j_two_percent_still_checks_amount_consistency():
+    transaction = Transaction(
+        doc_number="TEST-194J-2PCT",
+        doc_type="KR",
+        posting_date=date(2025, 12, 18),
+        vendor_code="V194J",
+        vendor_pan="DDTOO472AA",
+        vendor_category=_derive_vendor_category("DDTOO472AA"),
+        bill_amount=344_978,
+        basic_amount=344_978,
+        tds_deducted_section="194J",
+        tds_deducted_rate=2.0,
+        tds_deducted_amount=6_900,
+    )
+
+    assert check_short_excess_tds(transaction) is None
+    assert check_amount_consistency(transaction) is None
+
+    transaction.tds_deducted_amount = 4_000
+
+    issue = check_amount_consistency(transaction)
+    assert issue is not None
+    assert issue.category == "Short/Excess TDS Deducted — Amount Mismatch"
+    assert "Stated rate is 2.0%" in issue.message
+
+
 def test_classified_row_keeps_zero_basic_amount_instead_of_using_bill_amount():
     transaction = Transaction(
         doc_number="TEST-194H-ZERO-BASIC",

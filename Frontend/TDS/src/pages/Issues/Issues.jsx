@@ -26,6 +26,28 @@ const STATUS_OPTIONS   = [['all','All Status'],['open','Open'],['in_review','In 
 const ISSUE_TYPE_OPTIONS = issueTypeFilterOptions()
 
 const SEVERITY_ICON = { high: AlertOctagon, medium: AlertTriangle, low: CheckCircle2 }
+const DEFAULT_SECTION_RATES = {
+  '194C': 1,
+  '194H': 5,
+  '194Q': 0.1,
+}
+
+function inferRateFromAmount(baseAmount, tdsAmount) {
+  const base = Number(baseAmount) || 0
+  const tds = Math.abs(Number(tdsAmount) || 0)
+  if (base <= 0 || tds <= 0) return null
+  return Number(((tds / base) * 100).toFixed(4))
+}
+
+function normaliseRateForDisplay(rate) {
+  if (rate == null) return null
+  const rounded = Number(Number(rate).toFixed(4))
+  return Math.abs(rounded - 2) <= 0.05 ? 2
+    : Math.abs(rounded - 10) <= 0.05 ? 10
+    : Math.abs(rounded - 1) <= 0.05 ? 1
+    : Math.abs(rounded - 0.1) <= 0.01 ? 0.1
+    : rounded
+}
 
 function SectionCell({ issue }) {
   const oldSection = issue.legacySection || issue.ruleSection
@@ -47,6 +69,7 @@ function SectionCell({ issue }) {
 export default function Issues() {
   const dispatch = useDispatch()
   const [validationView, setValidationView] = useState('issue')
+  const [reviewValidationRow, setReviewValidationRow] = useState(null)
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
     issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta,
@@ -116,8 +139,53 @@ export default function Issues() {
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
   const validationRows = uploadMeta?.validationRows || []
+  const adjustedValidationRows = useMemo(() => (
+    validationRows.map((row) => (
+      Number(row.baseAmount) === 0
+        ? {
+          ...row,
+          status: 'insufficient',
+          reason: 'Base amount is zero, so TDS cannot be validated for this row.',
+        }
+        : row
+    ))
+  ), [validationRows])
+  const drawerIssue = reviewValidationRow || selectedIssue
+  const drawerIsOpen = Boolean(reviewValidationRow) || drawerOpen
+
+  function buildValidationReviewIssue(row) {
+    const inferredRate = normaliseRateForDisplay(inferRateFromAmount(row.baseAmount, row.tdsAmount))
+    const appliedRate = normaliseRateForDisplay(row.appliedRate ?? inferredRate)
+    const expectedRate = row.section === '194J' && [2, 10].includes(appliedRate)
+      ? appliedRate
+      : normaliseRateForDisplay(row.expectedRate ?? inferredRate ?? DEFAULT_SECTION_RATES[row.section] ?? null)
+
+    return {
+      ...row,
+      id: row.id || `PASSED-${row.docNo}`,
+      category: 'Passed Validation',
+      issueTypeLabel: 'Passed Validation',
+      issueType: 'PASSED_VALIDATION',
+      severity: 'low',
+      status: 'open',
+      plainEnglish: row.reason || 'Validated with no issue found.',
+      recommendedAction: 'No correction required — this row passed the current validation rules.',
+      expectedRate,
+      appliedRate,
+      taxImpact: 0,
+    }
+  }
 
   const summary = useMemo(() => {
+    if (adjustedValidationRows.length) {
+      return {
+        passedRows: adjustedValidationRows.filter((row) => row.status === 'passed').length,
+        issueRows: adjustedValidationRows.filter((row) => row.status === 'issue').length,
+        insufficientDataRows: adjustedValidationRows.filter((row) => row.status === 'insufficient').length,
+        skippedRows: adjustedValidationRows.filter((row) => row.status === 'skipped').length,
+      }
+    }
+
     const stats = uploadMeta?.stats || {}
     const issueRows = stats.issueRows ?? issues.length
     const insufficientDataRows = stats.insufficientDataRows ?? 0
@@ -126,7 +194,7 @@ export default function Issues() {
     const passedRows = stats.passedRows ?? Math.max(0, transactions - issueRows - insufficientDataRows)
 
     return { passedRows, issueRows, insufficientDataRows, skippedRows }
-  }, [issues, uploadMeta])
+  }, [adjustedValidationRows, issues, uploadMeta])
 
   const columns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
@@ -179,15 +247,27 @@ export default function Issues() {
     { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
     { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
-    { key: 'reason', header: 'Validation Result', render: (r) => (
-      <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{r.reason}</span>
+    { header: '', render: (r) => (
+      r.status === 'passed'
+        ? (
+          <button
+            className="issues-review-btn"
+            type="button"
+            onClick={() => setReviewValidationRow(buildValidationReviewIssue(r))}
+          >
+            Review
+          </button>
+        )
+        : null
     )},
   ]
 
   const validationTableRows = useMemo(() => {
     if (validationView === 'issue') return []
-    return validationRows.filter((row) => row.status === validationView)
-  }, [validationRows, validationView])
+    return adjustedValidationRows
+      .filter((row) => row.status === validationView)
+      .map((row, index) => ({ ...row, id: `${validationView}-${index}-${row.id || row.docNo || 'row'}` }))
+  }, [adjustedValidationRows, validationView])
 
   return (
     <div>
@@ -308,9 +388,10 @@ export default function Issues() {
         </div>
         {validationView === 'issue' ? (
           <DataTable
+            key="issue-table"
             columns={columns}
             data={filtered}
-            pageSize={12}
+            pageSize={50}
             emptyState={
               <div className="empty-state">
                 <div className="empty-state-icon"><FileSearch size={20} /></div>
@@ -322,9 +403,10 @@ export default function Issues() {
           />
         ) : (
           <DataTable
+            key={`validation-table-${validationView}`}
             columns={validationColumns}
             data={validationTableRows}
-            pageSize={12}
+            pageSize={50}
             emptyState={
               <div className="empty-state">
                 <div className="empty-state-icon"><FileSearch size={20} /></div>
@@ -336,7 +418,14 @@ export default function Issues() {
         )}
       </div>
 
-      <IssueDrawer issue={selectedIssue} open={drawerOpen} onClose={() => dispatch(closeDrawer())} />
+      <IssueDrawer
+        issue={drawerIssue}
+        open={drawerIsOpen}
+        onClose={() => {
+          setReviewValidationRow(null)
+          dispatch(closeDrawer())
+        }}
+      />
     </div>
   )
 }

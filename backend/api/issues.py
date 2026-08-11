@@ -30,10 +30,9 @@ from ingestion.sap_translator import (
     looks_like_descriptive_tds_section,
 )
 from rules.tds_rule_engine import (
-    PAYMENT_TYPE_TO_SECTION,
+    SECTION_194J_VALID_RATES,
+    SECTIONS,
     _get_applicable_rate,
-    _get_rate_for_section,
-    _get_tds_base_amount,
     run_all_checks,
     check_threshold_breach,
     check_missing_deduction,
@@ -72,11 +71,46 @@ ISSUE_TYPE_BY_CATEGORY = {
     "Possible Missed TDS Deduction": "MISSING_DEDUCTION"
 }
 
+PAYMENT_TYPE_TO_SECTION = {
+    str(section_config.get("payment_type", "")).strip().lower(): section_code
+    for section_code, section_config in SECTIONS.items()
+    if section_config.get("payment_type")
+}
+
 
 def _normalise_payment_type(value: str | None) -> str | None:
     if not value:
         return None
     return value.strip().lower().replace(" ", "_").replace("-", "_") or None
+
+
+def _get_rate_for_section(section: str | None, txn) -> float | None:
+    if not section:
+        return None
+
+    section_config = SECTIONS.get(section.strip().upper())
+    if not section_config:
+        return None
+
+    rate_config = section_config.get("rate", {})
+    if "default" in rate_config:
+        return rate_config["default"]
+
+    if "individual_huf" in rate_config and "others" in rate_config:
+        return rate_config["individual_huf"] if txn.vendor_category in {"Individual", "HUF"} else rate_config["others"]
+
+    return None
+
+
+def _get_tds_base_amount(txn) -> float | None:
+    if txn.basic_amount is not None:
+        return txn.basic_amount
+
+    has_tds_classification = bool(txn.tds_deducted_section and txn.tds_deducted_rate is not None)
+    if has_tds_classification and txn.bill_amount and txn.bill_amount > 0:
+        return txn.bill_amount
+
+    return None
 
 
 def _is_blank(value: Any) -> bool:
@@ -251,13 +285,17 @@ def _threshold_vendor_summaries(transactions) -> list[dict[str, Any]]:
     )
 
 
-def _transaction_validation_row(txn, status: str, reason: str) -> dict[str, Any]:
+def _transaction_validation_row(txn, status: str, reason: str, row_index: int) -> dict[str, Any]:
     base_amount = _get_tds_base_amount(txn)
     if base_amount is None:
         base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+    expected_rate = _get_applicable_rate(txn)
+    section = (txn.tds_deducted_section or txn.tds_legacy_section or "").strip().upper()
+    if section == "194J" and txn.tds_deducted_rate in SECTION_194J_VALID_RATES:
+        expected_rate = txn.tds_deducted_rate
 
     return {
-        "id": f"{status}:{txn.doc_number}:{txn.vendor_code}:{_threshold_section_for_transaction(txn)}",
+        "id": f"{status}:{row_index}:{txn.doc_number}:{txn.vendor_code}:{_threshold_section_for_transaction(txn)}",
         "status": status,
         "reason": reason,
         "docNo": txn.doc_number or "—",
@@ -267,6 +305,8 @@ def _transaction_validation_row(txn, status: str, reason: str) -> dict[str, Any]
         "section": _threshold_section_for_transaction(txn),
         "baseAmount": base_amount,
         "tdsAmount": txn.tds_deducted_amount or 0.0,
+        "appliedRate": txn.tds_deducted_rate,
+        "expectedRate": expected_rate,
         "date": txn.posting_date.isoformat(),
     }
 
@@ -281,6 +321,11 @@ def _has_validation_signal(txn) -> bool:
         txn.tds_applicable_rate is not None,
         txn.transaction_kind,
     ))
+
+
+def _has_zero_base_amount(txn) -> bool:
+    base_amount = _get_tds_base_amount(txn)
+    return base_amount is not None and float(base_amount) == 0.0
 
 
 @router.post("/upload")
@@ -355,7 +400,10 @@ async def upload_sap_file(
     issues: list[dict[str, Any]] = []
     issue_reasons_by_transaction_id: dict[int, str] = {}
     issue_transaction_ids: set[int] = set()
-    for txn in transactions:
+    issue_eligible_transactions = [
+        txn for txn in transactions if not _has_zero_base_amount(txn)
+    ]
+    for txn in issue_eligible_transactions:
         for rule_issue in run_all_checks(txn):
             if include_informational or rule_issue.severity != "low":
                 issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
@@ -364,14 +412,14 @@ async def upload_sap_file(
 
     # Threshold checks operate across transactions, so each result carries a
     # representative transaction from its own vendor/section/FY group.
-    for txn, rule_issue in check_threshold_breach(transactions):
+    for txn, rule_issue in check_threshold_breach(issue_eligible_transactions):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
             issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
 
-    for txn, rule_issue in check_missing_deduction(transactions):
+    for txn, rule_issue in check_missing_deduction(issue_eligible_transactions):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
@@ -381,31 +429,41 @@ async def upload_sap_file(
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
     threshold_vendors = _threshold_vendor_summaries(transactions)
     insufficient_data_rows = sum(
-        id(txn) not in issue_transaction_ids and not _has_validation_signal(txn)
+        id(txn) not in issue_transaction_ids and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
         for txn in transactions
     )
     issue_rows = len(issue_transaction_ids)
     passed_rows = max(0, len(transactions) - issue_rows - insufficient_data_rows)
     validation_rows = []
-    for txn in transactions:
+    for row_index, txn in enumerate(transactions, start=1):
         txn_id = id(txn)
         if txn_id in issue_transaction_ids:
             validation_rows.append(_transaction_validation_row(
                 txn,
                 "issue",
                 issue_reasons_by_transaction_id.get(txn_id, "Issue found"),
+                row_index,
+            ))
+        elif _has_zero_base_amount(txn):
+            validation_rows.append(_transaction_validation_row(
+                txn,
+                "insufficient",
+                "Base amount is zero, so TDS cannot be validated for this row.",
+                row_index,
             ))
         elif not _has_validation_signal(txn):
             validation_rows.append(_transaction_validation_row(
                 txn,
                 "insufficient",
                 "Missing section/rate/applicable section/payment type, so rules cannot validate this row.",
+                row_index,
             ))
         else:
             validation_rows.append(_transaction_validation_row(
                 txn,
                 "passed",
                 "Validated with no issue found.",
+                row_index,
             ))
 
     stats = {
