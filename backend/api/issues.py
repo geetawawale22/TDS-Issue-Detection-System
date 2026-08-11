@@ -211,6 +211,7 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     return {
         "id": f"UPL-{issue_id:06d}",
         "docNo": txn.doc_number or "—",
+        "companyCode": txn.company_code or None,
         "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
         "vendorId": txn.vendor_code or "—",
         "vendorPan": txn.vendor_pan or "—",
@@ -268,6 +269,7 @@ def _threshold_vendor_summaries(transactions) -> list[dict[str, Any]]:
         if key not in grouped:
             grouped[key] = {
                 "id": key,
+                "companyCode": txn.company_code or None,
                 "name": txn.vendor_name or txn.vendor_code or "Unknown vendor",
                 "vendorId": vendor_id,
                 "pan": txn.vendor_pan or "—",
@@ -299,6 +301,7 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int) -
         "status": status,
         "reason": reason,
         "docNo": txn.doc_number or "—",
+        "companyCode": txn.company_code or None,
         "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
         "vendorId": txn.vendor_code or "—",
         "vendorPan": txn.vendor_pan or "—",

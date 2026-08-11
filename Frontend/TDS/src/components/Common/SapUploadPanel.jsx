@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import {
   Upload, FileSpreadsheet, Download, X, Loader2,
@@ -7,18 +7,11 @@ import {
 import toast from 'react-hot-toast'
 import issuesService from '@/services/issuesService'
 import {
-  uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
+  uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload, selectActiveIssues,
 } from '@/redux/slices/issuesSlice'
-import { setDataSourceLabel, setLastSyncTime, setSyncStatus } from '@/redux/slices/appSlice'
+import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode } from '@/redux/slices/appSlice'
 import { seedPansFromIssues } from '@/redux/slices/panSlice'
 import './SapUploadPanel.css'
-
-const COMPANY_CODES = [
-  { value: '', label: 'All company codes' },
-  { value: '1001', label: '1001' },
-  { value: '1079', label: '1079' },
-  { value: '1081', label: '1081' },
-]
 
 const ACCEPTED = '.csv,.xlsx,.xls,.xlsm'
 
@@ -36,8 +29,27 @@ export default function SapUploadPanel() {
     dataSource, uploadStatus, uploadProgress: progress,
     uploadError, uploadMeta,
   } = useSelector((s) => s.issues)
+  const activeIssues = useSelector(selectActiveIssues)
+  const { availableCompanyCodes, selectedCompanyCode } = useSelector((s) => s.app)
 
-  const [companyCode, setCompanyCode] = useState('')
+  const companyCodeOptions = availableCompanyCodes.length > 1
+    ? [{ value: '', label: 'All company codes' }, ...availableCompanyCodes.map((c) => ({ value: c, label: c }))]
+    : availableCompanyCodes.map((c) => ({ value: c, label: c }))
+
+  const [companyCode, setCompanyCode] = useState(selectedCompanyCode ?? '')
+
+  // Follow the global company switcher (Navbar) so picking a company there
+  // sets the default for the next upload too, instead of two disconnected
+  // company selectors. A specific choice made here (not "All") reports back
+  // up so the rest of the app (Navbar, other pages) stays in sync.
+  useEffect(() => {
+    setCompanyCode(selectedCompanyCode ?? '')
+  }, [selectedCompanyCode])
+
+  function handleCompanyCodeChange(value) {
+    setCompanyCode(value)
+    if (value) dispatch(setSelectedCompanyCode(value))
+  }
   const [includeInfo, setIncludeInfo] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
@@ -227,9 +239,9 @@ export default function SapUploadPanel() {
               className="filter-select"
               value={companyCode}
               disabled={busy}
-              onChange={(e) => setCompanyCode(e.target.value)}
+              onChange={(e) => handleCompanyCodeChange(e.target.value)}
             >
-              {COMPANY_CODES.map((c) => (
+              {companyCodeOptions.map((c) => (
                 <option key={c.value || 'all'} value={c.value}>{c.label}</option>
               ))}
             </select>
@@ -328,15 +340,15 @@ export default function SapUploadPanel() {
               <div className="sap-stat-label">Transactions</div>
             </div>
             <div className="sap-stat">
-              <div className="sap-stat-value">{stats.issuesFound?.toLocaleString()}</div>
+              <div className="sap-stat-value">{activeIssues.length.toLocaleString()}</div>
               <div className="sap-stat-label">Issues found</div>
             </div>
             <div className="sap-stat">
-              <div className="sap-stat-value">{stats.high?.toLocaleString()}</div>
+              <div className="sap-stat-value">{activeIssues.filter((i) => i.severity === 'high').length.toLocaleString()}</div>
               <div className="sap-stat-label">High</div>
             </div>
             <div className="sap-stat">
-              <div className="sap-stat-value">{stats.medium?.toLocaleString()}</div>
+              <div className="sap-stat-value">{activeIssues.filter((i) => i.severity === 'medium').length.toLocaleString()}</div>
               <div className="sap-stat-label">Medium</div>
             </div>
             <div className="sap-stat">

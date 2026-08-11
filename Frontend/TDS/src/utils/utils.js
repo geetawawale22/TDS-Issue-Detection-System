@@ -17,6 +17,20 @@ export function formatCurrency(amount) {
   }).format(value)
 }
 
+/**
+ * Indian FY runs April–March (mirrors backend/rules/tds_rule_engine.py's
+ * _get_financial_year) — e.g. any date from 1-Apr-2025 to 31-Mar-2026 is
+ * "FY 2025-26". Returns null for an unparseable date so callers can decide
+ * how to treat it (the Financial Year filter never excludes a row it can't
+ * classify).
+ */
+export function getFinancialYear(dateInput) {
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput)
+  if (Number.isNaN(d.getTime())) return null
+  const year = d.getMonth() >= 3 /* April = index 3 */ ? d.getFullYear() : d.getFullYear() - 1
+  return `FY ${year}-${String(year + 1).slice(-2)}`
+}
+
 export function formatDate(isoString) {
   return new Date(isoString).toLocaleDateString('en-IN', {
     day: '2-digit',

@@ -10,6 +10,7 @@ import {
   deriveMonthlyTrend,
   deriveThresholdConsumptionTrend,
 } from '@/utils/liveAnalytics'
+import { getFinancialYear } from '@/utils/utils'
 
 const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
 
@@ -144,50 +145,78 @@ export function selectIsLive(state) {
   return state.issues.dataSource === 'upload'
 }
 
+/**
+ * Company + Financial Year scoping for real uploaded data (the Navbar's
+ * Company/FY switchers — see appSlice.js). Not applied to sample/demo data:
+ * mock issues carry synthetic dates that only ever fall in FY 2025-26/26-27
+ * and have no company concept at all, so filtering them would just make
+ * most FY choices show "0 issues" for a demo that isn't actually broken.
+ *
+ * A row with no `companyCode` (older cached uploads from before this field
+ * existed, or a row SAP genuinely didn't tag) is never excluded by the
+ * company filter — treating "unknown" as "doesn't match" would silently
+ * hide data instead of just not being able to scope it.
+ */
+function scopeToCompanyAndFY(rows, state) {
+  if (state.issues.dataSource !== 'upload') return rows
+  const { selectedCompanyCode, financialYear } = state.app
+  return rows.filter((row) => {
+    if (selectedCompanyCode && row.companyCode && row.companyCode !== selectedCompanyCode) return false
+    if (financialYear && row.date && getFinancialYear(row.date) !== financialYear) return false
+    return true
+  })
+}
+
 export function selectActiveIssues(state) {
-  return state.issues.uploadedIssues
+  return scopeToCompanyAndFY(state.issues.uploadedIssues, state)
+}
+
+export function selectActiveValidationRows(state) {
+  return scopeToCompanyAndFY(state.issues.uploadMeta?.validationRows || [], state)
 }
 
 export function selectActiveVendors(state) {
-  if (state.issues.uploadMeta?.vendors?.length) return state.issues.uploadMeta.vendors
-  return [...new Set(state.issues.uploadedIssues.map((i) => i.vendor).filter(Boolean))].sort()
+  return [...new Set(selectActiveIssues(state).map((i) => i.vendor).filter(Boolean))].sort()
 }
 
 export function selectActiveSections(state) {
-  if (state.issues.uploadMeta?.sections?.length) return state.issues.uploadMeta.sections
-  return [...new Set(state.issues.uploadedIssues.map((i) => i.section).filter(Boolean))].sort()
+  return [...new Set(selectActiveIssues(state).map((i) => i.section).filter(Boolean))].sort()
 }
 
 export function selectDashboardKpis(state) {
   const issues = selectActiveIssues(state)
-  const stats = state.issues.uploadMeta?.stats || null
+  // The upload's transactionsBuilt total covers the WHOLE file — only a
+  // valid denominator for compliance-style math when Company/FY scoping
+  // hasn't narrowed the issue set down from that total.
+  const stats = issues.length === state.issues.uploadedIssues.length
+    ? state.issues.uploadMeta?.stats || null
+    : null
   return deriveDashboardKpis(issues, stats)
 }
 
 export function selectIssuesBySection(state) {
-  return deriveIssuesBySection(state.issues.uploadedIssues)
+  return deriveIssuesBySection(selectActiveIssues(state))
 }
 
 export function selectTopVendors(state) {
-  return deriveTopVendors(state.issues.uploadedIssues)
+  return deriveTopVendors(selectActiveIssues(state))
 }
 
 export function selectComplianceHealth(state) {
-  return deriveComplianceHealth(
-    state.issues.uploadedIssues,
-    state.issues.uploadMeta?.stats?.transactionsBuilt,
-  )
+  const issues = selectActiveIssues(state)
+  const transactionsBuilt = issues.length === state.issues.uploadedIssues.length
+    ? state.issues.uploadMeta?.stats?.transactionsBuilt
+    : null
+  return deriveComplianceHealth(issues, transactionsBuilt)
 }
 
 export function selectMonthlyTrend(state) {
-  return deriveMonthlyTrend(state.issues.uploadedIssues)
+  return deriveMonthlyTrend(selectActiveIssues(state))
 }
 
 export function selectThresholdVendors(state) {
-  return deriveThresholdVendorsFromUpload(
-    state.issues.uploadMeta?.thresholdVendors || [],
-    state.issues.uploadedIssues,
-  )
+  const thresholdVendors = scopeToCompanyAndFY(state.issues.uploadMeta?.thresholdVendors || [], state)
+  return deriveThresholdVendorsFromUpload(thresholdVendors, selectActiveIssues(state))
 }
 
 export function selectThresholdSectionBreakdown(state) {
@@ -195,11 +224,11 @@ export function selectThresholdSectionBreakdown(state) {
 }
 
 export function selectThresholdConsumptionTrend(state) {
-  return deriveThresholdConsumptionTrend(state.issues.uploadedIssues)
+  return deriveThresholdConsumptionTrend(selectActiveIssues(state))
 }
 
 export function selectGlCorrections(state) {
-  return deriveGlCorrections(state.issues.uploadedIssues)
+  return deriveGlCorrections(selectActiveIssues(state))
 }
 
 export default issuesSlice.reducer

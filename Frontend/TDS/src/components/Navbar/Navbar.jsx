@@ -1,7 +1,7 @@
 import { Bell, Search, CalendarDays, Database, RefreshCw, Building2, ShieldCheck, Menu } from 'lucide-react'
 import { useSelector, useDispatch } from 'react-redux'
 import { useAuth } from '@/context/AuthContext'
-import { setSelectedCompanyCode, toggleSidebar } from '@/redux/slices/appSlice'
+import { setSelectedCompanyCode, setFinancialYear, toggleSidebar, FINANCIAL_YEAR_OPTIONS } from '@/redux/slices/appSlice'
 import { capitalize } from '@/utils/utils'
 import ProfileMenu from './ProfileMenu'
 import './Navbar.css'
@@ -38,11 +38,10 @@ export default function Navbar() {
                 <select
                   value={selectedCompanyCode ?? ''}
                   onChange={(e) => dispatch(setSelectedCompanyCode(e.target.value))}
-                  style={{
-                    fontSize: 12, fontWeight: 600, border: 'none', background: 'transparent',
-                    cursor: 'pointer', color: 'var(--color-text)',
-                  }}
+                  className="navbar-meta-select"
+                  title="Switch company — also sets the default for your next SAP upload"
                 >
+                  <option value="">All</option>
                   {availableCompanyCodes.map((code) => (
                     <option key={code} value={code}>{code}</option>
                   ))}
@@ -57,7 +56,15 @@ export default function Navbar() {
         <div className="navbar-meta-item">
           <CalendarDays size={13} className="navbar-meta-icon" />
           <span className="navbar-meta-label">FY</span>
-          <span className="navbar-meta-value">{financialYear}</span>
+          <select
+            value={financialYear}
+            onChange={(e) => dispatch(setFinancialYear(e.target.value))}
+            className="navbar-meta-select"
+          >
+            {FINANCIAL_YEAR_OPTIONS.map((fy) => (
+              <option key={fy} value={fy}>{fy.replace('FY ', '')}</option>
+            ))}
+          </select>
         </div>
         <div className="navbar-meta-divider" />
         <div className="navbar-meta-item">

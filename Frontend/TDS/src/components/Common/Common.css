@@ -840,6 +840,12 @@
 
 .filter-select:focus { border-color: var(--color-primary); }
 
+.filter-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background-color: var(--color-bg);
+}
+
 /* Fill the assigned grid cell instead of relying on intrinsic/min-content sizing */
 .filter-bar-controls .filter-select { width: 100%; }
 
