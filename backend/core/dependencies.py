@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from db.database import get_db
-from db.models import User, CompanyCodeAccess
+from db.models import User, CompanyCodeAccess, CompanyCode
 from core.security import decode_access_token
 
 # This tells FastAPI where the login endpoint is (used for /docs UI)
@@ -65,7 +65,8 @@ def get_user_company_codes(user: User, db: Session) -> list[str]:
     Admin implicitly has access to ALL company codes.
     """
     if user.role == "admin":
-        return ["1001", "1079", "1081"]  # all company codes in scope
+        rows = db.query(CompanyCode).filter(CompanyCode.is_active == True).all()
+        return [row.code for row in rows]
 
     access_rows = db.query(CompanyCodeAccess).filter(
         CompanyCodeAccess.user_id == user.id

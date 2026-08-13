@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from db.database import get_db
-from db.models import User, CompanyCodeAccess, PasswordSetupToken
+from db.models import User, CompanyCodeAccess, PasswordSetupToken, CompanyCode
 from schemas.user import UserCreate, UserOut, UserCreateOut, UserUpdate, CompanyCodeAssign
 from core.dependencies import require_admin
 from services.email_service import send_invite_email
@@ -15,8 +15,6 @@ from core.security import create_invite_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin - User Management"])
-
-VALID_COMPANY_CODES = ["1001", "1079", "1081"]
 
 
 def _serialize_user(user: User, db: Session) -> User:
@@ -158,6 +156,10 @@ def update_user(
     return _serialize_user(user, db)
 
 
+def _valid_company_codes(db: Session) -> list[str]:
+    return [row.code for row in db.query(CompanyCode).filter(CompanyCode.is_active == True).all()]
+
+
 @router.post("/users/assign-company-code", response_model=UserOut)
 def assign_company_code(
     assignment: CompanyCodeAssign,
@@ -171,11 +173,9 @@ def assign_company_code(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if assignment.company_code not in VALID_COMPANY_CODES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid company code. Must be one of {VALID_COMPANY_CODES}",
-        )
+    valid_codes = _valid_company_codes(db)
+    if assignment.company_code not in valid_codes:
+        raise HTTPException(status_code=400, detail=f"Invalid company code. Must be one of {valid_codes}")
 
     existing = db.query(CompanyCodeAccess).filter(
         CompanyCodeAccess.user_id == assignment.user_id,

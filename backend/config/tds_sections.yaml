@@ -459,6 +459,12 @@ sections:
     time_of_deduction: "credit_or_payment_whichever_earlier"
     payer: "any"
 
+# ============================================================
+# MISSING DEDUCTION CHECK
+# ============================================================
+
+missing_deduction_check:
+  gl_coverage_medium_threshold: 0.8
 
 # ============================================================
 # CROSS-SECTION RULES

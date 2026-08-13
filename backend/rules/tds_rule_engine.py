@@ -22,6 +22,9 @@ with open(CONFIG_PATH, "r") as f:
 SECTIONS = TDS_CONFIG["sections"]
 GL_NOT_APPLICABLE = TDS_CONFIG["gl_tds_not_applicable"]
 CROSS_RULES = TDS_CONFIG["cross_section_rules"]
+MISSING_DEDUCTION_COVERAGE_THRESHOLD = TDS_CONFIG.get("missing_deduction_check", {}).get(
+    "gl_coverage_medium_threshold", 0.8
+)
 PAYMENT_TYPE_TO_SECTION = {
     str(section_config.get("payment_type", "")).strip().lower(): section_code
     for section_code, section_config in SECTIONS.items()
@@ -1042,7 +1045,7 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
 
         coverage = stats["with_tds"] / stats["total"]
         basic_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
-        severity = "medium" if coverage >= 0.8 else "low"
+        severity = "medium" if coverage >= MISSING_DEDUCTION_COVERAGE_THRESHOLD else "low"
 
         results.append((txn, TDSIssue(
             category="Possible Missed TDS Deduction",
