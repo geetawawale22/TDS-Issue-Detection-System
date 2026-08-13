@@ -156,14 +156,6 @@ export const glCorrections = issues
   })
   .filter((c) => c.shortfall > 0)
 
-export const reports = [
-  { id: 'RPT-01', name: 'Compliance Summary', type: 'Summary', description: 'A consolidated view of compliance health across all sections and vendors for the selected period.', lastGenerated: '2 hours ago', period: 'FY 2025-26, Q4' },
-  { id: 'RPT-02', name: 'Vendor Risk Report', type: 'Risk Analysis', description: 'Ranks vendors by deduction risk, flag frequency, and threshold proximity.', lastGenerated: '1 day ago', period: 'FY 2025-26, Q4' },
-  { id: 'RPT-03', name: 'Threshold Analysis', type: 'Threshold', description: 'Tracks threshold consumption trends and forecasts upcoming breaches by section.', lastGenerated: '3 days ago', period: 'FY 2025-26, Q4' },
-  { id: 'RPT-04', name: 'Audit Report', type: 'Audit', description: 'Full audit trail of issues, corrections, approvals, and filing-ready documentation.', lastGenerated: '5 days ago', period: 'FY 2025-26, Full Year' },
-  { id: 'RPT-05', name: 'Monthly Compliance Report', type: 'Monthly', description: 'Month-over-month compliance metrics with issue resolution velocity.', lastGenerated: '6 hours ago', period: 'May 2026' },
-]
-
 export const monthlyTrend = [
   { month: 'Dec', issues: 32, resolved: 28 },
   { month: 'Jan', issues: 41, resolved: 35 },

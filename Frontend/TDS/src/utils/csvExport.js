@@ -1,3 +1,6 @@
+import * as XLSX from 'xlsx'
+import { jsPDF } from 'jspdf'
+import { autoTable } from 'jspdf-autotable'
 import { getDisplayIssueType, getRecommendedAction } from '@/data/issueTypes'
 import { formatCurrency, formatDate } from '@/utils/utils'
 
@@ -51,4 +54,46 @@ export function downloadCsv(filename, columns, rows) {
   link.click()
   link.remove()
   URL.revokeObjectURL(url)
+}
+
+/** Same columns/rows shape as downloadCsv — a real .xlsx workbook instead of plain text. */
+export function downloadExcel(filename, columns, rows, sheetName = 'Report') {
+  const data = rows.map((row) => {
+    const obj = {}
+    columns.forEach((c) => { obj[c.label] = c.value(row) })
+    return obj
+  })
+  const worksheet = XLSX.utils.json_to_sheet(data)
+  // Rough auto-width so columns aren't all default-width and unreadable.
+  worksheet['!cols'] = columns.map((c) => ({
+    wch: Math.max(c.label.length, ...rows.slice(0, 200).map((r) => String(c.value(r) ?? '').length)) + 2,
+  }))
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName.slice(0, 31)) // Excel sheet-name limit
+  XLSX.writeFile(workbook, filename)
+}
+
+/** Same columns/rows shape as downloadCsv — a landscape PDF with a title/timestamp header and a table. */
+export function downloadPdf(filename, title, columns, rows) {
+  const doc = new jsPDF({ orientation: 'landscape' })
+  doc.setFontSize(14)
+  doc.text(title, 14, 15)
+  doc.setFontSize(9)
+  doc.setTextColor(120)
+  doc.text(`Generated ${new Date().toLocaleString('en-IN')} · ${rows.length.toLocaleString()} row${rows.length === 1 ? '' : 's'}`, 14, 21)
+
+  autoTable(doc, {
+    startY: 26,
+    head: [columns.map((c) => c.label)],
+    body: rows.map((row) => columns.map((c) => {
+      const v = c.value(row)
+      return v == null ? '' : String(v)
+    })),
+    styles: { fontSize: 7, cellPadding: 2.5, overflow: 'linebreak' },
+    headStyles: { fillColor: [224, 19, 48], textColor: 255, fontStyle: 'bold' }, // Mahindra red
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+    margin: { left: 14, right: 14 },
+  })
+
+  doc.save(filename)
 }

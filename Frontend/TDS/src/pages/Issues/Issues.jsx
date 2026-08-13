@@ -129,7 +129,8 @@ export default function Issues() {
         !issue.id?.toLowerCase().includes(q) &&
         !String(issue.docNo ?? '').toLowerCase().includes(q) &&
         !String(issue.vendorId ?? '').toLowerCase().includes(q) &&
-        !String(issue.section ?? '').toLowerCase().includes(q)
+        !String(issue.section ?? '').toLowerCase().includes(q) &&
+        !String(issue.vendorPan ?? '').toLowerCase().includes(q)
       ) return false
     }
     if (vendorFilter    !== 'all' && issue.vendor    !== vendorFilter)    return false
@@ -300,7 +301,8 @@ export default function Issues() {
             !row.vendor?.toLowerCase().includes(q) &&
             !String(row.docNo ?? '').toLowerCase().includes(q) &&
             !String(row.vendorId ?? '').toLowerCase().includes(q) &&
-            !String(row.section ?? '').toLowerCase().includes(q)
+            !String(row.section ?? '').toLowerCase().includes(q) &&
+            !String(row.vendorPan ?? '').toLowerCase().includes(q)
           ) return false
         }
         if (vendorFilter  !== 'all' && row.vendor  !== vendorFilter)  return false
@@ -416,7 +418,7 @@ export default function Issues() {
             className="filter-input"
             value={searchQuery}
             onChange={(e) => dispatch(setSearchQuery(e.target.value))}
-            placeholder="Search vendor / doc / ID / section…"
+            placeholder="Search vendor / doc / ID / section / PAN…"
           />
         </div>
         <div className="filter-bar-controls">

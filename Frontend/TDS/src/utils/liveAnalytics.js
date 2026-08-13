@@ -302,6 +302,62 @@ export function deriveMonthlyTrend(issues) {
   return rows.map(({ month, issues: iss, resolved }) => ({ month, issues: iss, resolved }))
 }
 
+/** Month-on-month totals with severity mix and % change vs. the prior month. */
+export function deriveMonthlyComparison(issues) {
+  const byMonth = new Map()
+  for (const issue of issues) {
+    if (!issue.date) continue
+    const d = new Date(issue.date)
+    if (Number.isNaN(d.getTime())) continue
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    if (!byMonth.has(key)) {
+      byMonth.set(key, {
+        key,
+        month: d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }),
+        high: 0,
+        medium: 0,
+        low: 0,
+        total: 0,
+      })
+    }
+    const row = byMonth.get(key)
+    row.total += 1
+    row[issue.severity] = (row[issue.severity] || 0) + 1
+  }
+  const sorted = [...byMonth.values()].sort((a, b) => a.key.localeCompare(b.key))
+  return sorted.map((row, idx) => {
+    const prev = sorted[idx - 1]?.total ?? null
+    let change = null
+    if (prev != null) change = prev === 0 ? (row.total === 0 ? 0 : null) : ((row.total - prev) / prev) * 100
+    return { ...row, change: change == null ? null : Number(change.toFixed(1)) }
+  })
+}
+
+/** Issue-count trend per month for the top N vendors, pivoted for a multi-line chart. */
+export function deriveVendorMonthlyTrend(issues, limit = 5) {
+  const totals = countBy(issues, (i) => i.vendor)
+  const topVendors = [...totals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([name]) => name)
+
+  const byMonth = new Map()
+  for (const issue of issues) {
+    if (!issue.date || !issue.vendor || !topVendors.includes(issue.vendor)) continue
+    const d = new Date(issue.date)
+    if (Number.isNaN(d.getTime())) continue
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    if (!byMonth.has(key)) {
+      const row = { key, month: d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }) }
+      topVendors.forEach((v) => { row[v] = 0 })
+      byMonth.set(key, row)
+    }
+    byMonth.get(key)[issue.vendor] += 1
+  }
+  const data = [...byMonth.values()].sort((a, b) => a.key.localeCompare(b.key))
+  return { data, vendors: topVendors }
+}
+
 export function deriveThresholdConsumptionTrend(issues) {
   const months = deriveMonthlyTrend(issues)
   return months.map((m) => ({

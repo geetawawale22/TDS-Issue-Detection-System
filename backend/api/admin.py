@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from db.database import get_db
 from db.models import User, CompanyCodeAccess, PasswordSetupToken
-from schemas.user import UserCreate, UserOut, UserCreateOut, CompanyCodeAssign
+from schemas.user import UserCreate, UserOut, UserCreateOut, UserUpdate, CompanyCodeAssign
 from core.dependencies import require_admin
 from services.email_service import send_invite_email
 from datetime import datetime, timedelta, timezone
@@ -124,6 +124,37 @@ def get_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    return _serialize_user(user, db)
+
+
+@router.patch("/users/{user_id}", response_model=UserOut)
+def update_user(
+    user_id: int,
+    update: UserUpdate,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
+    """Admin edits an existing user's name, email, and/or role. Only the
+    fields present in the request body are changed."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if update.email is not None and update.email != user.email:
+        existing_email = db.query(User).filter(User.email == update.email, User.id != user_id).first()
+        if existing_email:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+    if update.role is not None and user.id == admin_user.id and update.role != "admin":
+        raise HTTPException(status_code=400, detail="You cannot demote your own account")
+
+    update_fields = update.model_dump(exclude_unset=True, exclude_none=True)
+    for field, value in update_fields.items():
+        setattr(user, field, value)
+
+    db.commit()
+    db.refresh(user)
+
     return _serialize_user(user, db)
 
 

@@ -7,6 +7,8 @@ import IssuesBySectionChart from '@/components/Charts/IssuesBySectionChart'
 import ComplianceHealthChart from '@/components/Charts/ComplianceHealthChart'
 import MonthlyTrendChart from '@/components/Charts/MonthlyTrendChart'
 import TopVendorsChart from '@/components/Charts/TopVendorsChart'
+import MonthlyComparisonChart from '@/components/Charts/MonthlyComparisonChart'
+import VendorMonthlyChart from '@/components/Charts/VendorMonthlyChart'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import { selectDashboardKpis, selectIsLive } from '@/redux/slices/issuesSlice'
 import '@/components/Common/Common.css'
@@ -186,6 +188,27 @@ export default function Dashboard() {
             </div>
           </div>
           <TopVendorsChart />
+        </div>
+      </div>
+
+      <div className="chart-grid-2col">
+        <div className="chart-card">
+          <div className="chart-card-header">
+            <div>
+              <p className="chart-title">Month-on-Month Comparison</p>
+              <p className="chart-subtitle">Severity mix by month, with % change vs. prior month</p>
+            </div>
+          </div>
+          <MonthlyComparisonChart />
+        </div>
+        <div className="chart-card">
+          <div className="chart-card-header">
+            <div>
+              <p className="chart-title">Vendor-wise Month-on-Month</p>
+              <p className="chart-subtitle">Issue count by month for the top 5 vendors</p>
+            </div>
+          </div>
+          <VendorMonthlyChart />
         </div>
       </div>
     </div>

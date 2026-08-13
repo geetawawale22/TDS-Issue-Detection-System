@@ -37,6 +37,23 @@ class UserOut(BaseModel):
         from_attributes = True
 
 
+class UserUpdate(BaseModel):
+    """Used when Admin edits an existing user. Only provided fields are
+    changed — username is intentionally not editable here (it's the
+    login identifier; changing it belongs in a dedicated flow, not a
+    quick edit)."""
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value):
+        if value is not None and value not in ("admin", "accountant"):
+            raise ValueError("Role must be 'admin' or 'accountant'")
+        return value
+
+
 class UserCreateOut(UserOut):
     """Response for user creation — adds delivery status so the admin
     knows immediately if the invite email failed to send, instead of

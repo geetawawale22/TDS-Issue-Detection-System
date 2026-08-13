@@ -9,6 +9,8 @@ import {
   deriveGlCorrections,
   deriveMonthlyTrend,
   deriveThresholdConsumptionTrend,
+  deriveMonthlyComparison,
+  deriveVendorMonthlyTrend,
 } from '@/utils/liveAnalytics'
 import { getFinancialYear } from '@/utils/utils'
 
@@ -212,6 +214,14 @@ export function selectComplianceHealth(state) {
 
 export function selectMonthlyTrend(state) {
   return deriveMonthlyTrend(selectActiveIssues(state))
+}
+
+export function selectMonthlyComparison(state) {
+  return deriveMonthlyComparison(selectActiveIssues(state))
+}
+
+export function selectVendorMonthlyTrend(state) {
+  return deriveVendorMonthlyTrend(selectActiveIssues(state))
 }
 
 export function selectThresholdVendors(state) {
