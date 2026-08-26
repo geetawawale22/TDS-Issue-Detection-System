@@ -549,10 +549,6 @@ export const MULTI_CATEGORY_DELIMITER = '||'
  * distinguishes them on the wire:
  *   - "PAN Missing (206AA)" covers both the "nothing deducted" and
  *     "fallback rate deducted" PAN-missing outcomes.
- *   - "Amount Mismatch (Short/Excess)" is its own option, not folded into
- *     "TDS Rate Mismatch": check_amount_consistency is a ₹-math cross-check
- *     (stated rate vs. actual deducted amount), not a rate lookup, and in
- *     practice is one of the most common categories on real SAP uploads.
  *   - "TDS Not Applicable — Correctly Handled" is one option covering
  *     three different clean confirmations (GL exclusion, Form 15G/15H,
  *     Transporter exemption) — the backend reports all three as the exact
@@ -586,7 +582,12 @@ export function issueTypeFilterOptions() {
     { label: 'Wrongful TDS (Form 15G/15H)', categories: ['TDS Not Applicable — Violation (Form 15G/15H)'] },
     { label: 'TDS Rate Mismatch', categories: ['Wrong TDS Rate'] },
     { label: '194J Rate Mismatch (Not 2% or 10%)', categories: ['Short/Excess TDS Deducted'] },
-    { label: 'Amount Mismatch (Short/Excess)', categories: ['Short TDS Deducted — Amount Mismatch', 'Excess TDS Deducted — Amount Mismatch'] },
+    // check_amount_consistency is a ₹-math cross-check (stated rate vs.
+    // actual deducted amount), not a rate lookup — kept as its own two
+    // options (not folded into "TDS Rate Mismatch"), split by direction so
+    // Short and Excess are filterable/countable as distinct issue types.
+    { label: 'Short TDS Deducted (Amount Mismatch)', categories: ['Short TDS Deducted — Amount Mismatch'] },
+    { label: 'Excess TDS Deducted (Amount Mismatch)', categories: ['Excess TDS Deducted — Amount Mismatch'] },
     { label: 'TDS Exceeds Full Invoice Amount', categories: ['Excess TDS Deducted — Exceeds Invoice Amount'] },
     { label: 'Unnecessary TDS (Transporter)', categories: ['TDS Not Applicable — Violation (Transporter Exemption)'] },
     { label: 'Wrong Section (Goods vs Services)', categories: ['Wrong Section Applied'] },

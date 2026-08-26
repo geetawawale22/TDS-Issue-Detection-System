@@ -43,11 +43,29 @@ COLUMN_ALIASES = {
 }
 
 
+# Fields whose value is an ID/code, never a genuine fraction — safe (and
+# necessary) to collapse a pandas-inferred "1001.0" back to "1001" for.
+# Amount/rate fields are deliberately excluded; those must stay numeric.
+_CODE_LIKE_FIELDS = {
+    "company_code", "vendor_code", "doc_number", "gl_account", "po_no",
+    "tds_section_code", "hsn_sac_code", "advance_document_reference",
+    "person", "bill_no", "ldc_exemption_number",
+}
+
+
 def _get(row: dict, field: str) -> Any:
     """Read a value using Mahindra column names, with legacy fallbacks."""
     for key in COLUMN_ALIASES.get(field, (field,)):
         if key in row and row[key] is not None and str(row[key]).strip() not in ("", "nan", "None"):
-            return row[key]
+            value = row[key]
+            # A column that's otherwise all-integer codes gets read by
+            # pandas as float64 the moment any row in it is blank/NaN —
+            # common once a sheet has blank rows mixed in — turning "1001"
+            # into 1001.0. Left alone, that breaks exact-match comparisons
+            # (e.g. against the app's company-code list) downstream.
+            if field in _CODE_LIKE_FIELDS and isinstance(value, float) and value.is_integer():
+                return str(int(value))
+            return value
     return None
 
 

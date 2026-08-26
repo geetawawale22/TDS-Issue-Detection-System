@@ -1,16 +1,16 @@
 import { createSlice } from '@reduxjs/toolkit'
 import {
   deriveIssuesBySection,
+  deriveIssuesByType,
   deriveTopVendors,
-  deriveComplianceHealth,
   deriveDashboardKpis,
   deriveThresholdVendorsFromUpload,
   deriveThresholdSectionBreakdown,
   deriveGlCorrections,
   deriveMonthlyTrend,
   deriveThresholdConsumptionTrend,
-  deriveMonthlyComparison,
-  deriveVendorMonthlyTrend,
+  deriveAdjustedValidationRows,
+  deriveUploadKpis,
 } from '@/utils/liveAnalytics'
 import { getFinancialYear } from '@/utils/utils'
 
@@ -51,6 +51,11 @@ const initialState = {
   severityFilter:  'all',
   statusFilter:    'all',
   issueTypeFilter: 'all',
+  monthFilter:     'all',
+  // Which Issues-page tab is showing: 'issue' | 'passed' | 'insufficient' |
+  // 'skipped' | 'all' (all validation rows regardless of status). Lives in
+  // redux (not page-local state) so Dashboard KPI clicks can drive it.
+  viewFilter:      'issue',
   selectedIssueId: null,
   drawerOpen:      false,
 
@@ -72,12 +77,14 @@ const issuesSlice = createSlice({
     setSeverityFilter: (state, action) => { state.severityFilter  = action.payload },
     setStatusFilter:   (state, action) => { state.statusFilter    = action.payload },
     setIssueTypeFilter:(state, action) => { state.issueTypeFilter = action.payload },
+    setMonthFilter:    (state, action) => { state.monthFilter     = action.payload },
+    setViewFilter:     (state, action) => { state.viewFilter      = action.payload },
     openDrawer:       (state, action) => { state.selectedIssueId = action.payload; state.drawerOpen = true },
     closeDrawer:      (state)         => { state.drawerOpen      = false },
     resetFilters:     (state)         => {
       state.searchQuery = ''; state.vendorFilter = 'all'; state.sectionFilter = 'all';
       state.severityFilter = 'all'; state.statusFilter = 'all';
-      state.issueTypeFilter = 'all';
+      state.issueTypeFilter = 'all'; state.monthFilter = 'all'; state.viewFilter = 'issue';
     },
 
     uploadStarted: (state) => {
@@ -116,6 +123,8 @@ const issuesSlice = createSlice({
       state.severityFilter = 'all'
       state.statusFilter = 'all'
       state.issueTypeFilter = 'all'
+      state.monthFilter = 'all'
+      state.viewFilter = 'issue'
       saveLastUpload(state)
     },
     uploadFailed: (state, action) => {
@@ -139,7 +148,7 @@ const issuesSlice = createSlice({
 
 export const {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters,
+  setStatusFilter, setIssueTypeFilter, setMonthFilter, setViewFilter, openDrawer, closeDrawer, resetFilters,
   uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
 } = issuesSlice.actions
 
@@ -177,6 +186,13 @@ export function selectActiveValidationRows(state) {
   return scopeToCompanyAndFY(state.issues.uploadMeta?.validationRows || [], state)
 }
 
+/** Company/FY-scoped validation rows with the zero-base-amount → insufficient
+ * reclassification applied — the single source every page's Passed/Issues
+ * Found/Insufficient Data counts should read from. */
+export function selectAdjustedValidationRows(state) {
+  return deriveAdjustedValidationRows(selectActiveValidationRows(state))
+}
+
 export function selectActiveVendors(state) {
   return [...new Set(selectActiveIssues(state).map((i) => i.vendor).filter(Boolean))].sort()
 }
@@ -196,32 +212,27 @@ export function selectDashboardKpis(state) {
   return deriveDashboardKpis(issues, stats)
 }
 
+/** Live-upload KPI strip for the Dashboard — see deriveUploadKpis for why
+ * every number here is guaranteed to match the Issues page exactly. */
+export function selectUploadKpis(state) {
+  const uploadStats = state.issues.uploadMeta?.stats || null
+  return deriveUploadKpis(selectActiveIssues(state), selectActiveValidationRows(state), uploadStats)
+}
+
 export function selectIssuesBySection(state) {
   return deriveIssuesBySection(selectActiveIssues(state))
+}
+
+export function selectIssuesByType(state) {
+  return deriveIssuesByType(selectActiveIssues(state))
 }
 
 export function selectTopVendors(state) {
   return deriveTopVendors(selectActiveIssues(state))
 }
 
-export function selectComplianceHealth(state) {
-  const issues = selectActiveIssues(state)
-  const transactionsBuilt = issues.length === state.issues.uploadedIssues.length
-    ? state.issues.uploadMeta?.stats?.transactionsBuilt
-    : null
-  return deriveComplianceHealth(issues, transactionsBuilt)
-}
-
 export function selectMonthlyTrend(state) {
   return deriveMonthlyTrend(selectActiveIssues(state))
-}
-
-export function selectMonthlyComparison(state) {
-  return deriveMonthlyComparison(selectActiveIssues(state))
-}
-
-export function selectVendorMonthlyTrend(state) {
-  return deriveVendorMonthlyTrend(selectActiveIssues(state))
 }
 
 export function selectThresholdVendors(state) {

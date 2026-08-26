@@ -13,6 +13,7 @@ import {
 import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode } from '@/redux/slices/appSlice'
 import { seedPansFromIssues } from '@/redux/slices/panSlice'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
+import { deriveTransactionSeverityCounts } from '@/utils/liveAnalytics'
 import './SapUploadPanel.css'
 
 const ACCEPTED = '.csv,.xlsx,.xls,.xlsm'
@@ -34,6 +35,10 @@ export default function SapUploadPanel() {
   const activeIssues = useSelector(selectActiveIssues)
   const activeValidationRows = useSelector(selectActiveValidationRows)
   const { availableCompanyCodes, selectedCompanyCode } = useSelector((s) => s.app)
+  // Transaction-level (worst-severity-wins), not per-issue-instance — so
+  // High+Medium+Low matches the Issues Found count exactly, same as the
+  // Dashboard KPI strip and the backend's own stats.
+  const severityCounts = deriveTransactionSeverityCounts(activeIssues)
 
   const companyCodeOptions = availableCompanyCodes.length > 1
     ? [{ value: '', label: 'All company codes' }, ...availableCompanyCodes.map((c) => ({ value: c, label: c }))]
@@ -366,10 +371,28 @@ export default function SapUploadPanel() {
             </span>
           </div>
           <div className="sap-stats-grid">
-            <div className="sap-stat" title="Not scoped by Company/FY — a row that failed to become a transaction was never attributed to either.">
-              <div className="sap-stat-value">{stats.rowsRead?.toLocaleString()}</div>
-              <div className="sap-stat-label">Rows read</div>
-            </div>
+            {(() => {
+              const blankFolded = stats.blankRowsSkipped || 0
+              const otherCompanySkipped = stats.otherCompanyRowsSkipped || 0
+              const totalFileRows = (stats.rowsRead || 0) + otherCompanySkipped
+              const notes = []
+              if (blankFolded > 0) notes.push(`${blankFolded.toLocaleString()} of these row${blankFolded === 1 ? ' was' : 's were'} fully blank (e.g. stray formatting past the real data) and ${blankFolded === 1 ? 'appears' : 'appear'} under Insufficient Data below.`)
+              if (otherCompanySkipped > 0) notes.push(`${otherCompanySkipped.toLocaleString()} row${otherCompanySkipped === 1 ? '' : 's'} belonging to a different company code than this run ${otherCompanySkipped === 1 ? 'was' : 'were'} excluded.`)
+              const tooltip = notes.length > 0
+                ? `Not scoped by Company/FY. The file had ${totalFileRows.toLocaleString()} rows. ${notes.join(' ')}`
+                : 'Not scoped by Company/FY — a row that failed to become a transaction was never attributed to either.'
+              return (
+                <div className="sap-stat" title={tooltip}>
+                  <div className="sap-stat-value">{stats.rowsRead?.toLocaleString()}</div>
+                  <div className="sap-stat-label">
+                    Rows read
+                    {otherCompanySkipped > 0 && (
+                      <span className="sap-stat-sublabel"> ({otherCompanySkipped.toLocaleString()} other-company skipped)</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
             <div className="sap-stat">
               <div className="sap-stat-value">{activeValidationRows.length.toLocaleString()}</div>
               <div className="sap-stat-label">Transactions</div>
@@ -380,18 +403,18 @@ export default function SapUploadPanel() {
               )}
             </div>
             <div className="sap-stat">
-              <div className="sap-stat-value">{activeIssues.filter((i) => i.severity === 'high').length.toLocaleString()}</div>
+              <div className="sap-stat-value">{severityCounts.high.toLocaleString()}</div>
               <div className="sap-stat-label">High</div>
-              {activeIssues.some((i) => i.severity === 'high') && (
+              {severityCounts.high > 0 && (
                 <button className="sap-stat-download" type="button" title="Download CSV of all High severity issues" onClick={() => handleExportStat('high')}>
                   <Download size={12} />
                 </button>
               )}
             </div>
             <div className="sap-stat">
-              <div className="sap-stat-value">{activeIssues.filter((i) => i.severity === 'medium').length.toLocaleString()}</div>
+              <div className="sap-stat-value">{severityCounts.medium.toLocaleString()}</div>
               <div className="sap-stat-label">Medium</div>
-              {activeIssues.some((i) => i.severity === 'medium') && (
+              {severityCounts.medium > 0 && (
                 <button className="sap-stat-download" type="button" title="Download CSV of all Medium severity issues" onClick={() => handleExportStat('medium')}>
                   <Download size={12} />
                 </button>

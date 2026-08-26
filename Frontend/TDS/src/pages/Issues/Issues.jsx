@@ -3,34 +3,44 @@ import { useDispatch, useSelector } from 'react-redux'
 import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
-  AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash,
+  AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash, X,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
-import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
+import StatusBadge, { severityToTone, issueStatusToTone, validationRowStatusToTone } from '@/components/Common/StatusBadge'
 import IssueDrawer from '@/components/Common/IssueDrawer'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters,
-  selectActiveIssues, selectActiveVendors, selectActiveSections, selectActiveValidationRows,
+  setStatusFilter, setIssueTypeFilter, setMonthFilter, setViewFilter, openDrawer, closeDrawer, resetFilters,
+  selectActiveIssues, selectActiveVendors, selectActiveSections, selectAdjustedValidationRows,
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
 import { issueTypeFilterOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
-import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
+import { downloadCsv, downloadExcelMultiSheet, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
 import './Issues.css'
 
 const SEVERITY_OPTIONS = [['all','All Severity'],['high','High'],['medium','Medium'],['low','Low']]
-const STATUS_OPTIONS   = [['all','All Status'],['open','Open'],['in_review','In Review'],['resolved','Resolved'],['rejected','Rejected']]
+const STATUS_OPTIONS   = [['all','All Status'],['open','Open'],['in_review','In Review'],['pending','Pending (Not Resolved)'],['resolved','Resolved'],['rejected','Rejected']]
 const ISSUE_TYPE_OPTIONS = issueTypeFilterOptions()
+const VIEW_LABELS = { issue: 'Issues Found', passed: 'Passed', insufficient: 'Insufficient Data', skipped: 'Skipped', all: 'All Transactions' }
 
 const SEVERITY_ICON = { high: AlertOctagon, medium: AlertTriangle, low: CheckCircle2 }
 const DEFAULT_SECTION_RATES = {
   '194C': 1,
   '194H': 5,
   '194Q': 0.1,
+}
+
+// Same grouping as deriveMonthlyTrend (liveAnalytics.js) — month name only, no
+// year — so a click on a Monthly Trend chart point filters to exactly the
+// issues counted in that point's tooltip.
+function issueMonthLabel(dateStr) {
+  const d = new Date(dateStr)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleString('en-IN', { month: 'short' })
 }
 
 function inferRateFromAmount(baseAmount, tdsAmount) {
@@ -69,15 +79,14 @@ function SectionCell({ issue }) {
 
 export default function Issues() {
   const dispatch = useDispatch()
-  const [validationView, setValidationView] = useState('issue')
   const [reviewValidationRow, setReviewValidationRow] = useState(null)
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
-    issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta,
+    issueTypeFilter, monthFilter, viewFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta,
   } = useSelector((s) => s.issues)
 
   const issues = useSelector(selectActiveIssues)
-  const activeValidationRows = useSelector(selectActiveValidationRows)
+  const adjustedValidationRows = useSelector(selectAdjustedValidationRows)
   const vendorNames = useSelector(selectActiveVendors)
   const sections = useSelector(selectActiveSections)
 
@@ -128,6 +137,7 @@ export default function Issues() {
         !issue.vendor?.toLowerCase().includes(q) &&
         !issue.id?.toLowerCase().includes(q) &&
         !String(issue.docNo ?? '').toLowerCase().includes(q) &&
+        !String(issue.poNo ?? '').toLowerCase().includes(q) &&
         !String(issue.vendorId ?? '').toLowerCase().includes(q) &&
         !String(issue.section ?? '').toLowerCase().includes(q) &&
         !String(issue.vendorPan ?? '').toLowerCase().includes(q)
@@ -136,28 +146,15 @@ export default function Issues() {
     if (vendorFilter    !== 'all' && issue.vendor    !== vendorFilter)    return false
     if (sectionFilter   !== 'all' && issue.section   !== sectionFilter)   return false
     if (severityFilter  !== 'all' && issue.severity  !== severityFilter)  return false
-    if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
+    if (statusFilter === 'pending') {
+      if (issue.status === 'resolved') return false
+    } else if (statusFilter !== 'all' && issue.status !== statusFilter) return false
     if (issueTypeFilter !== 'all' && !issueTypeFilter.split(MULTI_CATEGORY_DELIMITER).includes(getDisplayIssueType(issue))) return false
+    if (monthFilter !== 'all' && issueMonthLabel(issue.date) !== monthFilter) return false
     return true
-  }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
+  }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
-
-  // Company/FY-scoped validation rows (see selectActiveValidationRows), with
-  // one extra reclassification: a row with a zero base amount can't actually
-  // be rate-checked, so it reads as "insufficient data" rather than a false
-  // "passed".
-  const adjustedValidationRows = useMemo(() => (
-    activeValidationRows.map((row) => (
-      Number(row.baseAmount) === 0
-        ? {
-          ...row,
-          status: 'insufficient',
-          reason: 'Base amount is zero, so TDS cannot be validated for this row.',
-        }
-        : row
-    ))
-  ), [activeValidationRows])
   const drawerIssue = reviewValidationRow || selectedIssue
   const drawerIsOpen = Boolean(reviewValidationRow) || drawerOpen
 
@@ -193,12 +190,13 @@ export default function Issues() {
   // attributed to a company or date either) — that count always reflects the
   // whole upload, read straight from the backend stat.
   const summary = useMemo(() => {
-    if (!uploadMeta) return { passedRows: 0, issueRows: issues.length, insufficientDataRows: 0, skippedRows: 0 }
+    if (!uploadMeta) return { passedRows: 0, issueRows: issues.length, insufficientDataRows: 0, skippedRows: 0, totalRows: issues.length }
     return {
       passedRows: adjustedValidationRows.filter((r) => r.status === 'passed').length,
       issueRows: adjustedValidationRows.filter((r) => r.status === 'issue').length,
       insufficientDataRows: adjustedValidationRows.filter((r) => r.status === 'insufficient').length,
       skippedRows: uploadMeta.stats?.rowsSkipped ?? 0,
+      totalRows: adjustedValidationRows.length,
     }
   }, [issues, uploadMeta, adjustedValidationRows])
 
@@ -221,6 +219,25 @@ export default function Issues() {
     downloadCsv(`${fileBase}-${exportSpec.suffix}.csv`, exportSpec.columns, exportSpec.rows)
   }
 
+  // Header "Export" button — a single workbook covering every category at
+  // once (Issues Found + Passed + Insufficient Data, each on its own sheet,
+  // full row sets, none truncated) so nothing needs to be exported one
+  // card at a time to get the complete picture.
+  function handleExportAll() {
+    const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
+    const sheets = [
+      { name: 'Issues Found', columns: ISSUE_CSV_COLUMNS, rows: issues },
+      { name: 'Passed', columns: VALIDATION_CSV_COLUMNS, rows: adjustedValidationRows.filter((r) => r.status === 'passed') },
+      { name: 'Insufficient Data', columns: VALIDATION_CSV_COLUMNS, rows: adjustedValidationRows.filter((r) => r.status === 'insufficient') },
+    ].filter((s) => s.rows.length > 0)
+    if (sheets.length === 0) {
+      toast('No rows to export')
+      return
+    }
+    downloadExcelMultiSheet(`${fileBase}-complete-export.xlsx`, sheets)
+    toast.success(`Exported ${sheets.reduce((n, s) => n + s.rows.length, 0).toLocaleString()} rows across ${sheets.length} sheet${sheets.length === 1 ? '' : 's'}`)
+  }
+
   const columns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
     { key: 'docNo',   header: 'Doc No.',  render: (r) => (
@@ -235,6 +252,7 @@ export default function Issues() {
         )}
       </div>
     )},
+    { key: 'poNo', header: 'PO No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.poNo}</span> },
     { key: 'vendor', header: 'Vendor',    render: (r) => (
       <div>
         <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
@@ -263,6 +281,7 @@ export default function Issues() {
   const validationColumns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
     { key: 'docNo', header: 'Doc No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span> },
+    { key: 'poNo', header: 'PO No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.poNo}</span> },
     { key: 'vendor', header: 'Vendor', render: (r) => (
       <div>
         <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
@@ -272,6 +291,14 @@ export default function Issues() {
     { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
     { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
+    // Only meaningful when rows of more than one status are shown together
+    // (the 'all' view) — each single-status tab already says which status
+    // every row has via its own card, so this column would just repeat it.
+    ...(viewFilter === 'all' ? [{
+      key: 'status',
+      header: 'Status',
+      render: (r) => <StatusBadge label={VIEW_LABELS[r.status] || formatStatusLabel(r.status)} tone={validationRowStatusToTone(r.status)} />,
+    }] : []),
     { header: '', render: (r) => (
       r.status === 'passed'
         ? (
@@ -290,16 +317,19 @@ export default function Issues() {
   // Search/Vendor/Section apply here too (those fields exist on a validation
   // row) — Severity/Issue Type/Status stay issue-table-only since a passed,
   // insufficient-data, or skipped row has neither a severity nor a category.
+  // 'all' shows every status together (mirrors Dashboard's Transactions
+  // Processed KPI, which counts all of them combined).
   const validationTableRows = useMemo(() => {
-    if (validationView === 'issue') return []
+    if (viewFilter === 'issue') return []
     return adjustedValidationRows
       .filter((row) => {
-        if (row.status !== validationView) return false
+        if (viewFilter !== 'all' && row.status !== viewFilter) return false
         if (searchQuery) {
           const q = searchQuery.toLowerCase()
           if (
             !row.vendor?.toLowerCase().includes(q) &&
             !String(row.docNo ?? '').toLowerCase().includes(q) &&
+            !String(row.poNo ?? '').toLowerCase().includes(q) &&
             !String(row.vendorId ?? '').toLowerCase().includes(q) &&
             !String(row.section ?? '').toLowerCase().includes(q) &&
             !String(row.vendorPan ?? '').toLowerCase().includes(q)
@@ -307,10 +337,11 @@ export default function Issues() {
         }
         if (vendorFilter  !== 'all' && row.vendor  !== vendorFilter)  return false
         if (sectionFilter !== 'all' && row.section !== sectionFilter) return false
+        if (monthFilter   !== 'all' && issueMonthLabel(row.date) !== monthFilter) return false
         return true
       })
-      .map((row, index) => ({ ...row, id: `${validationView}-${index}-${row.id || row.docNo || 'row'}` }))
-  }, [adjustedValidationRows, validationView, searchQuery, vendorFilter, sectionFilter])
+      .map((row, index) => ({ ...row, id: `${viewFilter}-${index}-${row.id || row.docNo || 'row'}` }))
+  }, [adjustedValidationRows, viewFilter, searchQuery, vendorFilter, sectionFilter, monthFilter])
 
   return (
     <div>
@@ -328,7 +359,7 @@ export default function Issues() {
             {bulkVerifying ? <Loader2 size={14} className="spin" /> : <IdCard size={14} />}
             {bulkVerifying ? 'Verifying PANs…' : 'Verify All PANs'}
           </button>
-          <button className="btn btn-outline" type="button">
+          <button className="btn btn-outline" type="button" onClick={handleExportAll} title="Export the complete dataset (Issues Found + Passed + Insufficient Data) as one Excel workbook">
             <Download size={14} />Export
           </button>
         </div>
@@ -338,8 +369,20 @@ export default function Issues() {
 
       {/* Summary strip */}
       <div className="issues-summary-grid">
-        <div className={`issues-summary-card issues-summary-card--success ${validationView === 'passed' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed')}>
+        <button
+          className={`issues-summary-card issues-summary-card--neutral ${viewFilter === 'all' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => dispatch(setViewFilter('all'))}
+          title="Click to view all processed transactions"
+        >
+          <FileSearch size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.totalRows.toLocaleString()}</div>
+            <div className="issues-summary-label">Transactions</div>
+          </div>
+        </button>
+        <div className={`issues-summary-card issues-summary-card--success ${viewFilter === 'passed' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => dispatch(setViewFilter('passed'))} title="Click to view Passed transactions">
             <CheckCircle2 size={16} />
             <div>
               <div className="issues-summary-value">{summary.passedRows.toLocaleString()}</div>
@@ -357,8 +400,8 @@ export default function Issues() {
             </button>
           )}
         </div>
-        <div className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('issue')}>
+        <div className={`issues-summary-card issues-summary-card--danger ${viewFilter === 'issue' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => dispatch(setViewFilter('issue'))} title="Click to view Issues Found">
             <AlertOctagon size={16} />
             <div>
               <div className="issues-summary-value">{summary.issueRows.toLocaleString()}</div>
@@ -376,8 +419,8 @@ export default function Issues() {
             </button>
           )}
         </div>
-        <div className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('insufficient')}>
+        <div className={`issues-summary-card issues-summary-card--warning ${viewFilter === 'insufficient' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => dispatch(setViewFilter('insufficient'))} title="Click to view Insufficient Data rows">
             <AlertTriangle size={16} />
             <div>
               <div className="issues-summary-value">{summary.insufficientDataRows.toLocaleString()}</div>
@@ -396,9 +439,10 @@ export default function Issues() {
           )}
         </div>
         <button
-          className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
+          className={`issues-summary-card issues-summary-card--neutral ${viewFilter === 'skipped' ? 'issues-summary-card--active' : ''}`}
           type="button"
-          onClick={() => setValidationView('skipped')}
+          onClick={() => dispatch(setViewFilter('skipped'))}
+          title="Click to view Skipped rows"
         >
           <CircleSlash size={16} />
           <div>
@@ -418,7 +462,7 @@ export default function Issues() {
             className="filter-input"
             value={searchQuery}
             onChange={(e) => dispatch(setSearchQuery(e.target.value))}
-            placeholder="Search vendor / doc / ID / section / PAN…"
+            placeholder="Search vendor / doc / PO / ID / section / PAN…"
           />
         </div>
         <div className="filter-bar-controls">
@@ -433,8 +477,8 @@ export default function Issues() {
           <select
             className="filter-select"
             value={severityFilter}
-            disabled={validationView !== 'issue'}
-            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
+            disabled={viewFilter !== 'issue'}
+            title={viewFilter !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
             onChange={(e) => dispatch(setSeverityFilter(e.target.value))}
           >
             {SEVERITY_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -442,8 +486,8 @@ export default function Issues() {
           <select
             className="filter-select"
             value={issueTypeFilter}
-            disabled={validationView !== 'issue'}
-            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
+            disabled={viewFilter !== 'issue'}
+            title={viewFilter !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
             onChange={(e) => dispatch(setIssueTypeFilter(e.target.value))}
           >
             <option value="all">All Issue Types</option>
@@ -452,8 +496,8 @@ export default function Issues() {
           <select
             className="filter-select"
             value={statusFilter}
-            disabled={validationView !== 'issue'}
-            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
+            disabled={viewFilter !== 'issue'}
+            title={viewFilter !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
             onChange={(e) => dispatch(setStatusFilter(e.target.value))}
           >
             {STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -462,22 +506,51 @@ export default function Issues() {
             <RotateCcw size={12} />Reset
           </button>
         </div>
+        {(monthFilter !== 'all' || (viewFilter === 'issue' && severityFilter !== 'all') || (viewFilter === 'issue' && statusFilter !== 'all')) && (
+          <div className="filter-bar-chips">
+            {monthFilter !== 'all' && (
+              <span className="filter-chip">
+                Month: {monthFilter}
+                <button type="button" onClick={() => dispatch(setMonthFilter('all'))} aria-label="Clear month filter">
+                  <X size={11} />
+                </button>
+              </span>
+            )}
+            {viewFilter === 'issue' && severityFilter !== 'all' && (
+              <span className="filter-chip">
+                Severity: {formatStatusLabel(severityFilter)}
+                <button type="button" onClick={() => dispatch(setSeverityFilter('all'))} aria-label="Clear severity filter">
+                  <X size={11} />
+                </button>
+              </span>
+            )}
+            {viewFilter === 'issue' && statusFilter !== 'all' && (
+              <span className="filter-chip">
+                Status: {statusFilter === 'pending' ? 'Pending (Not Resolved)' : formatStatusLabel(statusFilter)}
+                <button type="button" onClick={() => dispatch(setStatusFilter('all'))} aria-label="Clear status filter">
+                  <X size={11} />
+                </button>
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="table-card">
         <div className="issues-count-label">
-          {validationView === 'issue'
+          {viewFilter === 'issue'
             ? `Showing ${filtered.length.toLocaleString()} issue${filtered.length === 1 ? '' : 's'}`
-            : `Showing ${validationTableRows.length.toLocaleString()} ${validationView} row${validationTableRows.length === 1 ? '' : 's'}`}
+            : `Showing ${validationTableRows.length.toLocaleString()} ${VIEW_LABELS[viewFilter] || viewFilter} row${validationTableRows.length === 1 ? '' : 's'}`}
           {dataSource === 'upload' ? ' from SAP upload' : ' awaiting SAP upload'}
         </div>
-        {validationView === 'issue' ? (
+        {viewFilter === 'issue' ? (
           <DataTable
             key="issue-table"
             columns={columns}
             data={filtered}
             pageSize={50}
             showFloatingPager
+            stickyHeader
             emptyState={
               <div className="empty-state">
                 <div className="empty-state-icon"><FileSearch size={20} /></div>
@@ -489,16 +562,17 @@ export default function Issues() {
           />
         ) : (
           <DataTable
-            key={`validation-table-${validationView}`}
+            key={`validation-table-${viewFilter}`}
             columns={validationColumns}
             data={validationTableRows}
             pageSize={50}
             showFloatingPager
+            stickyHeader
             emptyState={
               <div className="empty-state">
                 <div className="empty-state-icon"><FileSearch size={20} /></div>
-                <div className="empty-state-title">No rows in this bucket</div>
-                <div className="empty-state-desc">This validation category has no rows in the latest SAP upload.</div>
+                <div className="empty-state-title">No records found</div>
+                <div className="empty-state-desc">This bucket has no rows in the latest SAP upload.</div>
               </div>
             }
           />

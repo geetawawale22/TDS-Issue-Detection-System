@@ -2,6 +2,7 @@
  * Derive page-level analytics from the active issue list
  * (sample mock or live SAP upload).
  */
+import { getDisplayIssueType, issueTypeFilterOptions, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
 
 const SECTION_THRESHOLDS = {
   '194Q': 5_000_000,
@@ -33,6 +34,21 @@ export function deriveIssuesBySection(issues) {
     .sort((a, b) => b.count - a.count)
 }
 
+/** Issue counts grouped by the same friendly labels used in the Issue Type filter dropdown. */
+export function deriveIssuesByType(issues, limit = 10) {
+  const options = issueTypeFilterOptions()
+  const labelFor = (category) => {
+    if (!category) return 'Uncategorized'
+    const match = options.find(([key]) => key.split(MULTI_CATEGORY_DELIMITER).includes(category))
+    return match ? match[1] : category
+  }
+  const map = countBy(issues, (i) => labelFor(getDisplayIssueType(i)))
+  return [...map.entries()]
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit)
+}
+
 export function deriveTopVendors(issues, limit = 6) {
   const map = countBy(issues, (i) => i.vendor || i.vendorId)
   return [...map.entries()]
@@ -44,28 +60,80 @@ export function deriveTopVendors(issues, limit = 6) {
     .slice(0, limit)
 }
 
-export function deriveComplianceHealth(issues, transactionsBuilt = null) {
-  const high = issues.filter((i) => i.severity === 'high').length
-  const medium = issues.filter((i) => i.severity === 'medium').length
-  const low = issues.filter((i) => i.severity === 'low').length
-  const flagged = high + medium + low
+/**
+ * A row with a zero base amount can't actually be rate-checked, so it reads
+ * as "insufficient data" rather than a false "passed" — same reclassification
+ * Issues.jsx applies to its own validation table, extracted here so every
+ * page that counts Passed/Issues Found/Insufficient Data agrees exactly.
+ */
+export function deriveAdjustedValidationRows(validationRows) {
+  return validationRows.map((row) => (
+    Number(row.baseAmount) === 0
+      ? { ...row, status: 'insufficient', reason: 'Base amount is zero, so TDS cannot be validated for this row.' }
+      : row
+  ))
+}
 
-  let compliant
-  if (transactionsBuilt && transactionsBuilt > 0) {
-    compliant = Math.max(0, transactionsBuilt - flagged)
-  } else {
-    // Sample mode: express as shares of the issue set itself
-    compliant = Math.max(flagged, 1)
+const SEVERITY_RANK = { high: 3, medium: 2, low: 1 }
+
+/**
+ * Per-transaction severity, worst-wins. A single transaction can trigger
+ * more than one rule at once (e.g. wrong rate AND a missing PAN), so the
+ * flat issue-instance list can have more rows than there are transactions.
+ * Grouping by transaction here means High+Medium+Low always sums to the
+ * transaction-level Issues Found count, not the larger instance count.
+ * The key includes PO No — two transactions (e.g. a partial invoice booked
+ * in stages) can legitimately share the same Doc No/vendor/section and are
+ * only distinguished by PO, so leaving it out would wrongly merge them into
+ * one. Rows without a usable doc number (blank/placeholder) fall back to a
+ * per-row key so they never get incorrectly merged with each other.
+ */
+export function deriveTransactionSeverityCounts(issues) {
+  const worstByTransaction = new Map()
+  issues.forEach((issue, idx) => {
+    const key = issue.docNo && issue.docNo !== '—'
+      ? `${issue.docNo}|${issue.poNo}|${issue.vendorId}|${issue.section}`
+      : `__row-${idx}`
+    const current = worstByTransaction.get(key)
+    if (!current || SEVERITY_RANK[issue.severity] > SEVERITY_RANK[current]) {
+      worstByTransaction.set(key, issue.severity)
+    }
+  })
+  const counts = { high: 0, medium: 0, low: 0 }
+  worstByTransaction.forEach((sev) => { if (counts[sev] != null) counts[sev] += 1 })
+  return counts
+}
+
+/**
+ * The Dashboard's live-upload KPI strip — every number here is derived the
+ * same way (same source arrays, same zero-base-amount reclassification,
+ * same transaction-level severity grouping) as the Upload Results/Issues
+ * page, so the two pages can never show different counts for the same
+ * concept. `validationRows` must already be Company/FY-scoped
+ * (selectActiveValidationRows); `uploadStats` is the raw, unscoped backend
+ * stats object (only its whole-file rowsRead figure is used here).
+ */
+export function deriveUploadKpis(issues, validationRows, uploadStats) {
+  const adjusted = deriveAdjustedValidationRows(validationRows)
+  const passed = adjusted.filter((r) => r.status === 'passed').length
+  const issuesFound = adjusted.filter((r) => r.status === 'issue').length
+  const insufficientData = adjusted.filter((r) => r.status === 'insufficient').length
+  const { high, medium, low } = deriveTransactionSeverityCounts(issues)
+  const resolved = issues.filter((i) => i.status === 'resolved').length
+  const pending = Math.max(0, issuesFound - resolved)
+
+  return {
+    uploadedRows: uploadStats?.rowsRead ?? validationRows.length,
+    transactionsProcessed: validationRows.length,
+    passed,
+    issuesFound,
+    insufficientData,
+    high,
+    medium,
+    low,
+    resolved,
+    pending,
   }
-
-  const total = compliant + high + medium || 1
-  const pct = (n) => Math.round((n / total) * 100)
-
-  return [
-    { name: 'Compliant', value: pct(compliant), color: '#10B981' },
-    { name: 'Minor Issues', value: pct(medium + low), color: '#F59E0B' },
-    { name: 'Critical Issues', value: pct(high), color: '#EF4444' },
-  ]
 }
 
 export function deriveDashboardKpis(issues, uploadStats = null) {
@@ -300,62 +368,6 @@ export function deriveMonthlyTrend(issues) {
     return [{ month: 'Current', issues: issues.length, resolved: issues.filter((i) => i.status === 'resolved').length }]
   }
   return rows.map(({ month, issues: iss, resolved }) => ({ month, issues: iss, resolved }))
-}
-
-/** Month-on-month totals with severity mix and % change vs. the prior month. */
-export function deriveMonthlyComparison(issues) {
-  const byMonth = new Map()
-  for (const issue of issues) {
-    if (!issue.date) continue
-    const d = new Date(issue.date)
-    if (Number.isNaN(d.getTime())) continue
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    if (!byMonth.has(key)) {
-      byMonth.set(key, {
-        key,
-        month: d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }),
-        high: 0,
-        medium: 0,
-        low: 0,
-        total: 0,
-      })
-    }
-    const row = byMonth.get(key)
-    row.total += 1
-    row[issue.severity] = (row[issue.severity] || 0) + 1
-  }
-  const sorted = [...byMonth.values()].sort((a, b) => a.key.localeCompare(b.key))
-  return sorted.map((row, idx) => {
-    const prev = sorted[idx - 1]?.total ?? null
-    let change = null
-    if (prev != null) change = prev === 0 ? (row.total === 0 ? 0 : null) : ((row.total - prev) / prev) * 100
-    return { ...row, change: change == null ? null : Number(change.toFixed(1)) }
-  })
-}
-
-/** Issue-count trend per month for the top N vendors, pivoted for a multi-line chart. */
-export function deriveVendorMonthlyTrend(issues, limit = 5) {
-  const totals = countBy(issues, (i) => i.vendor)
-  const topVendors = [...totals.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([name]) => name)
-
-  const byMonth = new Map()
-  for (const issue of issues) {
-    if (!issue.date || !issue.vendor || !topVendors.includes(issue.vendor)) continue
-    const d = new Date(issue.date)
-    if (Number.isNaN(d.getTime())) continue
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    if (!byMonth.has(key)) {
-      const row = { key, month: d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }) }
-      topVendors.forEach((v) => { row[v] = 0 })
-      byMonth.set(key, row)
-    }
-    byMonth.get(key)[issue.vendor] += 1
-  }
-  const data = [...byMonth.values()].sort((a, b) => a.key.localeCompare(b.key))
-  return { data, vendors: topVendors }
 }
 
 export function deriveThresholdConsumptionTrend(issues) {

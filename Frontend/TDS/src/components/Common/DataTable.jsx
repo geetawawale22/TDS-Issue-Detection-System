@@ -16,6 +16,10 @@ export default function DataTable({
   // of each other. Pass this only on the one table a page treats as its
   // primary list.
   showFloatingPager = false,
+  // Opt-in: bounds the table to its own scrollable region so the header
+  // row stays visible while scrolling through rows, instead of scrolling
+  // out of view with the rest of the page. See .data-table-wrapper--sticky-header.
+  stickyHeader = false,
 }) {
   const [page, setPage] = useState(1)
   const [sortKey, setSortKey] = useState(null)
@@ -94,7 +98,7 @@ export default function DataTable({
 
   return (
     <div className="data-table-flex">
-      <div className="data-table-wrapper">
+      <div className={`data-table-wrapper ${stickyHeader ? 'data-table-wrapper--sticky-header' : ''}`}>
         <table className="data-table">
           <thead>
             <tr>
@@ -159,8 +163,13 @@ export default function DataTable({
           the page, so switching pages never requires scrolling down to
           reach the "real" pagination bar first. Opt-in via
           showFloatingPager (see prop docs above) so it only appears on a
-          page's one primary table, not every paginated table at once. */}
-      {showFloatingPager && totalPages > 1 && (
+          page's one primary table, not every paginated table at once.
+          Suppressed under stickyHeader: that mode already bounds the table
+          to a fixed-height scroll region, so the real pagination bar right
+          after the last row is always one short scroll away — a viewport-
+          fixed pager would instead float on top of whatever row happens to
+          land at that screen position, obscuring it. */}
+      {showFloatingPager && !stickyHeader && totalPages > 1 && (
         <div className="table-pagination-float">
           <div className="table-pagination-float-inner">
             {renderPageButtons()}

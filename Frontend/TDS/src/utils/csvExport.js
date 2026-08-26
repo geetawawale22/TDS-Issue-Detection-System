@@ -7,6 +7,7 @@ import { formatCurrency, formatDate } from '@/utils/utils'
 /** Columns for exporting `issue`-shaped rows (Issues Found, High, Medium). */
 export const ISSUE_CSV_COLUMNS = [
   { label: 'Doc No.', value: (r) => r.docNo },
+  { label: 'PO No.', value: (r) => r.poNo },
   { label: 'Vendor', value: (r) => r.vendor },
   { label: 'Vendor ID', value: (r) => r.vendorId },
   { label: 'Section', value: (r) => r.section },
@@ -21,6 +22,7 @@ export const ISSUE_CSV_COLUMNS = [
 /** Columns for exporting validation-row-shaped data (Transactions, Passed, Insufficient Data). */
 export const VALIDATION_CSV_COLUMNS = [
   { label: 'Doc No.', value: (r) => r.docNo },
+  { label: 'PO No.', value: (r) => r.poNo },
   { label: 'Vendor', value: (r) => r.vendor },
   { label: 'Vendor ID', value: (r) => r.vendorId },
   { label: 'Section', value: (r) => r.section },
@@ -56,8 +58,7 @@ export function downloadCsv(filename, columns, rows) {
   URL.revokeObjectURL(url)
 }
 
-/** Same columns/rows shape as downloadCsv — a real .xlsx workbook instead of plain text. */
-export function downloadExcel(filename, columns, rows, sheetName = 'Report') {
+function buildWorksheet(columns, rows) {
   const data = rows.map((row) => {
     const obj = {}
     columns.forEach((c) => { obj[c.label] = c.value(row) })
@@ -68,8 +69,30 @@ export function downloadExcel(filename, columns, rows, sheetName = 'Report') {
   worksheet['!cols'] = columns.map((c) => ({
     wch: Math.max(c.label.length, ...rows.slice(0, 200).map((r) => String(c.value(r) ?? '').length)) + 2,
   }))
+  return worksheet
+}
+
+/** Same columns/rows shape as downloadCsv — a real .xlsx workbook instead of plain text. */
+export function downloadExcel(filename, columns, rows, sheetName = 'Report') {
   const workbook = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName.slice(0, 31)) // Excel sheet-name limit
+  XLSX.utils.book_append_sheet(workbook, buildWorksheet(columns, rows), sheetName.slice(0, 31)) // Excel sheet-name limit
+  XLSX.writeFile(workbook, filename)
+}
+
+/**
+ * sheets: [{ name, columns, rows }, ...] — every sheet's full row set is
+ * written, none truncated, so a multi-category export (e.g. Issues Found +
+ * Passed + Insufficient Data) can't silently drop a category.
+ */
+export function downloadExcelMultiSheet(filename, sheets) {
+  const workbook = XLSX.utils.book_new()
+  const usedNames = new Set()
+  for (const { name, columns, rows } of sheets) {
+    let sheetName = name.slice(0, 31)
+    while (usedNames.has(sheetName)) sheetName = `${sheetName.slice(0, 28)}-${usedNames.size}`
+    usedNames.add(sheetName)
+    XLSX.utils.book_append_sheet(workbook, buildWorksheet(columns, rows), sheetName)
+  }
   XLSX.writeFile(workbook, filename)
 }
 

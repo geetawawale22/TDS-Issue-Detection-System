@@ -1,14 +1,29 @@
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from 'recharts'
-import { useSelector } from 'react-redux'
-import { selectMonthlyTrend } from '@/redux/slices/issuesSlice'
+import { useDispatch, useSelector } from 'react-redux'
+import { useNavigate } from 'react-router-dom'
+import { selectMonthlyTrend, setMonthFilter } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
 export default function MonthlyTrendChart() {
   const data = useSelector(selectMonthlyTrend)
+  const dispatch = useDispatch()
+  const navigate = useNavigate()
+
+  function handleClick(chartState) {
+    const month = chartState?.activeLabel
+    if (!month) return
+    dispatch(setMonthFilter(month))
+    navigate('/issues')
+  }
 
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <AreaChart data={data} margin={{ top: 2, right: 4, left: -20, bottom: 0 }}>
+      <AreaChart
+        data={data}
+        margin={{ top: 2, right: 4, left: -20, bottom: 0 }}
+        onClick={handleClick}
+        style={{ cursor: 'pointer' }}
+      >
         <defs>
           <linearGradient id="issueGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="#E01330" stopOpacity={0.15} />

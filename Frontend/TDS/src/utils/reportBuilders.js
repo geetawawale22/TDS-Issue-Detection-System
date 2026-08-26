@@ -12,47 +12,6 @@ function monthLabel(key) {
   return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
 }
 
-function pctChange(current, previous) {
-  if (previous == null) return null
-  if (previous === 0) return current === 0 ? 0 : null
-  return ((current - previous) / previous) * 100
-}
-
-function formatPct(v) {
-  if (v == null) return '—'
-  const sign = v > 0 ? '+' : ''
-  return `${sign}${v.toFixed(1)}%`
-}
-
-// ── 1. Month-on-Month comparison (overall) ─────────────────────────────
-export function buildMonthlyComparisonReport(issues) {
-  const byMonth = new Map()
-  for (const i of issues) {
-    const key = monthKey(i.date)
-    if (!key) continue
-    if (!byMonth.has(key)) byMonth.set(key, { month: key, total: 0, high: 0, medium: 0, low: 0 })
-    const row = byMonth.get(key)
-    row.total += 1
-    row[i.severity] = (row[i.severity] || 0) + 1
-  }
-  const sorted = [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month))
-  const rows = sorted.map((row, idx) => ({
-    ...row,
-    monthLabel: monthLabel(row.month),
-    change: pctChange(row.total, sorted[idx - 1]?.total ?? null),
-  }))
-
-  const columns = [
-    { label: 'Month', value: (r) => r.monthLabel },
-    { label: 'Total Issues', value: (r) => r.total },
-    { label: 'High', value: (r) => r.high || 0 },
-    { label: 'Medium', value: (r) => r.medium || 0 },
-    { label: 'Low', value: (r) => r.low || 0 },
-    { label: '% Change vs Prior Month', value: (r) => formatPct(r.change) },
-  ]
-  return { columns, rows }
-}
-
 // ── 2. Vendor-wise Month-on-Month comparison ────────────────────────────
 export function buildVendorMonthlyReport(issues) {
   const byKey = new Map()
@@ -126,9 +85,9 @@ export function buildPanLevelReport(issues) {
 }
 
 // ── 5. TDS Deduction Report — Correct / Short / Excess / No Deduction / Not Applicable
-// Built from validationRows (every transaction, not just flagged issues) so
-// "Correct" has a real count — a report bifurcating deduction outcomes has
-// to include the compliant majority, not just the exceptions.
+// One row per transaction (not just flagged issues), each tagged with its
+// bucket and vendor, so a "Short" or "Excess" finding can be traced back to
+// the specific vendor/document it belongs to — not just a bucket total.
 const BUCKET_ORDER = ['Correct', 'Short', 'Excess', 'No Deduction', 'Not Applicable', 'Insufficient Data', 'Other']
 
 function classifyValidationRow(row) {
@@ -143,29 +102,22 @@ function classifyValidationRow(row) {
 }
 
 export function buildDeductionBifurcationReport(validationRows) {
-  const byBucket = new Map()
-  for (const row of validationRows) {
-    const bucket = classifyValidationRow(row)
-    if (!byBucket.has(bucket)) byBucket.set(bucket, { bucket, count: 0, baseAmount: 0, tdsAmount: 0 })
-    const r = byBucket.get(bucket)
-    r.count += 1
-    r.baseAmount += Number(row.baseAmount) || 0
-    r.tdsAmount += Math.abs(Number(row.tdsAmount) || 0)
-  }
-  const total = validationRows.length || 1
-  const rows = BUCKET_ORDER
-    .filter((b) => byBucket.has(b))
-    .map((b) => {
-      const r = byBucket.get(b)
-      return { ...r, pct: (r.count / total) * 100 }
-    })
+  const rows = validationRows
+    .map((row) => ({ ...row, bucket: classifyValidationRow(row) }))
+    .sort((a, b) => (
+      BUCKET_ORDER.indexOf(a.bucket) - BUCKET_ORDER.indexOf(b.bucket)
+      || (a.vendor || '').localeCompare(b.vendor || '')
+    ))
 
   const columns = [
     { label: 'Category', value: (r) => r.bucket },
-    { label: 'Count', value: (r) => r.count },
-    { label: '% of Total', value: (r) => `${r.pct.toFixed(1)}%` },
-    { label: 'Total Base Amount', value: (r) => formatCurrency(r.baseAmount) },
-    { label: 'Total TDS Amount', value: (r) => formatCurrency(r.tdsAmount) },
+    { label: 'Vendor', value: (r) => r.vendor },
+    { label: 'Doc No.', value: (r) => r.docNo },
+    { label: 'Section', value: (r) => r.section },
+    { label: 'Base Amount', value: (r) => formatCurrency(r.baseAmount) },
+    { label: 'Rate (%)', value: (r) => r.appliedRate != null ? `${r.appliedRate}%` : '—' },
+    { label: 'TDS Amount', value: (r) => formatCurrency(r.tdsAmount) },
+    { label: 'Date', value: (r) => formatDate(r.date) },
   ]
   return { columns, rows }
 }

@@ -21,6 +21,13 @@ export function thresholdStatusToTone(status) {
   return 'success'
 }
 
+export function validationRowStatusToTone(status) {
+  if (status === 'passed')       return 'success'
+  if (status === 'issue')        return 'danger'
+  if (status === 'insufficient') return 'warning'
+  return 'neutral'
+}
+
 export function correctionStatusToTone(status) {
   if (status === 'pending')  return 'warning'
   if (status === 'approved' || status === 'applied') return 'success'

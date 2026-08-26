@@ -117,6 +117,18 @@ def _is_blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip()) or pd.isna(value)
 
 
+def _normalise_code(value: Any) -> str:
+    """String-ify a code/ID field for exact-match comparison. A column that's
+    otherwise all-integer codes (e.g. Company_Code) gets read by pandas as
+    float64 the moment ANY row in it is blank/NaN — extremely common once a
+    sheet has blank rows mixed in — turning "1001" into 1001.0. Left
+    unnormalised, str(1001.0) == "1001.0" never matches the plain "1001"
+    codes this app compares against, silently dropping every row."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value or "").strip()
+
+
 def _read_upload(filename: str, content: bytes) -> pd.DataFrame:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
@@ -167,11 +179,19 @@ def _validate_headers(columns: list[str]) -> None:
         )
 
 
-def _normalise_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+def _normalise_records(frame: pd.DataFrame) -> tuple[list[dict[str, Any]], int]:
+    """Returns (records, blank_rows_skipped). A row that's blank across every
+    column is dropped before it's even counted as "read" — very common in
+    real spreadsheets, where stray formatting on unused cells extends the
+    sheet's used range well past the actual data. Reporting how many rows
+    that was keeps "Rows Read" from silently looking smaller than the sheet
+    the user actually opened."""
+    total_rows = len(frame)
     frame = frame.dropna(axis=0, how="all")
     frame.columns = [str(column).strip() for column in frame.columns]
     _validate_headers(list(frame.columns))
-    return frame.where(pd.notna(frame), None).to_dict(orient="records")
+    records = frame.where(pd.notna(frame), None).to_dict(orient="records")
+    return records, total_rows - len(records)
 
 
 def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
@@ -211,6 +231,11 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     return {
         "id": f"UPL-{issue_id:06d}",
         "docNo": txn.doc_number or "—",
+        # Two transactions can legitimately share a Doc No (e.g. a partial
+        # invoice booked against the same document in stages) — PO No is
+        # what actually distinguishes them, so it travels alongside Doc No
+        # everywhere a transaction needs to be uniquely identified.
+        "poNo": txn.po_no or "—",
         "companyCode": txn.company_code or None,
         "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
         "vendorId": txn.vendor_code or "—",
@@ -301,6 +326,7 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int) -
         "status": status,
         "reason": reason,
         "docNo": txn.doc_number or "—",
+        "poNo": txn.po_no or "—",
         "companyCode": txn.company_code or None,
         "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
         "vendorId": txn.vendor_code or "—",
@@ -355,7 +381,7 @@ async def upload_sap_file(
     if frame.empty:
         raise HTTPException(status_code=422, detail="The uploaded file has no transaction rows.")
 
-    records = _normalise_records(frame)
+    records, blank_rows_skipped = _normalise_records(frame)
     allowed_codes = set(get_user_company_codes(current_user, db))
     requested_code = company_code.strip()
     if requested_code and requested_code not in allowed_codes:
@@ -367,12 +393,14 @@ async def upload_sap_file(
                 row["Company_Code"] = requested_code
 
     # Restrict accountants to their company codes even when they select "all".
+    rows_before_company_filter = len(records)
     if current_user.role != "admin":
-        records = [row for row in records if str(row.get("Company_Code") or "").strip() in allowed_codes]
+        records = [row for row in records if _normalise_code(row.get("Company_Code")) in allowed_codes]
         if not records:
             raise HTTPException(status_code=403, detail="No rows belong to company codes assigned to your account.")
     elif requested_code:
-        records = [row for row in records if str(row.get("Company_Code") or "").strip() == requested_code]
+        records = [row for row in records if _normalise_code(row.get("Company_Code")) == requested_code]
+    other_company_rows_skipped = rows_before_company_filter - len(records)
 
     # Exports containing compound descriptive section text (either the old
     # numbering, e.g. "194C - Ind/HUF - 1%", or the new one, e.g.
@@ -403,30 +431,41 @@ async def upload_sap_file(
     issues: list[dict[str, Any]] = []
     issue_reasons_by_transaction_id: dict[int, str] = {}
     issue_transaction_ids: set[int] = set()
+    # A transaction can trigger more than one rule at once (e.g. wrong rate
+    # AND a missing PAN on the same row) — each becomes its own entry in
+    # `issues` so the detail table can show every category as its own
+    # actionable row. Severity KPIs, however, must sum to the *transaction*
+    # count (issue_rows below), not the instance count, so headline numbers
+    # like "High + Medium + Low = Issues Found" hold. Track the worst
+    # severity seen per transaction and use that for the KPI breakdown.
+    issue_severity_by_transaction_id: dict[int, str] = {}
+    severity_rank = {"high": 3, "medium": 2, "low": 1}
+
+    def _record_issue(txn, rule_issue) -> None:
+        issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+        issue_transaction_ids.add(id(txn))
+        issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+        current = issue_severity_by_transaction_id.get(id(txn))
+        if current is None or severity_rank[rule_issue.severity] > severity_rank[current]:
+            issue_severity_by_transaction_id[id(txn)] = rule_issue.severity
+
     issue_eligible_transactions = [
         txn for txn in transactions if not _has_zero_base_amount(txn)
     ]
     for txn in issue_eligible_transactions:
         for rule_issue in run_all_checks(txn):
             if include_informational or rule_issue.severity != "low":
-                issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-                issue_transaction_ids.add(id(txn))
-                issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+                _record_issue(txn, rule_issue)
 
     # Threshold checks operate across transactions, so each result carries a
     # representative transaction from its own vendor/section/FY group.
     for txn, rule_issue in check_threshold_breach(issue_eligible_transactions):
         if include_informational or rule_issue.severity != "low":
-            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-            issue_transaction_ids.add(id(txn))
-            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
-
+            _record_issue(txn, rule_issue)
 
     for txn, rule_issue in check_missing_deduction(issue_eligible_transactions):
         if include_informational or rule_issue.severity != "low":
-            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-            issue_transaction_ids.add(id(txn))
-            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+            _record_issue(txn, rule_issue)
 
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
@@ -469,18 +508,60 @@ async def upload_sap_file(
                 row_index,
             ))
 
+    # Fully blank rows never became transactions (no doc number, date,
+    # vendor — nothing to build one from), so they can't go through the
+    # normal per-transaction classification above. Rather than vanishing
+    # from every count, they're represented directly as Insufficient Data
+    # rows — same bucket a transaction with genuinely missing fields lands
+    # in, just with no real fields to show.
+    for blank_index in range(blank_rows_skipped):
+        validation_rows.append({
+            "id": f"insufficient:blank:{blank_index}",
+            "status": "insufficient",
+            "reason": "This row was blank across every column and could not be validated.",
+            "docNo": "—",
+            "poNo": "—",
+            "companyCode": requested_code or None,
+            "vendor": "—",
+            "vendorId": "—",
+            "vendorPan": "—",
+            "section": "—",
+            "baseAmount": None,
+            "tdsAmount": None,
+            "appliedRate": None,
+            "expectedRate": None,
+            "date": None,
+        })
+    insufficient_data_rows += blank_rows_skipped
+
     stats = {
-        "rowsRead": len(records),
+        # Now includes blank rows — they're processed (into Insufficient
+        # Data) rather than dropped, so they count as "read" like everything
+        # else. rowsRead == passedRows + issueRows + insufficientDataRows
+        # + rowsSkipped always holds.
+        "rowsRead": len(records) + blank_rows_skipped,
+        # Retained for transparency (e.g. upload-summary tooltips) — how
+        # many of the rows now folded into Insufficient Data were blank
+        # rows specifically, rather than a transaction with missing fields.
+        "blankRowsSkipped": blank_rows_skipped,
+        # Rows that had a real Company_Code, just not the one this run is
+        # scoped to (the code selected on upload, or — for non-admins —
+        # any code outside their assigned set). Excluded on purpose, but
+        # silently otherwise, so this makes the exclusion visible.
+        "otherCompanyRowsSkipped": other_company_rows_skipped,
         "transactionsBuilt": len(transactions),
         "rowsSkipped": len(records) - len(transactions),
         "passedRows": passed_rows,
         "issueRows": issue_rows,
         "insufficientDataRows": insufficient_data_rows,
         "validatedRows": passed_rows + issue_rows,
+        # Instance-level total (a transaction with 2 simultaneous issues
+        # counts twice here) — kept for the detail table/exports, which show
+        # one row per issue instance. KPI headlines use issueRows instead.
         "issuesFound": len(issues),
-        "high": sum(issue["severity"] == "high" for issue in issues),
-        "medium": sum(issue["severity"] == "medium" for issue in issues),
-        "low": sum(issue["severity"] == "low" for issue in issues),
+        "high": sum(1 for sev in issue_severity_by_transaction_id.values() if sev == "high"),
+        "medium": sum(1 for sev in issue_severity_by_transaction_id.values() if sev == "medium"),
+        "low": sum(1 for sev in issue_severity_by_transaction_id.values() if sev == "low"),
     }
 
     return {

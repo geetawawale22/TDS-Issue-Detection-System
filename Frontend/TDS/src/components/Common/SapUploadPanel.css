@@ -354,6 +354,11 @@
   font-weight: 500;
 }
 
+.sap-stat-sublabel {
+  color: #D97706;
+  font-weight: 500;
+}
+
 .sap-stat-download {
   position: absolute;
   top: 6px;

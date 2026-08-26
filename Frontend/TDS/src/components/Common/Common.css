@@ -74,6 +74,20 @@
   background-attachment: local, local, scroll, scroll;
 }
 
+/* Opt-in (see DataTable's stickyHeader prop) — bounds the table to a
+   scrollable region of its own so the header row can stick to its top
+   while scrolling through rows, instead of scrolling away with the page.
+   Setting overflow-x: auto already forces overflow-y to compute as auto
+   too (a browser can't leave one axis "visible" while the other scrolls),
+   so a bounded max-height is required for that implicit vertical scroll
+   container to ever actually need to scroll — and therefore for a sticky
+   thead inside it to have anything to stick against. */
+.data-table-wrapper--sticky-header {
+  max-height: calc(100vh - 420px);
+  min-height: 240px;
+  overflow-y: auto;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -89,6 +103,11 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   background: #FAFAFA;
+  /* No-op unless an ancestor actually scrolls (see
+     .data-table-wrapper--sticky-header) — harmless to apply everywhere. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
   border-bottom: 1px solid var(--color-border);
   white-space: nowrap;
   cursor: pointer;
@@ -634,6 +653,10 @@
 @media (max-width: 768px)  { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 480px)  { .kpi-grid { grid-template-columns: 1fr; } }
 
+/* Live-upload strip can hold up to 10 cards — let it wrap to as many
+   columns as fit instead of forcing a fixed 6-across count. */
+.kpi-grid--flow { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+
 .kpi-card {
   position: relative;
   background: var(--color-surface);
@@ -641,12 +664,37 @@
   border-radius: var(--border-radius);
   padding: 14px 34px 12px;
   min-height: 112px;
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
   gap: 6px;
+  box-shadow: var(--shadow-sm);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+.kpi-card:hover {
+  border-color: var(--color-primary-100);
+  box-shadow: var(--shadow-md);
+}
+
+.kpi-card:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* No Issues-page view can show this exact figure (e.g. Uploaded Rows
+   includes rows that never became a transaction) — informational only. */
+.kpi-card--static {
+  cursor: default;
+}
+
+.kpi-card--static:hover {
+  border-color: var(--color-border);
   box-shadow: var(--shadow-sm);
 }
 
@@ -674,6 +722,9 @@
 .kpi-icon-box.warning { background: #FFFBEB; color: #D97706; }
 .kpi-icon-box.danger  { background: var(--color-danger-bg); color: var(--color-danger); }
 .kpi-icon-box.success { background: var(--color-success-bg); color: #059669; }
+.kpi-icon-box.info    { background: #EFF6FF; color: #2563EB; }
+.kpi-icon-box.caution { background: #FEFCE8; color: #CA8A04; }
+.kpi-icon-box.neutral { background: #F1F5F9; color: #64748B; }
 
 .kpi-label {
   font-size: 11.5px;
