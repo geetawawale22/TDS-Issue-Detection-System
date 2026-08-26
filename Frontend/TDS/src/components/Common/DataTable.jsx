@@ -10,6 +10,7 @@ export default function DataTable({
   emptyState = null,
   expandedRowKey,
   renderExpandedRow,
+  renderPreHeaderCell,
   // Opt-in, not automatic: several tables on a page can each use DataTable
   // (e.g. Issues' own validation-status tabs), and one floating corner
   // button per paginated table would be visual noise / could stack on top
@@ -97,6 +98,15 @@ export default function DataTable({
       <div className="data-table-wrapper">
         <table className="data-table">
           <thead>
+            {renderPreHeaderCell && (
+              <tr className="data-table-preheader-row">
+                {columns.map((col) => (
+                  <th key={`preheader-${col.key || col.header}`}>
+                    {renderPreHeaderCell(col)}
+                  </th>
+                ))}
+              </tr>
+            )}
             <tr>
               {columns.map((col) => (
                 <th

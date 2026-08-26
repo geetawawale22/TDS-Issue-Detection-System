@@ -580,7 +580,7 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
     (Exempt From / Exempt To) — confirmed available via SAP Business
     Partner Withholding Tax screen.
     """
-    if txn.ldc_exemption_percent is None:
+    if txn.ldc_exemption_percent is None and txn.ldc_approved_rate is None:
         return None  # no LDC on this vendor — skip, other checks apply
 
     # Check certificate is valid on the posting date
@@ -598,24 +598,31 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
             severity="high",
         )
 
-    applicable_rate = _get_applicable_rate(txn) or 0.0
     if txn.basic_amount is None:
         return None  # certificate validity can be checked above; amount cannot
-    cert_rate = applicable_rate * (1 - txn.ldc_exemption_percent / 100)
+    if txn.ldc_approved_rate is not None:
+        cert_rate = txn.ldc_approved_rate
+        rate_text = f"approved LDC rate {cert_rate}%"
+    else:
+        applicable_rate = _get_applicable_rate(txn) or 0.0
+        cert_rate = applicable_rate * (1 - txn.ldc_exemption_percent / 100)
+        rate_text = f"{txn.ldc_exemption_percent}% exemption"
     expected_tds = txn.basic_amount * (cert_rate / 100)
     actual_tds = txn.tds_deducted_amount or 0.0
 
     if abs(expected_tds - actual_tds) > 1:
         return TDSIssue(
             category="TDS Deducted as per LDC — Mismatch",
-            message=f"LDC certificate {txn.ldc_exemption_number} allows {txn.ldc_exemption_percent}% exemption. Expected TDS ~₹{expected_tds:.2f}, but ₹{actual_tds:.2f} was deducted.",
+            message=f"LDC certificate {txn.ldc_exemption_number} allows {rate_text}. Expected TDS ~₹{expected_tds:.2f}, but ₹{actual_tds:.2f} was deducted.",
             severity="high",
+            expected_rate=cert_rate,
         )
 
     return TDSIssue(
         category="TDS Deducted as per LDC",
-        message=f"Correctly applied LDC certificate {txn.ldc_exemption_number} ({txn.ldc_exemption_percent}% exemption).",
+        message=f"Correctly applied LDC certificate {txn.ldc_exemption_number} ({rate_text}).",
         severity="low",
+        expected_rate=cert_rate,
     )
 
 
@@ -818,27 +825,37 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
         issues.append(transporter_issue)
         return issues
 
-    # 5. Form 197/LDC override.
-    ldc_issue = check_lower_deduction_cert(txn)
-    if ldc_issue is not None:
-        issues.append(ldc_issue)
-        return issues
-
-    # 6. Non-filer higher-rate override.
-    non_filer_issue = check_206ab_non_filer(txn)
-    if non_filer_issue is not None:
-        issues.append(non_filer_issue)
-        return issues
-
+    # 5. Section/nature checks must pass before a lower-rate certificate
+    # can be applied. An LDC does not correct a wrong statutory section.
     wrong_payment_section_issue = check_wrong_section_by_payment_type(txn)
     if wrong_payment_section_issue is not None:
         issues.append(wrong_payment_section_issue)
         return issues
 
-    # 7. Normal transaction checks.
+    residential_issue = check_residential_status(txn)
+    if residential_issue is not None:
+        issues.append(residential_issue)
+        return issues
+
+    hsn_section_issue = check_wrong_section_by_hsn(txn)
+    if hsn_section_issue is not None:
+        issues.append(hsn_section_issue)
+        return issues
+
+    # 6. Form 197/LDC override.
+    ldc_issue = check_lower_deduction_cert(txn)
+    if ldc_issue is not None:
+        issues.append(ldc_issue)
+        return issues
+
+    # 7. Non-filer higher-rate override.
+    non_filer_issue = check_206ab_non_filer(txn)
+    if non_filer_issue is not None:
+        issues.append(non_filer_issue)
+        return issues
+
+    # 8. Normal transaction checks.
     normal_checks = [
-        check_residential_status,
-        check_wrong_section_by_hsn,
         check_timing,
         check_short_excess_tds,
         check_amount_consistency,

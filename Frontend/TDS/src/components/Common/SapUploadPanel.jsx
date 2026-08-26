@@ -13,6 +13,7 @@ import {
 import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode } from '@/redux/slices/appSlice'
 import { seedPansFromIssues } from '@/redux/slices/panSlice'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
+import { formatCurrency } from '@/utils/utils'
 import './SapUploadPanel.css'
 
 const ACCEPTED = '.csv,.xlsx,.xls,.xlsm'
@@ -134,6 +135,8 @@ export default function SapUploadPanel() {
   }
 
   const stats = uploadMeta?.stats
+  const caseStats = uploadMeta?.caseStats
+  const tdsCases = uploadMeta?.tdsCases || []
   const showEmptyHint = dataSource === 'empty' && uploadStatus === 'idle' && !uploadError
 
   // "Rows read" has no matching export — a row that failed to even become a
@@ -407,9 +410,53 @@ export default function SapUploadPanel() {
               <span>{uploadMeta.errors.length} row warning(s) — some lines may need column cleanup.</span>
             </div>
           )}
+          {caseStats && (
+            <div className="sap-case-preview">
+              <div className="sap-case-preview-header">
+                <div>
+                  <div className="sap-case-title">Temporary TDS Cases</div>
+                  <div className="sap-case-subtitle">
+                    {caseStats.caseCount?.toLocaleString()} cases from {caseStats.totalEvents?.toLocaleString()} classified events
+                  </div>
+                </div>
+                <div className="sap-case-pills">
+                  <span>Invoice {caseStats.invoiceCases?.toLocaleString()}</span>
+                  <span>Advance {caseStats.advanceCases?.toLocaleString()}</span>
+                  <span>Payment {caseStats.paymentEvents?.toLocaleString()}</span>
+                </div>
+              </div>
+              <div className="sap-case-table-wrap">
+                <table className="sap-case-table">
+                  <thead>
+                    <tr>
+                      <th>Case ID</th>
+                      <th>Event</th>
+                      <th>Doc No.</th>
+                      <th>Vendor</th>
+                      <th>Section</th>
+                      <th>Base</th>
+                      <th>TDS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tdsCases.slice(0, 6).map((row) => (
+                      <tr key={row.id}>
+                        <td className="font-mono">{row.id}</td>
+                        <td>{row.eventType}</td>
+                        <td className="font-mono">{row.docNo}</td>
+                        <td>{row.vendor}</td>
+                        <td className="font-mono">{row.section}</td>
+                        <td className="font-mono">{formatCurrency(row.baseAmount)}</td>
+                        <td className="font-mono">{formatCurrency(row.actualTds)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>
   )
 }
-

@@ -17,6 +17,9 @@ import Issues from '@/pages/Issues/Issues'
 import ThresholdMonitoring from '@/pages/ThresholdMonitoring/ThresholdMonitoring'
 import CorrectionCenter from '@/pages/CorrectionCenter/CorrectionCenter'
 import Reports from '@/pages/Reports/Reports'
+import VendorLedger from '@/pages/VendorLedger/VendorLedger'
+import LDCCompliance from '@/pages/LDCCompliance/LDCCompliance'
+import TDSCaseBuilder from '@/pages/TDSCaseBuilder/TDSCaseBuilder'
 import Settings from '@/pages/Settings/Settings'
 
 function App() {
@@ -55,6 +58,10 @@ function App() {
               <Route path="/threshold-monitoring" element={<ThresholdMonitoring />} />
               <Route path="/correction-center" element={<CorrectionCenter />} />
               <Route path="/reports" element={<Reports />} />
+              <Route path="/vendor-ledger" element={<VendorLedger />} />
+              <Route path="/vendor-ledger/:vendorKey" element={<VendorLedger />} />
+              <Route path="/ldc-compliance" element={<LDCCompliance />} />
+              <Route path="/tds-case-builder" element={<TDSCaseBuilder />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
 

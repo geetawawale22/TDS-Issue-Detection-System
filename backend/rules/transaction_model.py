@@ -70,6 +70,7 @@ class Transaction(BaseModel):
     ldc_exempt_to: Optional[date] = None
     ldc_exemption_number: Optional[str] = None
     ldc_exemption_reason: Optional[str] = None
+    ldc_approved_rate: Optional[float] = None
 
     # --- Advance Payment Linkage — optional, only if applicable ---
     advance_document_reference: Optional[str] = None

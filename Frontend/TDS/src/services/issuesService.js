@@ -40,6 +40,24 @@ const issuesService = {
     link.remove()
     window.URL.revokeObjectURL(url)
   },
+
+  async uploadCaseSourceFiles(vendorEventsFile, tdsEventsFile) {
+    const formData = new FormData()
+    formData.append('vendor_events_file', vendorEventsFile)
+    formData.append('tds_events_file', tdsEventsFile)
+
+    const { data } = await api.post('/issues/upload-case-sources', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      transformRequest: [(body, headers) => {
+        if (body instanceof FormData) {
+          delete headers['Content-Type']
+        }
+        return body
+      }],
+      timeout: 5 * 60 * 1000,
+    })
+    return data
+  },
 }
 
 export default issuesService

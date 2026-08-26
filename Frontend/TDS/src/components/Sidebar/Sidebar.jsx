@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutGrid, AlertTriangle, Gauge, GitPullRequestArrow,
-  FileBarChart, Settings, ShieldCheck, ChevronsLeft,
+  FileBarChart, Settings, ShieldCheck, ChevronsLeft, BookOpenText,
+  BadgePercent, GitBranch,
 } from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
 import { toggleSidebar } from '@/redux/slices/appSlice'
@@ -15,6 +16,9 @@ const navItems = [
   { label: 'Threshold Monitoring', path: '/threshold-monitoring',  icon: Gauge },
   { label: 'Correction Center',    path: '/correction-center',     icon: GitPullRequestArrow },
   { label: 'Reports',              path: '/reports',               icon: FileBarChart },
+  { label: 'Vendor Ledger',        path: '/vendor-ledger',         icon: BookOpenText },
+  { label: 'LDC Compliance',        path: '/ldc-compliance',        icon: BadgePercent },
+  { label: 'TDS Case Builder',      path: '/tds-case-builder',      icon: GitBranch },
   { label: 'Settings',             path: '/settings',              icon: Settings },
 ]
 

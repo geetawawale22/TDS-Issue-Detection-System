@@ -1,7 +1,8 @@
 import axios from 'axios'
 import { readStoredSession, clearSession } from './sessionStorage'
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
+const DEFAULT_API_HOST = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? `http://${DEFAULT_API_HOST}:8000`
 
 const api = axios.create({
   baseURL: BASE_URL,

@@ -93,19 +93,21 @@ export function deriveThresholdVendors(issues) {
   const byKey = new Map()
 
   for (const issue of issues) {
-    const vendorId = issue.vendorId || issue.vendor
+    const pan = issue.vendorPan || '—'
     const section = issue.section || '—'
     const hasKnownSection = section !== '—' && Object.prototype.hasOwnProperty.call(SECTION_THRESHOLDS, section)
     const hasPanIssue = (
       String(issue.issueType || '').startsWith('PAN_')
       || /PAN Missing\/Invalid/i.test(issue.category || '')
     )
-    const key = `${vendorId}||${section}`
+    const key = `${pan}||${section}`
     if (!byKey.has(key)) {
       byKey.set(key, {
         id: key,
-        name: issue.vendor || vendorId || 'Unknown',
-        pan: issue.vendorPan || '—',
+        name: issue.vendor || issue.vendorId || 'Unknown',
+        pan,
+        vendorCodes: new Set(),
+        vendorNames: new Set(),
         section,
         hasKnownSection,
         baseSum: 0,
@@ -115,6 +117,8 @@ export function deriveThresholdVendors(issues) {
       })
     }
     const row = byKey.get(key)
+    if (issue.vendorId) row.vendorCodes.add(issue.vendorId)
+    if (issue.vendor) row.vendorNames.add(issue.vendor)
     row.baseSum += Number(issue.baseAmount) || 0
     row.issueCount += 1
     row.panIssue = row.panIssue || hasPanIssue
@@ -148,8 +152,9 @@ export function deriveThresholdVendors(issues) {
 
     return {
       id: row.id,
-      name: row.name,
+      name: row.vendorNames.size ? [...row.vendorNames].slice(0, 2).join(' / ') : row.name,
       pan: row.pan,
+      vendorCodes: [...row.vendorCodes],
       section: row.section,
       threshold,
       currentAmount,
@@ -170,9 +175,9 @@ export function deriveThresholdVendorsFromUpload(thresholdRows, issues) {
 
   const issueGroups = new Map()
   for (const issue of issues || []) {
-    const vendorId = issue.vendorId || issue.vendor
+    const pan = issue.vendorPan || '—'
     const section = issue.section || '—'
-    const key = `${vendorId}||${section}`
+    const key = `${pan}||${section}`
     if (!issueGroups.has(key)) {
       issueGroups.set(key, { issueCount: 0, crossed: false, panIssue: false })
     }
@@ -189,10 +194,10 @@ export function deriveThresholdVendorsFromUpload(thresholdRows, issues) {
   }
 
   return thresholdRows.map((sourceRow) => {
-    const vendorId = sourceRow.vendorId || sourceRow.name
+    const pan = sourceRow.pan || sourceRow.vendorId || '—'
     const section = sourceRow.section || '—'
-    const key = sourceRow.id || `${vendorId}||${section}`
-    const issueGroup = issueGroups.get(`${vendorId}||${section}`) || {}
+    const key = sourceRow.id || `${pan}||${section}`
+    const issueGroup = issueGroups.get(`${pan}||${section}`) || {}
     const hasKnownSection = section !== '—' && Object.prototype.hasOwnProperty.call(SECTION_THRESHOLDS, section)
     const threshold = hasKnownSection ? SECTION_THRESHOLDS[section] : null
     const currentAmount = Number(sourceRow.currentAmount) || 0
@@ -218,8 +223,9 @@ export function deriveThresholdVendorsFromUpload(thresholdRows, issues) {
 
     return {
       id: key,
-      name: sourceRow.name || vendorId || 'Unknown',
-      pan: sourceRow.pan || '—',
+      name: sourceRow.name || pan || 'Unknown',
+      pan,
+      vendorCodes: sourceRow.vendorCodes || [],
       section,
       threshold,
       currentAmount,

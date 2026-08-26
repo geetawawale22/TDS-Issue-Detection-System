@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSelector } from 'react-redux'
-import { AlertOctagon, Gauge, ShieldCheck, Download } from 'lucide-react'
+import { AlertOctagon, Gauge, ShieldCheck, Download, BadgePercent } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { thresholdStatusToTone } from '@/components/Common/StatusBadge'
 import ProgressBar from '@/components/Common/ProgressBar'
@@ -10,6 +10,7 @@ import {
   selectThresholdVendors,
   selectThresholdSectionBreakdown,
   selectIsLive,
+  selectLdcUtilization,
 } from '@/redux/slices/issuesSlice'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
@@ -18,8 +19,10 @@ import './ThresholdMonitoring.css'
 
 export default function ThresholdMonitoring() {
   const [search, setSearch] = useState('')
+  const [activeTracker, setActiveTracker] = useState('vendor')
   const vendors = useSelector(selectThresholdVendors)
   const thresholdSectionBreakdown = useSelector(selectThresholdSectionBreakdown)
+  const ldcUtilization = useSelector(selectLdcUtilization)
   const isLive = useSelector(selectIsLive)
 
   const exceeded = vendors.filter((v) => v.status === 'exceeded')
@@ -31,6 +34,17 @@ export default function ThresholdMonitoring() {
     () => vendors.filter((v) => v.name.toLowerCase().includes(search.toLowerCase())),
     [search, vendors],
   )
+  const filteredLdc = useMemo(
+    () => ldcUtilization.filter((r) =>
+      (r.vendor || '').toLowerCase().includes(search.toLowerCase()) ||
+      (r.pan || '').toLowerCase().includes(search.toLowerCase()) ||
+      (r.certificateNumber || '').toLowerCase().includes(search.toLowerCase())
+    ),
+    [ldcUtilization, search],
+  )
+
+  const ldcWarning = ldcUtilization.filter((r) => ['warning', 'high_warning'].includes(r.status))
+  const ldcCritical = ldcUtilization.filter((r) => ['exhausted', 'over_utilized'].includes(r.status))
 
   const summaryCards = [
     { label: 'Exceeded',   value: exceeded.length, icon: AlertOctagon, tone: 'danger',  sub: 'Requires immediate review' },
@@ -40,10 +54,12 @@ export default function ThresholdMonitoring() {
   ]
 
   const columns = [
-    { key: 'name', header: 'Vendor', render: (r) => (
+    { key: 'pan', header: 'PAN / Vendor Codes', render: (r) => (
       <div>
-        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.name}</div>
-        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.pan}</div>
+        <div className="font-mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.pan}</div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+          {(r.vendorCodes || []).length ? r.vendorCodes.join(', ') : r.name}
+        </div>
       </div>
     )},
     { key: 'section',       header: 'Section',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
@@ -60,6 +76,36 @@ export default function ThresholdMonitoring() {
       r.threshold == null
         ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
         : <div style={{ width: 130 }}><ProgressBar value={r.progress} showLabel /></div>
+    )},
+  ]
+
+  const ldcStatusTone = (status) => {
+    if (status === 'over_utilized' || status === 'exhausted') return 'danger'
+    if (status === 'high_warning' || status === 'warning') return 'warning'
+    return 'success'
+  }
+
+  const ldcColumns = [
+    { key: 'certificateNumber', header: 'Certificate', render: (r) => (
+      <div>
+        <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.certificateNumber}</div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.section} · {r.approvedRate ?? '—'}%</div>
+      </div>
+    )},
+    { key: 'vendor', header: 'Vendor / PAN', render: (r) => (
+      <div>
+        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
+        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.pan}</div>
+      </div>
+    )},
+    { key: 'limit', header: 'LDC Limit', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.limit == null ? 'Not set' : formatCurrency(r.limit)}</span> },
+    { key: 'used', header: 'Utilized', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.used || 0)}</span> },
+    { key: 'available', header: 'Available', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.available == null ? '—' : formatCurrency(r.available)}</span> },
+    { key: 'status', header: 'Status', render: (r) => <StatusBadge label={r.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(r.status)} /> },
+    { key: 'utilization', header: 'Progress', render: (r) => (
+      r.utilization == null
+        ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
+        : <div style={{ width: 130 }}><ProgressBar value={Math.min(r.utilization, 100)} showLabel /></div>
     )},
   ]
 
@@ -97,6 +143,31 @@ export default function ThresholdMonitoring() {
           </div>
         ))}
       </div>
+
+      {isLive && (
+        <div className="summary-grid-4" style={{ marginTop: 12 }}>
+          <div className="kpi-card">
+            <div className="kpi-icon-row"><span className="kpi-label">LDC Certificates Used</span><div className="kpi-icon-box info"><BadgePercent size={14} /></div></div>
+            <span className="kpi-value">{ldcUtilization.length}</span>
+            <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>From latest SAP upload</span>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-icon-row"><span className="kpi-label">LDC Warnings</span><div className="kpi-icon-box warning"><Gauge size={14} /></div></div>
+            <span className="kpi-value">{ldcWarning.length}</span>
+            <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>80% or 90% utilized</span>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-icon-row"><span className="kpi-label">LDC Critical</span><div className="kpi-icon-box danger"><AlertOctagon size={14} /></div></div>
+            <span className="kpi-value">{ldcCritical.length}</span>
+            <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Exhausted or over-utilized</span>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-icon-row"><span className="kpi-label">LDC Utilized Base</span><div className="kpi-icon-box success"><ShieldCheck size={14} /></div></div>
+            <span className="kpi-value">{formatCurrency(ldcUtilization.reduce((sum, row) => sum + (Number(row.used) || 0), 0))}</span>
+            <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Eligible base under LDC</span>
+          </div>
+        </div>
+      )}
 
       <div className="chart-grid-2col">
         <div className="chart-card">
@@ -136,17 +207,45 @@ export default function ThresholdMonitoring() {
       <div className="table-card">
         <div className="table-card-header">
           <div>
-            <div className="table-card-title">Vendor Threshold Tracker</div>
+            <div className="threshold-tabs" role="tablist" aria-label="Threshold trackers">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTracker === 'vendor'}
+                className={`threshold-tab ${activeTracker === 'vendor' ? 'active' : ''}`}
+                onClick={() => setActiveTracker('vendor')}
+              >
+                Vendor Threshold Tracker
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTracker === 'ldc'}
+                className={`threshold-tab ${activeTracker === 'ldc' ? 'active' : ''}`}
+                onClick={() => setActiveTracker('ldc')}
+              >
+                LDC Certificate Limit Tracker
+              </button>
+            </div>
           </div>
           <input
             className="filter-input"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search vendors…"
+            placeholder={activeTracker === 'ldc' ? 'Search LDC, PAN, vendor…' : 'Search vendors…'}
             style={{ width: 180 }}
           />
         </div>
-        <DataTable columns={columns} data={filtered} pageSize={8} />
+        {activeTracker === 'vendor' ? (
+          <DataTable columns={columns} data={filtered} pageSize={8} />
+        ) : (
+          <DataTable
+            columns={ldcColumns}
+            data={filteredLdc}
+            pageSize={8}
+            emptyState={<div className="data-table-empty">No LDC utilization found in the latest SAP upload</div>}
+          />
+        )}
       </div>
     </div>
   )

@@ -15,6 +15,7 @@ import {
 import { getFinancialYear } from '@/utils/utils'
 
 const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
+const LAST_UPLOAD_SCHEMA_VERSION = 4
 
 function readLastUpload() {
   if (typeof window === 'undefined') return null
@@ -23,6 +24,7 @@ function readLastUpload() {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed.uploadedIssues)) return null
+    if (parsed.schemaVersion !== LAST_UPLOAD_SCHEMA_VERSION) return null
     return parsed
   } catch {
     return null
@@ -32,6 +34,7 @@ function readLastUpload() {
 function saveLastUpload(state) {
   if (typeof window === 'undefined') return
   const payload = {
+    schemaVersion: LAST_UPLOAD_SCHEMA_VERSION,
     uploadedIssues: state.uploadedIssues,
     uploadMeta: state.uploadMeta,
   }
@@ -101,6 +104,7 @@ const issuesSlice = createSlice({
         vendors: payload.vendors || [],
         sections: payload.sections || [],
         thresholdVendors: payload.thresholdVendors || [],
+        ldcUtilization: payload.ldcUtilization || [],
         validationRows: payload.validationRows || [],
         unrecognizedColumns: payload.unrecognizedColumns || [],
         errors: payload.errors || [],
@@ -235,6 +239,10 @@ export function selectThresholdSectionBreakdown(state) {
 
 export function selectThresholdConsumptionTrend(state) {
   return deriveThresholdConsumptionTrend(selectActiveIssues(state))
+}
+
+export function selectLdcUtilization(state) {
+  return scopeToCompanyAndFY(state.issues.uploadMeta?.ldcUtilization || [], state)
 }
 
 export function selectGlCorrections(state) {

@@ -1,0 +1,148 @@
+.ldc-file-input {
+  display: none;
+}
+
+.ldc-upload-panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.ldc-upload-icon {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #EFF6FF;
+  color: #1D4ED8;
+  flex: 0 0 auto;
+}
+
+.ldc-upload-copy {
+  min-width: 0;
+}
+
+.ldc-upload-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--color-text);
+}
+
+.ldc-upload-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+}
+
+.ldc-master-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 14px;
+  align-items: start;
+}
+
+.ldc-search-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+}
+
+.ldc-search-wrapper .filter-input {
+  width: 220px;
+}
+
+.ldc-side-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ldc-side-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--color-text);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ldc-vendor-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ldc-vendor-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.ldc-vendor-row:last-child {
+  border-bottom: none;
+}
+
+.ldc-code-list {
+  max-width: 150px;
+  text-align: right;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}
+
+.ldc-side-footer {
+  display: flex;
+  gap: 8px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--color-border);
+  background: #FAFAFA;
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.ldc-strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.ldc-muted {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+.ldc-issue-text {
+  display: inline-block;
+  max-width: 360px;
+  color: #B91C1C;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.ldc-utilization-card {
+  margin-top: 14px;
+}
+
+@media (max-width: 1100px) {
+  .ldc-master-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ldc-search-wrapper .filter-input {
+    width: 180px;
+  }
+}

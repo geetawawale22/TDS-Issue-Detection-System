@@ -1,7 +1,7 @@
 from datetime import date
 
 from api.issues import _transaction_issue
-from ingestion.sap_translator import _derive_vendor_category, build_transactions_from_sap_export
+from ingestion.sap_translator import _derive_vendor_category, build_transactions_from_sap_export, build_transactions_from_sap_rows
 from rules.tds_rule_engine import (
     _get_applicable_rate,
     check_amount_consistency,
@@ -162,6 +162,24 @@ def test_payment_type_contract_accepts_194c():
     )
 
     assert run_all_checks(transaction) == []
+
+
+def test_po_number_header_maps_to_transaction_po_no():
+    transaction = build_transactions_from_sap_rows([{
+        "Document_No": "TEST-PO",
+        "Document_Type": "KR",
+        "Posting_Date": "2026-02-10",
+        "Vendor_Code": "V-PO",
+        "PAN": "ABCDE1234F",
+        "Bill_Amount": 1000,
+        "Basic_Amount": 1000,
+        "PO_Number": "4500012345",
+        "TDS_Section": "194J",
+        "TDS_Rate": "10%",
+        "TDS_Amount": 100,
+    }])[0]
+
+    assert transaction.po_no == "4500012345"
 
 
 def test_tds_section_text_infers_purchase_and_flags_unrecognised_section():

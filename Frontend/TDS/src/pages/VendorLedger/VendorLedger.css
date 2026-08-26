@@ -1,0 +1,211 @@
+.vendor-ledger-search-wrapper {
+  position: relative;
+}
+
+.vendor-ledger-search-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-muted);
+}
+
+.vendor-ledger-search {
+  width: 260px;
+  padding-left: 34px;
+}
+
+.vendor-ledger-hint {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: var(--color-surface);
+}
+
+.vendor-ledger-primary {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.vendor-ledger-muted {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.vendor-ledger-counts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vendor-ledger-filter-card {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.vendor-ledger-filter-card:hover {
+  border-color: var(--color-primary-200);
+  box-shadow: 0 8px 20px -16px rgba(15, 23, 42, 0.45);
+  transform: translateY(-1px);
+}
+
+.vendor-ledger-filter-card.active {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-50);
+}
+
+.vendor-ledger-reason {
+  display: inline-block;
+  min-width: 220px;
+  max-width: 360px;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.vendor-ledger-column-total span {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.vendor-ledger-column-total strong {
+  display: block;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.vendor-ledger-doc-type-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.vendor-ledger-doc-type-filter select {
+  height: 32px;
+  min-width: 110px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 12px;
+  padding: 0 10px;
+}
+
+.vendor-ledger-breadcrumb-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.vendor-ledger-breadcrumb-btn:hover {
+  color: var(--color-primary);
+}
+
+.vendor-ledger-back {
+  margin-bottom: 12px;
+}
+
+.vendor-ledger-profile {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  margin-bottom: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.vendor-ledger-profile-kicker {
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.vendor-ledger-profile h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.25;
+  color: var(--color-text);
+}
+
+.vendor-ledger-profile-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.vendor-ledger-profile-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+  min-width: 430px;
+}
+
+.vendor-ledger-profile-stats div {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.vendor-ledger-profile-stats span {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.vendor-ledger-profile-stats strong {
+  display: block;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+@media (max-width: 980px) {
+  .vendor-ledger-profile {
+    flex-direction: column;
+  }
+
+  .vendor-ledger-profile-stats {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .vendor-ledger-search {
+    width: 100%;
+  }
+
+  .vendor-ledger-profile-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .vendor-ledger-doc-type-filter {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
