@@ -38,7 +38,11 @@ function saveLastUpload(state) {
     uploadedIssues: state.uploadedIssues,
     uploadMeta: state.uploadMeta,
   }
-  window.localStorage.setItem(LAST_UPLOAD_STORAGE_KEY, JSON.stringify(payload))
+  try {
+    window.localStorage.setItem(LAST_UPLOAD_STORAGE_KEY, JSON.stringify(payload))
+  } catch {
+    window.localStorage.removeItem(LAST_UPLOAD_STORAGE_KEY)
+  }
 }
 
 function clearLastUpload() {
@@ -105,6 +109,9 @@ const issuesSlice = createSlice({
         sections: payload.sections || [],
         thresholdVendors: payload.thresholdVendors || [],
         ldcUtilization: payload.ldcUtilization || [],
+        tdsCases: payload.tdsCases || [],
+        caseStats: payload.caseStats || {},
+        caseLedger: payload.caseLedger || [],
         validationRows: payload.validationRows || [],
         unrecognizedColumns: payload.unrecognizedColumns || [],
         errors: payload.errors || [],
@@ -152,33 +159,40 @@ export function selectIsLive(state) {
 }
 
 /**
- * Company + Financial Year scoping for real uploaded data (the Navbar's
- * Company/FY switchers — see appSlice.js). Not applied to sample/demo data:
- * mock issues carry synthetic dates that only ever fall in FY 2025-26/26-27
- * and have no company concept at all, so filtering them would just make
- * most FY choices show "0 issues" for a demo that isn't actually broken.
+ * Company scoping for real uploaded data (the Navbar's Company switcher —
+ * see appSlice.js). The Issues upload table is not hidden by the Navbar FY
+ * selection; SAP extracts can contain mixed posting dates while still being
+ * analysed as one uploaded file.
  *
  * A row with no `companyCode` (older cached uploads from before this field
  * existed, or a row SAP genuinely didn't tag) is never excluded by the
  * company filter — treating "unknown" as "doesn't match" would silently
  * hide data instead of just not being able to scope it.
  */
-function scopeToCompanyAndFY(rows, state) {
+function scopeToCompany(rows, state) {
   if (state.issues.dataSource !== 'upload') return rows
-  const { selectedCompanyCode, financialYear } = state.app
+  const { selectedCompanyCode } = state.app
   return rows.filter((row) => {
     if (selectedCompanyCode && row.companyCode && row.companyCode !== selectedCompanyCode) return false
+    return true
+  })
+}
+
+function scopeToCompanyAndFY(rows, state) {
+  if (state.issues.dataSource !== 'upload') return rows
+  const { financialYear } = state.app
+  return scopeToCompany(rows, state).filter((row) => {
     if (financialYear && row.date && getFinancialYear(row.date) !== financialYear) return false
     return true
   })
 }
 
 export function selectActiveIssues(state) {
-  return scopeToCompanyAndFY(state.issues.uploadedIssues, state)
+  return scopeToCompany(state.issues.uploadedIssues, state)
 }
 
 export function selectActiveValidationRows(state) {
-  return scopeToCompanyAndFY(state.issues.uploadMeta?.validationRows || [], state)
+  return scopeToCompany(state.issues.uploadMeta?.validationRows || [], state)
 }
 
 export function selectActiveVendors(state) {

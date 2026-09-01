@@ -25,6 +25,7 @@ CROSS_RULES = TDS_CONFIG["cross_section_rules"]
 MISSING_DEDUCTION_COVERAGE_THRESHOLD = TDS_CONFIG.get("missing_deduction_check", {}).get(
     "gl_coverage_medium_threshold", 0.8
 )
+TDS_AMOUNT_ROUNDING_TOLERANCE = 1.0
 PAYMENT_TYPE_TO_SECTION = {
     str(section_config.get("payment_type", "")).strip().lower(): section_code
     for section_code, section_config in SECTIONS.items()
@@ -172,6 +173,8 @@ def decode_tds_section_string(raw_text: str) -> tuple:
     if clause_match:
         clause = _normalise_clause(clause_match.group(1))
         old_section = CLAUSE_TO_SECTION.get(clause)
+        if clause == "2(i)" and re.search(r"\b(plt|plant|mach|eqpt|equip)", raw_text, re.IGNORECASE):
+            old_section = "194I"
 
     # Some SAP descriptions include the familiar section number rather than a
     # Section 393 table clause (notably interest rows). Prefer that explicit
@@ -489,14 +492,16 @@ def check_excess_tds_exceeds_invoice(txn: Transaction) -> Optional[TDSIssue]:
     if txn.tds_deducted_amount is None or not txn.bill_amount:
         return None  # need both to compare
 
-    if txn.tds_deducted_amount <= txn.bill_amount:
+    invoice_amount = abs(float(txn.bill_amount))
+    deducted_amount = abs(float(txn.tds_deducted_amount))
+    if deducted_amount <= invoice_amount:
         return None  # within bounds — fine
 
     return TDSIssue(
         category="Excess TDS Deducted — Exceeds Invoice Amount",
         message=(
-            f"TDS deducted (₹{txn.tds_deducted_amount:,.2f}) exceeds the "
-            f"full invoice/bill amount (₹{txn.bill_amount:,.2f}). This is "
+            f"TDS deducted (₹{deducted_amount:,.2f}) exceeds the "
+            f"full invoice/bill amount (₹{invoice_amount:,.2f}). This is "
             f"not structurally possible and indicates a data or entry error."
         ),
         severity="high",
@@ -792,6 +797,20 @@ def check_residential_status(txn: Transaction) -> Optional[TDSIssue]:
 
 
 
+def _is_supporting_adjustment_without_tds(txn: Transaction) -> bool:
+    """Adjustment rows support a document case, but should not create standalone TDS issues."""
+    doc_type = (txn.doc_type or "").strip().upper()
+    has_tds_signal = bool(txn.tds_deducted_section or txn.tds_deducted_rate or txn.tds_deducted_amount)
+    return doc_type == "AB" and not has_tds_signal
+
+
+def _is_payment_without_advance_obligation(txn: Transaction) -> bool:
+    """Plain KZ payment rows support clearing, but TDS-bearing KZ rows still get validated."""
+    doc_type = (txn.doc_type or "").strip().upper()
+    has_tds_signal = bool(txn.tds_deducted_section or txn.tds_deducted_rate or txn.tds_deducted_amount)
+    return doc_type == "KZ" and not txn.is_advance_payment and not has_tds_signal
+
+
 def run_all_checks(txn: Transaction) -> list[TDSIssue]:
     """
     Runs transaction-level TDS checks in priority order.
@@ -800,6 +819,9 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
     standard validation to avoid duplicate/noisy issues.
     """
     issues = []
+
+    if _is_supporting_adjustment_without_tds(txn):
+        return issues
 
     # 1. Applicability override.
     gl_issue = check_tds_not_applicable(txn)
@@ -869,6 +891,183 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
 
     return issues
 
+
+
+def _money(value: float | None) -> float:
+    return round(float(value or 0.0), 2)
+
+
+def _txn_base(txn: Transaction) -> float:
+    return abs(float(txn.basic_amount if txn.basic_amount is not None else txn.bill_amount or 0.0))
+
+
+def _advance_invoice_direct_match(advance: Transaction, invoice: Transaction) -> bool:
+    if not advance.invoice_reference_document:
+        return False
+    if str(advance.invoice_reference_document).strip().lstrip("0") != str(invoice.doc_number or "").strip().lstrip("0"):
+        return False
+    if advance.invoice_reference_fiscal_year and invoice.fiscal_year:
+        return str(advance.invoice_reference_fiscal_year).strip() == str(invoice.fiscal_year).strip()
+    return True
+
+
+def _advance_invoice_clearing_match(advance: Transaction, invoice: Transaction) -> bool:
+    if not advance.clearing_document or not invoice.clearing_document:
+        return False
+    if str(advance.clearing_document).strip() != str(invoice.clearing_document).strip():
+        return False
+    if advance.clearing_fiscal_year and invoice.clearing_fiscal_year:
+        return str(advance.clearing_fiscal_year).strip() == str(invoice.clearing_fiscal_year).strip()
+    return True
+
+
+def _advance_invoice_assignment_match(advance: Transaction, invoice: Transaction) -> bool:
+    advance_assignment = _normalised_doc_key(advance.assignment_number)
+    invoice_assignment = _normalised_doc_key(invoice.assignment_number)
+    invoice_doc = _normalised_doc_key(invoice.doc_number)
+    if not advance_assignment:
+        return False
+    return advance_assignment in {invoice_assignment, invoice_doc}
+
+
+def _same_vendor_company(advance: Transaction, invoice: Transaction) -> bool:
+    if (advance.company_code or "").strip() != (invoice.company_code or "").strip():
+        return False
+    if advance.vendor_pan and invoice.vendor_pan:
+        return advance.vendor_pan.strip().upper() == invoice.vendor_pan.strip().upper()
+    return (advance.vendor_code or "").strip() == (invoice.vendor_code or "").strip()
+
+
+def _normalised_doc_key(value: str | None) -> str:
+    return str(value or "").strip().lstrip("0")
+
+
+def _vendor_match_key(txn: Transaction) -> str:
+    if txn.vendor_pan:
+        return f"PAN:{txn.vendor_pan.strip().upper()}"
+    return f"VENDOR:{(txn.vendor_code or '').strip()}"
+
+
+def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
+    """Validate full/partial vendor advances against linked invoice balances.
+
+    Link order: REBZG/REBZJ/REBZZ first, then Assignment_Number/ZUONR.
+    Clearing documents can include ordinary invoice/payment lines, so they
+    are used for ledger grouping only, not for raising advance lifecycle issues.
+    For partial advances, required TDS is checked in two pieces:
+      1. advance amount at payment time
+      2. remaining invoice base at invoice time
+    """
+    issues: list[tuple[Transaction, TDSIssue]] = []
+    advances = [txn for txn in transactions if txn.is_advance_payment]
+    invoices = [
+        txn for txn in transactions
+        if not txn.is_advance_payment and (txn.doc_type or "").strip().upper() in {"RE", "KR"}
+    ]
+    direct_index: dict[tuple[str, str, str], list[Transaction]] = defaultdict(list)
+    assignment_index: dict[tuple[str, str, str], list[Transaction]] = defaultdict(list)
+
+    for advance in advances:
+        company = (advance.company_code or "").strip()
+        vendor = _vendor_match_key(advance)
+        reference_doc = _normalised_doc_key(advance.invoice_reference_document)
+        if reference_doc:
+            direct_index[(company, vendor, reference_doc)].append(advance)
+        assignment = _normalised_doc_key(advance.assignment_number)
+        if assignment:
+            assignment_index[(company, vendor, assignment)].append(advance)
+
+    for invoice in invoices:
+        company = (invoice.company_code or "").strip()
+        vendor = _vendor_match_key(invoice)
+        candidates: list[Transaction] = []
+        invoice_doc = _normalised_doc_key(invoice.doc_number)
+        if invoice_doc:
+            candidates.extend(direct_index.get((company, vendor, invoice_doc), []))
+        assignment = _normalised_doc_key(invoice.assignment_number)
+        if assignment:
+            candidates.extend(assignment_index.get((company, vendor, assignment), []))
+        if invoice_doc:
+            candidates.extend(assignment_index.get((company, vendor, invoice_doc), []))
+
+        seen: set[int] = set()
+        linked_advances = []
+        for advance in candidates:
+            if id(advance) in seen:
+                continue
+            seen.add(id(advance))
+            if _same_vendor_company(advance, invoice) and (
+                _advance_invoice_direct_match(advance, invoice)
+                or _advance_invoice_assignment_match(advance, invoice)
+            ):
+                linked_advances.append(advance)
+        if not linked_advances:
+            continue
+
+        section_rate = _get_applicable_rate(invoice)
+        if section_rate is None:
+            section_rate = _get_applicable_rate(linked_advances[0])
+        if section_rate is None:
+            continue
+
+        invoice_base = _txn_base(invoice)
+        advance_base = min(sum(_txn_base(advance) for advance in linked_advances), invoice_base)
+        remaining_base = max(invoice_base - advance_base, 0.0)
+        expected_advance_tds = _money(advance_base * section_rate / 100)
+        expected_invoice_tds = _money(remaining_base * section_rate / 100)
+        actual_advance_tds = _money(sum(abs(advance.tds_deducted_amount or 0.0) for advance in linked_advances))
+        actual_invoice_tds = _money(abs(invoice.tds_deducted_amount or 0.0))
+        actual_total_tds = _money(actual_advance_tds + actual_invoice_tds)
+        expected_total_tds = _money(expected_advance_tds + expected_invoice_tds)
+
+        if expected_advance_tds > 0 and actual_advance_tds == 0:
+            issues.append((
+                linked_advances[0],
+                TDSIssue(
+                    category="TDS Not Deducted — Advance Payment",
+                    message=(
+                        f"Advance payment linked to invoice {invoice.doc_number} required TDS "
+                        f"of ₹{expected_advance_tds:,.2f} on advance base ₹{advance_base:,.2f}, "
+                        "but no TDS was deducted on the advance."
+                    ),
+                    severity="high",
+                    expected_rate=section_rate,
+                ),
+            ))
+
+        if (
+            actual_advance_tds > TDS_AMOUNT_ROUNDING_TOLERANCE
+            and actual_invoice_tds > expected_invoice_tds + TDS_AMOUNT_ROUNDING_TOLERANCE
+        ):
+            issues.append((
+                invoice,
+                TDSIssue(
+                    category="Excess TDS Deducted — Advance Adjusted Invoice",
+                    message=(
+                        f"Advance TDS of ₹{actual_advance_tds:,.2f} is already available. "
+                        f"Invoice balance base is ₹{remaining_base:,.2f}, so expected invoice TDS is "
+                        f"₹{expected_invoice_tds:,.2f}, but ₹{actual_invoice_tds:,.2f} was deducted."
+                    ),
+                    severity="medium",
+                    expected_rate=section_rate,
+                ),
+            ))
+        elif actual_total_tds + TDS_AMOUNT_ROUNDING_TOLERANCE < expected_total_tds:
+            issues.append((
+                invoice,
+                TDSIssue(
+                    category="Short TDS Deducted — Advance Adjusted Invoice",
+                    message=(
+                        f"Linked advance/invoice chain expected total TDS ₹{expected_total_tds:,.2f} "
+                        f"(advance ₹{expected_advance_tds:,.2f} + invoice balance ₹{expected_invoice_tds:,.2f}), "
+                        f"but only ₹{actual_total_tds:,.2f} was deducted."
+                    ),
+                    severity="high",
+                    expected_rate=section_rate,
+                ),
+            ))
+
+    return issues
 
 def _get_financial_year(d: date) -> str:
     """
@@ -1033,6 +1232,8 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
     })
 
     for txn in transactions:
+        if _is_supporting_adjustment_without_tds(txn) or _is_payment_without_advance_obligation(txn):
+            continue
         if not txn.gl_account:
             continue
         key = (txn.company_code, txn.gl_account)
@@ -1046,6 +1247,8 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
 
     # ---- Step 2: evaluate each blank-TDS transaction against its GL's stats ----
     for txn in transactions:
+        if _is_supporting_adjustment_without_tds(txn) or _is_payment_without_advance_obligation(txn):
+            continue
         if txn.tds_deducted_section or txn.tds_deducted_rate:
             continue  # already has TDS data — not this check's concern
 

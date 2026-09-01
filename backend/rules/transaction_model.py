@@ -16,11 +16,13 @@ class Transaction(BaseModel):
     line_item_number: Optional[str] = None      # BUZEI — not yet confirmed by Mahindra
     doc_type: str                                 # KZ, RE, KR, AB, AC, KA etc.
     transaction_kind: Optional[str] = None
+    assignment_number: Optional[str] = None
     posting_date: date
     bill_date: Optional[date] = None
     bill_no: Optional[str] = None
     po_no: Optional[str] = None
     company_code: Optional[str] = None            # BUKRS — not yet confirmed
+    fiscal_year: Optional[str] = None
 
     # --- Vendor Information ---
     vendor_code: str
@@ -38,6 +40,12 @@ class Transaction(BaseModel):
     bill_amount: float
     basic_amount: Optional[float] = None          # TDS calculation base (assumed GST-excluded); may be absent in SAP extracts
     debit_credit: Optional[str] = None            # H / S
+    clearing_document: Optional[str] = None
+    clearing_fiscal_year: Optional[str] = None
+    clearing_date: Optional[date] = None
+    invoice_reference_document: Optional[str] = None  # REBZG
+    invoice_reference_fiscal_year: Optional[str] = None  # REBZJ
+    invoice_reference_line_item: Optional[str] = None  # REBZZ
 
     # --- Flags (POC-derived logic, populated during ingestion or later confirmed by Mahindra) ---
     is_advance_payment: Optional[bool] = None      # True if doc_type indicates advance (e.g. KZ)

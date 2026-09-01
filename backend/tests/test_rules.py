@@ -9,6 +9,8 @@ from rules.tds_rule_engine import (
     check_threshold_breach,
     check_pan_validity,
     check_excess_tds_exceeds_invoice,
+    check_advance_payment_lifecycle,
+    check_missing_deduction,
     run_all_checks,
 )
 from rules.transaction_model import Transaction
@@ -381,5 +383,427 @@ def test_excess_tds_check_does_not_flag_when_equal_to_bill_amount():
     transaction = _contractor_transaction("ABCFA1234K", 2.0)
     transaction.bill_amount = 50_000
     transaction.tds_deducted_amount = 50_000
+
+    assert check_excess_tds_exceeds_invoice(transaction) is None
+
+
+def test_ka_transaction_sets_advance_flag_and_normalises_advance_section_alias():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Fiscal_Year": "2025",
+        "Document_Number": "2100002001",
+        "Line_Item": "001",
+        "Vendor_Code": "V001",
+        "Vendor_PAN": "ABCFA1234K",
+        "Document_Type": "KA",
+        "Special_GL_Indicator": "A",
+        "Posting_Date": "2025-04-01",
+        "Document_Amount": 200000,
+        "TDS_Section": "194CP",
+        "TDS_Rate": 2,
+        "TDS_Amount": 4000,
+    }])[0]
+
+    assert transaction.is_advance_payment is True
+    assert transaction.tds_deducted_section == "194C"
+
+
+def test_vendor_gstin_header_extracts_pan_for_grouping():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "1054137871",
+        "Vendor_Number": "EBU23812",
+        "Vendor_PAN": "09AAEPZ9355R1ZD",
+        "Document_Type": "KR",
+        "Posting_Date": "2025-06-19",
+        "Local_Amount": 760,
+        "Withholding_Tax_Base_Amount": 760,
+        "TDS_Section": "194C",
+        "tds_rate": 1,
+        "Withholding_Tax_Amount": 8,
+    }])[0]
+
+    assert transaction.vendor_pan == "AAEPZ9355R"
+
+
+def test_reference_document_number_maps_to_invoice_link_not_bill_no():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Fiscal_Year": "2025",
+        "Document_Number": "2100002001",
+        "Reference_Document_Number": "5100001001",
+        "Reference_Fiscal_Year": "2025",
+        "Reference_Line_Item": "001",
+        "Reference_Document": "VENDOR-BILL-22",
+        "Vendor_Number": "V001",
+        "Vendor_PAN": "ABCFA1234K",
+        "Document_Type": "KA",
+        "Posting_Date": "2025-04-01",
+        "Local_Amount": 200000,
+        "Withholding_Tax_Base_Amount": 200000,
+        "TDS_Section": "194C",
+        "tds_rate": 2,
+        "Withholding_Tax_Amount": 4000,
+    }])[0]
+
+    assert transaction.invoice_reference_document == "5100001001"
+    assert transaction.invoice_reference_fiscal_year == "2025"
+    assert transaction.invoice_reference_line_item == "001"
+    assert transaction.bill_no == "VENDOR-BILL-22"
+
+
+def test_assignment_number_maps_to_transaction():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "2100002001",
+        "Assignment_Number": "5100001001",
+        "Vendor_Number": "V001",
+        "Vendor_PAN": "ABCFA1234K",
+        "Document_Type": "KA",
+        "Special_GL_Indicator": "A",
+        "Posting_Date": "2025-04-01",
+        "Local_Amount": 200000,
+        "Withholding_Tax_Base_Amount": 200000,
+        "TDS_Section": "194C",
+        "tds_rate": 2,
+        "Withholding_Tax_Amount": 4000,
+    }])[0]
+
+    assert transaction.assignment_number == "5100001001"
+
+
+def test_kz_without_advance_signal_is_not_marked_as_advance():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "2610274616",
+        "Vendor_Number": "DIA00483AA",
+        "Vendor_PAN": "ABCFA1234K",
+        "Document_Type": "KZ",
+        "Posting_Date": "2025-07-22",
+        "Local_Amount": 2297515,
+        "Withholding_Tax_Base_Amount": 1980617.58,
+        "TDS_Section": "194C",
+        "tds_rate": 2,
+        "Withholding_Tax_Amount": 0,
+    }])[0]
+
+    assert transaction.is_advance_payment is False
+
+
+def test_kz_with_special_gl_advance_signal_is_marked_as_advance():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "2610274616",
+        "Vendor_Number": "DIA00483AA",
+        "Vendor_PAN": "ABCFA1234K",
+        "Document_Type": "KZ",
+        "special_gl_indicator": "A",
+        "Posting_Date": "2025-07-22",
+        "Local_Amount": 2297515,
+        "Withholding_Tax_Base_Amount": 1980617.58,
+        "TDS_Section": "194C",
+        "tds_rate": 2,
+        "Withholding_Tax_Amount": 39712.35,
+    }])[0]
+
+    assert transaction.is_advance_payment is True
+
+
+def test_kz_with_special_gl_advance_text_is_marked_as_advance():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "2610274617",
+        "Vendor_Number": "DIA00483AA",
+        "Vendor_PAN": "ABCFA1234K",
+        "Document_Type": "KZ",
+        "special_gl_indicator": "advance",
+        "Posting_Date": "2025-07-22",
+        "Local_Amount": 2297515,
+        "Withholding_Tax_Base_Amount": 1980617.58,
+        "TDS_Section": "194C",
+        "tds_rate": 2,
+        "Withholding_Tax_Amount": 39712.35,
+    }])[0]
+
+    assert transaction.is_advance_payment is True
+
+
+def test_ab_adjustment_without_tds_does_not_raise_transaction_issue():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "1054137871",
+        "Vendor_Number": "EBU23812",
+        "Vendor_PAN": "09AAEPZ9355R1ZD",
+        "Document_Type": "AB",
+        "Posting_Date": "2025-06-19",
+        "Local_Amount": 760,
+        "Withholding_Tax_Base_Amount": 0,
+        "Withholding_Tax_Amount": 0,
+        "GL_Account": "23636001",
+    }])[0]
+
+    assert run_all_checks(transaction) == []
+
+
+def test_kz_payment_without_advance_marker_is_not_missing_tds_candidate():
+    invoice_with_tds = Transaction(
+        doc_number="2510162130",
+        doc_type="KR",
+        posting_date=date(2025, 9, 30),
+        company_code="1001",
+        vendor_code="EBU23812",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        gl_account="16060001",
+        bill_amount=346281.84,
+        basic_amount=346281.84,
+        tds_deducted_section="194C",
+        tds_deducted_rate=1,
+        tds_deducted_amount=3463,
+    )
+    normal_payment = Transaction(
+        doc_number="2610380025",
+        doc_type="KZ",
+        debit_credit="S",
+        posting_date=date(2025, 9, 30),
+        company_code="1001",
+        vendor_code="EBU23812",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        gl_account="16060001",
+        bill_amount=48988.07,
+        basic_amount=41550.91,
+        tds_deducted_amount=0,
+        is_advance_payment=False,
+    )
+
+    assert check_missing_deduction([invoice_with_tds, normal_payment]) == []
+
+
+def test_kz_with_tds_signal_is_still_checked_for_amount_mismatch():
+    transaction = Transaction(
+        doc_number="2610380025",
+        doc_type="KZ",
+        debit_credit="S",
+        posting_date=date(2025, 9, 30),
+        company_code="1001",
+        vendor_code="EBU23812",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        gl_account="16060001",
+        bill_amount=48988.07,
+        basic_amount=41550.91,
+        tds_deducted_section="194C",
+        tds_deducted_rate=1,
+        tds_deducted_amount=0,
+        is_advance_payment=False,
+    )
+
+    issues = run_all_checks(transaction)
+
+    assert any(issue.category == "Short/Excess TDS Deducted — Amount Mismatch" for issue in issues)
+
+
+def test_advance_lifecycle_allows_partial_advance_and_balance_invoice_tds():
+    advance = Transaction(
+        doc_number="2100002001",
+        doc_type="KA",
+        posting_date=date(2025, 4, 1),
+        company_code="1001",
+        fiscal_year="2025",
+        vendor_code="V001",
+        vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"),
+        bill_amount=200000,
+        basic_amount=200000,
+        tds_deducted_section="194C",
+        tds_deducted_rate=2,
+        tds_deducted_amount=4000,
+        is_advance_payment=True,
+        invoice_reference_document="5100001001",
+        invoice_reference_fiscal_year="2025",
+    )
+    invoice = Transaction(
+        doc_number="5100001001",
+        doc_type="KR",
+        posting_date=date(2025, 4, 10),
+        company_code="1001",
+        fiscal_year="2025",
+        vendor_code="V001",
+        vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"),
+        bill_amount=500000,
+        basic_amount=500000,
+        tds_deducted_section="194C",
+        tds_deducted_rate=2,
+        tds_deducted_amount=6000,
+    )
+
+    assert check_advance_payment_lifecycle([advance, invoice]) == []
+
+
+def test_advance_lifecycle_links_by_assignment_number():
+    advance = Transaction(
+        doc_number="2100002001",
+        doc_type="KA",
+        assignment_number="5100001001",
+        posting_date=date(2025, 4, 1),
+        company_code="1001",
+        fiscal_year="2025",
+        vendor_code="V001",
+        vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"),
+        bill_amount=200000,
+        basic_amount=200000,
+        tds_deducted_section="194C",
+        tds_deducted_rate=2,
+        tds_deducted_amount=4000,
+        is_advance_payment=True,
+    )
+    invoice = Transaction(
+        doc_number="5100001001",
+        doc_type="KR",
+        posting_date=date(2025, 4, 10),
+        company_code="1001",
+        fiscal_year="2025",
+        vendor_code="V001",
+        vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"),
+        bill_amount=500000,
+        basic_amount=500000,
+        tds_deducted_section="194C",
+        tds_deducted_rate=2,
+        tds_deducted_amount=6000,
+    )
+
+    assert check_advance_payment_lifecycle([advance, invoice]) == []
+
+
+def test_advance_lifecycle_flags_invoice_tds_deducted_on_full_amount_again():
+    advance = Transaction(
+        doc_number="2100002001", doc_type="KA", posting_date=date(2025, 4, 1),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=200000, basic_amount=200000,
+        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=4000,
+        is_advance_payment=True, invoice_reference_document="5100001001", invoice_reference_fiscal_year="2025",
+    )
+    invoice = Transaction(
+        doc_number="5100001001", doc_type="KR", posting_date=date(2025, 4, 10),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=500000, basic_amount=500000,
+        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=10000,
+    )
+
+    issues = check_advance_payment_lifecycle([advance, invoice])
+
+    assert len(issues) == 1
+    assert issues[0][1].category == "Excess TDS Deducted — Advance Adjusted Invoice"
+
+
+def test_advance_lifecycle_does_not_flag_rounded_invoice_tds_when_advance_tds_absent():
+    advance = Transaction(
+        doc_number="2100002001", doc_type="KA", posting_date=date(2025, 4, 1),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=181798.83, basic_amount=181798.83,
+        tds_deducted_section="194Q", tds_deducted_rate=0.1, tds_deducted_amount=0,
+        is_advance_payment=True, invoice_reference_document="2510560687", invoice_reference_fiscal_year="2025",
+    )
+    invoice = Transaction(
+        doc_number="2510560687", doc_type="KR", posting_date=date(2025, 5, 28),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=181798.83, basic_amount=181798.83,
+        tds_deducted_section="194Q", tds_deducted_rate=0.1, tds_deducted_amount=182,
+    )
+
+    issues = check_advance_payment_lifecycle([advance, invoice])
+
+    assert not any(issue.category == "Excess TDS Deducted — Advance Adjusted Invoice" for _, issue in issues)
+
+
+def test_advance_lifecycle_flags_missing_advance_tds():
+    advance = Transaction(
+        doc_number="2100002001", doc_type="KA", posting_date=date(2025, 4, 1),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=200000, basic_amount=200000,
+        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=0,
+        is_advance_payment=True, invoice_reference_document="5100001001", invoice_reference_fiscal_year="2025",
+    )
+    invoice = Transaction(
+        doc_number="5100001001", doc_type="KR", posting_date=date(2025, 4, 10),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=500000, basic_amount=500000,
+        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=6000,
+    )
+
+    issues = check_advance_payment_lifecycle([advance, invoice])
+
+    assert any(issue.category == "TDS Not Deducted — Advance Payment" for _, issue in issues)
+    assert any(issue.category == "Short TDS Deducted — Advance Adjusted Invoice" for _, issue in issues)
+
+
+def test_advance_lifecycle_does_not_link_by_clearing_document_only():
+    advance = Transaction(
+        doc_number="2100002001", doc_type="KA", posting_date=date(2025, 4, 1),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=200000, basic_amount=200000,
+        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=4000,
+        is_advance_payment=True, clearing_document="900000001", clearing_fiscal_year="2025",
+    )
+    invoice = Transaction(
+        doc_number="5100001001", doc_type="KR", posting_date=date(2025, 4, 10),
+        company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
+        vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=500000, basic_amount=500000,
+        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=10000,
+        clearing_document="900000001", clearing_fiscal_year="2025",
+    )
+
+    assert check_advance_payment_lifecycle([advance, invoice]) == []
+
+
+def test_tds_description_decodes_contract_cost_to_old_and_new_section():
+    transaction = build_transactions_from_sap_export([{
+        "Accounting_Document_Number": "2610000001",
+        "Document_Type": "KZ",
+        "Posting_Date": "2025-06-27",
+        "Vendor_Number": "DIA00483AA",
+        "Vendor_PAN": "ABCFA1234K",
+        "Amount_Local_Currency": 770974,
+        "Withholding_Tax_Base_Amount": 770974,
+        "Withholding_Tax_Amount": 15420,
+        "tds_rate": 2,
+        "tds_description": "Cont. Cos - 2%-New Sec-393(1)6(i)",
+    }])[0]
+
+    assert transaction.tds_deducted_section == "194C"
+    assert transaction.tds_legacy_section == "194C"
+    assert transaction.tds_new_section == "393(1)6(i)"
+    assert transaction.tds_deducted_rate == 2
+
+
+def test_tds_description_decodes_plant_machinery_rent_to_194i():
+    transaction = build_transactions_from_sap_export([{
+        "Accounting_Document_Number": "2610000002",
+        "Document_Type": "KZ",
+        "Posting_Date": "2025-06-27",
+        "Vendor_Number": "DIA00483AA",
+        "Vendor_PAN": "ABCFA1234K",
+        "Amount_Local_Currency": 22000,
+        "Withholding_Tax_Base_Amount": 22000,
+        "Withholding_Tax_Amount": 440,
+        "tds_rate": 2,
+        "tds_description": "Plt/Mach/Eqpt Cos-2%-N/S-393(1)2(i)",
+    }])[0]
+
+    assert transaction.tds_deducted_section == "194I"
+    assert transaction.tds_legacy_section == "194I"
+    assert transaction.tds_new_section == "393(1)2(i)"
+    assert transaction.tds_deducted_rate == 2
+
+
+def test_excess_tds_check_uses_absolute_signed_invoice_amount():
+    transaction = _contractor_transaction("ABCFA1234K", 2.0)
+    transaction.bill_amount = -894_329.32
+    transaction.basic_amount = 770_974
+    transaction.tds_deducted_amount = 15_420
 
     assert check_excess_tds_exceeds_invoice(transaction) is None

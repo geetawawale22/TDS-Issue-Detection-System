@@ -1,4 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
+from functools import lru_cache
+import re
 from typing import Any, List, Optional
 import pandas as pd
 
@@ -9,12 +11,12 @@ from rules.transaction_model import Transaction
 # First name in each tuple is the live export column; later names are legacy fallbacks.
 COLUMN_ALIASES = {
     "company_code": ("Company_Code",),
-    "vendor_code": ("Vendor_Code", "VendorCode", "Vendor"),
+    "vendor_code": ("Vendor_Code", "Vendor_Number", "VendorCode", "Vendor"),
     "vendor_name": ("Vendor_Name", "VendorName", "vendor_name"),
-    "pan": ("PAN", "Pan"),
+    "pan": ("PAN", "Pan", "Vendor_PAN"),
     "person": ("Person_Code", "Person", "person"),
-    "bill_date": ("Bill_Date", "bill_date"),
-    "bill_no": ("Bill_No", "BillNo", "bill_no"),
+    "bill_date": ("Bill_Date", "Document_Date", "bill_date"),
+    "bill_no": ("Bill_No", "Reference_Document", "BillNo", "bill_no"),
     "po_no": (
         "PO_Number", "PO_No", "PO", "PONumber", "PO Number",
         "Purchase_Order", "Purchase Order", "PurchaseOrder",
@@ -24,18 +26,21 @@ COLUMN_ALIASES = {
     "gl_account": ("GL", "GL_Account"),
     "gl_description": ("GL_Description", "GLDescription", "GL_Desc"),
     "description": ("Description",),
-    "bill_amount": ("Bill_Amount", "bill_amount"),
-    "basic_amount": ("Basic_Amount", "basic_amount"),
+    "bill_amount": ("Bill_Amount", "bill_amount", "Document_Amount", "Local_Amount", "Amount", "Amount_Document_Currency", "Amount_Local_Currency"),
+    "basic_amount": ("Basic_Amount", "basic_amount", "TDS_Base_Amount", "Withholding_Tax_Base_Amount"),
     "posting_date": ("Posting_Date", "posting_date"),
     "doc_type": ("Document_Type", "Document_Typ", "doc_type"),
     "transaction_kind": ("Payment_Type", "Nature_Of_Payment", "Transaction_Kind", "transaction_kind"),
-    "doc_number": ("Document_No", "doc_number"),
+    "assignment_number": ("Assignment_Number", "ZUONR"),
+    "doc_number": ("Document_No", "Document_Number", "Accounting_Document_Number", "doc_number"),
+    "line_item_number": ("Line_Item", "Line_Item_Number", "BUZEI"),
+    "fiscal_year": ("Fiscal_Year", "GJAHR"),
     "tds_section_code": ("TDS_Section_Code",),
-    "tds_section": ("TDS_Section", "TDSSection", "tds_section"),
+    "tds_section": ("TDS_Section", "TDSSection", "tds_section", "tds_description", "TDS_Description", "withholding_tax_type"),
     "tds_rate": ("TDS_Rate", "TDSRate", "tds_rate"),
-    "tds_amount": ("TDS_Amount", "TDSAmount", "TDS_Deducted_Amount"),
+    "tds_amount": ("TDS_Amount", "TDSAmount", "TDS_Deducted_Amount", "Withholding_Tax_Amount"),
     "hsn_sac_code": ("HSN_SAC_Code",),
-    "debit_credit": ("deb_cred",),
+    "debit_credit": ("deb_cred", "Debit_Credit", "Debit_Credit_Indicator"),
     "tds_applicable_section": ("TDS_Applicable_Section",),
     "tds_applicable_rate": ("TDS_Applicable_Rate",),
     "tds_applicable_amount": ("TDS_Applicable_Amount",),
@@ -45,8 +50,62 @@ COLUMN_ALIASES = {
     "ldc_exemption_number": ("LDC_Exemption_Number",),
     "ldc_exemption_reason": ("LDC_Exemption_Reason",),
     "advance_document_reference": ("Advance_Document_Linkage",),
+    "special_gl_transaction_type": ("Special_GL_Transaction_Type", "special_gl_transaction_type", "UMSKS"),
+    "special_gl_indicator": ("Special_GL_Indicator", "special_gl_indicator", "special_gl_indicator", "UMSKZ"),
+    "clearing_document": ("Clearing_Document", "Clearing_Document_Number", "AUGBL"),
+    "clearing_fiscal_year": ("Clearing_Fiscal_Year", "AUGGJ"),
+    "clearing_date": ("Clearing_Date", "AUGDT"),
+    "invoice_reference_document": ("Reference_Document_Number", "REBZG", "Invoice_Reference_Document"),
+    "invoice_reference_fiscal_year": ("Reference_Fiscal_Year", "REBZJ", "Invoice_Reference_Fiscal_Year"),
+    "invoice_reference_line_item": ("Reference_Line_Item", "REBZZ", "Invoice_Reference_Line_Item"),
 }
 
+
+PAN_IN_GSTIN_REGEX = re.compile(r"^[0-9]{2}([A-Z]{5}[0-9]{4}[A-Z])[0-9A-Z]{3}$")
+PAN_REGEX = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+
+ADVANCE_SECTION_ALIASES = {
+    "194CP": "194C",
+    "194JP": "194J",
+    "194LQ": "194Q",
+}
+
+
+def _normalise_pan(value: str | None) -> str:
+    pan = str(value or "").strip().upper()
+    if PAN_REGEX.match(pan):
+        return pan
+    gstin_match = PAN_IN_GSTIN_REGEX.match(pan)
+    if gstin_match:
+        return gstin_match.group(1)
+    return pan
+
+
+def _normalise_section_and_advance(
+    section_value: str | None,
+    doc_type: str | None,
+    special_gl_indicator: str | None,
+    special_gl_transaction_type: str | None = None,
+) -> tuple[str, bool]:
+    section = str(section_value or "").strip().upper()
+    section_text = str(section_value or "").strip().lower()
+    special_gl = str(special_gl_indicator or "").strip().upper()
+    special_gl_type = str(special_gl_transaction_type or "").strip().upper()
+    special_gl_text = f"{special_gl} {special_gl_type}".lower()
+    is_advance = (
+        str(doc_type or "").strip().upper() == "KA"
+        or special_gl in {"A"}
+        or special_gl_type in {"A"}
+        or "advance" in section_text
+        or "down payment" in section_text
+        or "downpayment" in section_text
+        or "advance" in special_gl_text
+        or "down payment" in special_gl_text
+        or "downpayment" in special_gl_text
+    )
+    if section in ADVANCE_SECTION_ALIASES:
+        return ADVANCE_SECTION_ALIASES[section], True
+    return section, is_advance
 
 def _get(row: dict, field: str) -> Any:
     """Read a value using Mahindra column names, with legacy fallbacks."""
@@ -90,13 +149,25 @@ def looks_like_descriptive_tds_section(raw_text: str) -> bool:
     return bool(raw_text) and ("-" in raw_text or "%" in raw_text)
 
 
-def _parse_date(value) -> Optional[datetime.date]:
+@lru_cache(maxsize=4096)
+def _parse_date_string(value: str) -> Optional[date]:
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            pass
+    return pd.to_datetime(value).date()
+
+
+def _parse_date(value) -> Optional[date]:
     """Handles date strings like '1/1/2026' safely, returns None if blank."""
     if value is None or str(value).strip() in ("", "nan", "None"):
         return None
     if isinstance(value, datetime):
         return value.date()
-    return pd.to_datetime(value).date()
+    if isinstance(value, date):
+        return value
+    return _parse_date_string(str(value).strip())
 
 
 def _derive_vendor_category(pan: str) -> Optional[str]:
@@ -160,21 +231,31 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
     transactions: List[Transaction] = []
 
     for row in raw_rows:
-        section_value = str(_get(row, "tds_section") or "").strip()
+        raw_section_value = str(_get(row, "tds_section") or "").strip()
+        doc_type = str(_get(row, "doc_type") or "")
+        section_value, is_advance_payment = _normalise_section_and_advance(
+            raw_section_value,
+            doc_type,
+            str(_get(row, "special_gl_indicator") or ""),
+            str(_get(row, "special_gl_transaction_type") or ""),
+        )
         rate_value = _parse_rate_percent(_get(row, "tds_rate"))
         transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
 
-        pan = str(_get(row, "pan") or "").strip()
+        pan = _normalise_pan(_get(row, "pan"))
 
         txn = Transaction(
             doc_number=str(_get(row, "doc_number") or ""),
-            doc_type=str(_get(row, "doc_type") or ""),
+            line_item_number=str(_get(row, "line_item_number") or "").strip() or None,
+            doc_type=doc_type,
             transaction_kind=transaction_kind,
+            assignment_number=str(_get(row, "assignment_number") or "").strip() or None,
             posting_date=_parse_date(_get(row, "posting_date")),
             bill_date=_parse_date(_get(row, "bill_date")),
             bill_no=str(_get(row, "bill_no") or "").strip() or None,
             po_no=str(_get(row, "po_no") or "").strip() or None,
             company_code=str(_get(row, "company_code") or "").strip() or None,
+            fiscal_year=str(_get(row, "fiscal_year") or "").strip() or None,
 
             vendor_code=str(_get(row, "vendor_code") or ""),
             vendor_name=str(_get(row, "vendor_name") or "").strip() or None,
@@ -189,6 +270,13 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
             bill_amount=float(_get(row, "bill_amount") or 0),
             basic_amount=float(_get(row, "basic_amount") or 0),
             debit_credit=str(_get(row, "debit_credit") or "").strip() or None,
+            clearing_document=str(_get(row, "clearing_document") or "").strip() or None,
+            clearing_fiscal_year=str(_get(row, "clearing_fiscal_year") or "").strip() or None,
+            clearing_date=_parse_date(_get(row, "clearing_date")),
+            invoice_reference_document=str(_get(row, "invoice_reference_document") or "").strip() or None,
+            invoice_reference_fiscal_year=str(_get(row, "invoice_reference_fiscal_year") or "").strip() or None,
+            invoice_reference_line_item=str(_get(row, "invoice_reference_line_item") or "").strip() or None,
+            is_advance_payment=is_advance_payment,
 
             tds_raw_section=section_value,
             tds_applicable_section=str(_get(row, "tds_applicable_section") or "").strip() or None,
@@ -240,27 +328,37 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
         if transaction_kind is None:
             transaction_kind = infer_payment_type_from_tds_text(raw_section_text)
 
-        # Prefer the decoded section; fall back to rate column if text is missing
-        final_rate = rate
+        # Prefer the explicit rate column; fall back to the percentage parsed from tds_description.
+        final_rate = rate if rate is not None else parsed_rate
         # TDS_Amount comes signed (credit/debit convention) — normalize to positive
         raw_amount = _safe_float(_get(row, "tds_amount"))
         tds_amount = abs(raw_amount) if raw_amount is not None else None
 
-        pan = str(_get(row, "pan") or "").strip()
+        pan = _normalise_pan(_get(row, "pan"))
 
         # Deductee category is often stated directly in the text
         # (e.g. "Ind/HUF"), cross-check against PAN-derived category later
         vendor_category = _derive_vendor_category(pan)
+        doc_type = str(_get(row, "doc_type") or "")
+        _, is_advance_payment = _normalise_section_and_advance(
+            old_section,
+            doc_type,
+            str(_get(row, "special_gl_indicator") or ""),
+            str(_get(row, "special_gl_transaction_type") or ""),
+        )
 
         txn = Transaction(
             doc_number=str(_get(row, "doc_number") or ""),
-            doc_type=str(_get(row, "doc_type") or ""),
+            line_item_number=str(_get(row, "line_item_number") or "").strip() or None,
+            doc_type=doc_type,
             transaction_kind=transaction_kind,
+            assignment_number=str(_get(row, "assignment_number") or "").strip() or None,
             posting_date=_parse_date(_get(row, "posting_date")),
             bill_date=_parse_date(_get(row, "bill_date")),
             bill_no=str(_get(row, "bill_no") or "").strip() or None,
             po_no=str(_get(row, "po_no") or "").strip() or None,
             company_code=str(_get(row, "company_code") or "").strip() or None,
+            fiscal_year=str(_get(row, "fiscal_year") or "").strip() or None,
 
             vendor_code=str(_get(row, "vendor_code") or ""),
             vendor_name=str(_get(row, "vendor_name") or "").strip() or None,
@@ -273,6 +371,14 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
 
             bill_amount=_safe_float(_get(row, "bill_amount")) or 0.0,
             basic_amount=_safe_float(_get(row, "basic_amount")),  # None if blank — do NOT fall back to bill_amount (GST-inclusive), that produces false positives
+            debit_credit=str(_get(row, "debit_credit") or "").strip() or None,
+            clearing_document=str(_get(row, "clearing_document") or "").strip() or None,
+            clearing_fiscal_year=str(_get(row, "clearing_fiscal_year") or "").strip() or None,
+            clearing_date=_parse_date(_get(row, "clearing_date")),
+            invoice_reference_document=str(_get(row, "invoice_reference_document") or "").strip() or None,
+            invoice_reference_fiscal_year=str(_get(row, "invoice_reference_fiscal_year") or "").strip() or None,
+            invoice_reference_line_item=str(_get(row, "invoice_reference_line_item") or "").strip() or None,
+            is_advance_payment=is_advance_payment,
 
             tds_raw_section=raw_section_text,
             tds_deducted_section=old_section,

@@ -38,8 +38,9 @@ from rules.tds_rule_engine import (
     run_all_checks,
     check_threshold_breach,
     check_missing_deduction,
+    check_advance_payment_lifecycle,
 )
-from services.tds_case_builder import build_tds_cases
+from services.tds_case_builder import build_tds_cases, classify_event
 
 
 router = APIRouter(prefix="/issues", tags=["Issues"])
@@ -70,6 +71,8 @@ ISSUE_TYPE_BY_CATEGORY = {
     "LDC Limit Exhausted": "LDC_LIMIT_EXHAUSTED",
     "LDC Over-utilized": "LDC_OVER_UTILIZED",
     "TDS Not Deducted — Advance Payment": "MISSED_ADVANCE",
+    "Short TDS Deducted — Advance Adjusted Invoice": "ADVANCE_SHORT_TDS",
+    "Excess TDS Deducted — Advance Adjusted Invoice": "ADVANCE_EXCESS_TDS",
     "TDS Not Deducted — Provision Entry": "MISSED_PROVISION",
     "Short TDS Deducted — Non-Filer (206AB)": "NON_FILER_206AB",
     "TDS Not Applicable — Violation (Form 15G/15H)": "FORM_15G_VIOLATION",
@@ -490,6 +493,98 @@ def _build_case_ledger(joined_rows: list[dict[str, Any]], issues: list[dict[str,
     return sorted(case_ledgers, key=lambda item: (item.get("status") != "ISSUE", item.get("anchorDocNo") or ""))
 
 
+
+def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    issues_by_doc: dict[str, list[dict[str, Any]]] = {}
+    for issue in issues:
+        issues_by_doc.setdefault(str(issue.get("docNo") or "").strip(), []).append(issue)
+
+    ledgers: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row_number, txn in enumerate(transactions, start=1):
+        company_code = (txn.company_code or "").strip()
+        fiscal_year = (txn.clearing_fiscal_year or txn.fiscal_year or "").strip()
+        clearing_doc = (txn.clearing_document or "").strip()
+        reference_doc = (txn.invoice_reference_document or txn.advance_document_reference or "").strip()
+        assignment_number = (txn.assignment_number or "").strip()
+        doc_no = (txn.doc_number or "").strip()
+
+        group_type = "CLEARING" if clearing_doc else "REFERENCE" if reference_doc else "ASSIGNMENT" if assignment_number else "DOCUMENT"
+        anchor_doc = clearing_doc or reference_doc or assignment_number or doc_no or f"ROW-{row_number}"
+        key = (company_code, fiscal_year, anchor_doc)
+        ledger = ledgers.setdefault(key, {
+            "caseId": f"LEDGER-{key[0] or 'NA'}-{key[1] or 'FY'}-{key[2]}",
+            "groupType": group_type,
+            "anchorDocNo": anchor_doc or "—",
+            "clearingDocument": clearing_doc or "—",
+            "assignmentNumber": assignment_number or "—",
+            "companyCode": company_code or None,
+            "financialYear": fiscal_year or None,
+            "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
+            "vendorId": txn.vendor_code or "—",
+            "pan": txn.vendor_pan or "—",
+            "section": txn.tds_new_section or txn.tds_legacy_section or txn.tds_deducted_section or "—",
+            "invoiceAmount": 0.0,
+            "advanceAmount": 0.0,
+            "paymentAmount": 0.0,
+            "adjustmentAmount": 0.0,
+            "debitAmount": 0.0,
+            "creditAmount": 0.0,
+            "netAmount": 0.0,
+            "tdsAmount": 0.0,
+            "eventCount": 0,
+            "issueCount": 0,
+            "events": [],
+        })
+
+        event_type = classify_event(txn)
+        signed_amount = float(txn.bill_amount or 0.0)
+        amount = abs(signed_amount)
+        if signed_amount >= 0:
+            ledger["debitAmount"] += amount
+        else:
+            ledger["creditAmount"] += amount
+        ledger["netAmount"] += signed_amount
+
+        if event_type == "INVOICE":
+            ledger["invoiceAmount"] += amount
+        elif event_type == "ADVANCE_PAYMENT":
+            ledger["advanceAmount"] += amount
+        elif event_type == "PAYMENT":
+            ledger["paymentAmount"] += amount
+        else:
+            ledger["adjustmentAmount"] += amount
+
+        doc_issues = issues_by_doc.get(doc_no, [])
+        tds_amount = abs(float(txn.tds_deducted_amount or 0.0))
+        ledger["tdsAmount"] += tds_amount
+        ledger["eventCount"] += 1
+        ledger["issueCount"] += len(doc_issues)
+        ledger["events"].append({
+            "docNo": doc_no or "—",
+            "lineItem": txn.line_item_number or "—",
+            "docType": txn.doc_type or "—",
+            "assignmentNumber": txn.assignment_number or "—",
+            "eventType": event_type,
+            "postingDate": txn.posting_date.isoformat() if txn.posting_date else "—",
+            "glAccount": txn.gl_account or "—",
+            "debitCredit": txn.debit_credit or "—",
+            "amount": signed_amount,
+            "baseAmount": txn.basic_amount,
+            "tdsSection": txn.tds_new_section or txn.tds_legacy_section or txn.tds_deducted_section or "—",
+            "tdsAmount": tds_amount,
+            "referenceDoc": txn.invoice_reference_document or txn.advance_document_reference or "—",
+            "issues": [issue.get("category") for issue in doc_issues],
+        })
+
+    case_ledgers = []
+    for ledger in ledgers.values():
+        ledger["openAmount"] = round(ledger["invoiceAmount"] + ledger["advanceAmount"] - ledger["paymentAmount"] - ledger["adjustmentAmount"], 2)
+        ledger["netAmount"] = round(ledger["netAmount"], 2)
+        ledger["status"] = "ISSUE" if ledger["issueCount"] else "BALANCED" if abs(ledger["netAmount"]) <= 1 else "OPEN"
+        case_ledgers.append(ledger)
+
+    return sorted(case_ledgers, key=lambda item: (item.get("status") != "ISSUE", item.get("anchorDocNo") or ""))
+
 def _read_upload(filename: str, content: bytes) -> pd.DataFrame:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
@@ -823,6 +918,12 @@ async def upload_sap_file(
             issue_transaction_ids.add(id(txn))
             issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
+    for txn, rule_issue in check_advance_payment_lifecycle(issue_eligible_transactions):
+        if include_informational or rule_issue.severity != "low":
+            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_transaction_ids.add(id(txn))
+            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+
     for txn, rule_issue in _check_ldc_limit_breach(issue_eligible_transactions, ldc_utilization):
         issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
         issue_transaction_ids.add(id(txn))
@@ -831,7 +932,7 @@ async def upload_sap_file(
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
     threshold_vendors = _threshold_vendor_summaries(transactions)
-    case_ledger = _build_case_ledger(joined_rows, issues)
+    case_ledger = _build_case_ledger_from_transactions(transactions, issues)
     insufficient_data_rows = sum(
         id(txn) not in issue_transaction_ids and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
         for txn in transactions
@@ -879,6 +980,10 @@ async def upload_sap_file(
         "insufficientDataRows": insufficient_data_rows,
         "validatedRows": passed_rows + issue_rows,
         "issuesFound": len(issues),
+        "ledgerCases": len(case_ledger),
+        "openLedgerCases": sum(case["status"] == "OPEN" for case in case_ledger),
+        "issueLedgerCases": sum(case["status"] == "ISSUE" for case in case_ledger),
+        "balancedLedgerCases": sum(case["status"] == "BALANCED" for case in case_ledger),
         "high": sum(issue["severity"] == "high" for issue in issues),
         "medium": sum(issue["severity"] == "medium" for issue in issues),
         "low": sum(issue["severity"] == "low" for issue in issues),
@@ -896,6 +1001,7 @@ async def upload_sap_file(
         "ldcUtilization": ldc_utilization,
         "tdsCases": tds_cases,
         "caseStats": case_stats,
+        "caseLedger": case_ledger,
         "validationRows": validation_rows,
         "unrecognizedColumns": [],
         "errors": [],
@@ -951,6 +1057,11 @@ async def upload_case_source_files(
             issue_transaction_ids.add(id(txn))
 
     for txn, rule_issue in check_missing_deduction(issue_eligible_transactions):
+        if rule_issue.severity != "low":
+            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_transaction_ids.add(id(txn))
+
+    for txn, rule_issue in check_advance_payment_lifecycle(issue_eligible_transactions):
         if rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
