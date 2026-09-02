@@ -1,0 +1,2 @@
+Certificate_Number,Certificate_Type,PAN,Vendor_Name,Company_Code,Deductor_TAN,TDS_Section,Approved_TDS_Rate,Valid_From,Valid_To,Tax_Year,Approved_Amount_Limit,Status,Is_Verified,Last_Verified_Date,Parent_Certificate_Number,Is_Child_Certificate,Remarks
+LDC-SIT-2025-001,NIL,ABTPN5043J,SITARA ENTERPRISES,1001,,194J,0.0000,2025-04-01,2026-03-31,2025-26,3000000.00,ACTIVE,true,2025-04-01,,false,Temporary nil-rate test certificate for Sitara FY 2025-26 SAP sample

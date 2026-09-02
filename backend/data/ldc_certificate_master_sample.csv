@@ -1,0 +1,5 @@
+Certificate_Number,Certificate_Type,PAN,Vendor_Name,Company_Code,Deductor_TAN,TDS_Section,Approved_TDS_Rate,Valid_From,Valid_To,Tax_Year,Approved_Amount_Limit,Status,Is_Verified,Last_Verified_Date,Parent_Certificate_Number,Is_Child_Certificate,Remarks
+LDC-EVG-001,LOWER,AAAFE3841P,EVERGREEN MOTORS,1001,,194C,1.0000,2026-04-01,2027-03-31,2026-27,10000000.00,ACTIVE,true,2026-04-10,,false,Temporary test certificate for Evergreen Motors PAN
+LDC-CAP-001,LOWER,AAEPZ9355R,CAPITAL TRADERS & ENGINEE,1001,,194C,1.5000,2026-04-01,2026-09-30,2026-27,5000000.00,ACTIVE,true,2026-04-12,,false,Temporary test certificate for Capital Traders PAN
+LDC-SIT-001,NIL,ABTPN5043J,SITARA ENTERPRISES,1001,,194C,0.0000,2025-04-01,2027-03-31,2026-27,3000000.00,ACTIVE,true,2026-04-15,,false,Temporary nil-rate test certificate for Sitara PAN
+LDC-SSW-001,LOWER,AACCS3003L,STEEL STRIPS WHEELS LIMITED,1001,,194C,0.7500,2025-04-01,2027-03-31,2026-27,20000000.00,ACTIVE,true,2026-04-18,,false,Temporary test certificate for Steel Strips PAN
