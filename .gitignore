@@ -17,8 +17,8 @@ backend/.env
 .DS_Store
 
 # Data files
-*.xlsx
-*.csv
+# *.xlsx
+# *.csv
 
 # Node modules
 node_modules/

@@ -52,7 +52,7 @@ TDS-Issue-Detection-System/
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+Windows: venv\Scripts\activate    # Linex: source venv/bin/activate 
 pip install -r requirements.txt
 ```
 
