@@ -350,9 +350,9 @@ def _is_pan_operative(pan: str) -> Optional[bool]:
 
 
 
-def _get_applicable_rate(txn: Transaction) -> Optional[float]:
+def _get_statutory_rate(txn: Transaction) -> Optional[float]:
     """
-    Determines what the TDS rate SHOULD be for this transaction.
+    Determines the normal statutory TDS rate before Form 197/LDC relief.
     Priority: use Mahindra's own "Applicable Rate" if provided,
     otherwise calculate from our own tds_sections.yaml config.
     """
@@ -379,6 +379,18 @@ def _get_applicable_rate(txn: Transaction) -> Optional[float]:
             return rate_config["others"]
 
     return None
+
+
+def _get_applicable_rate(txn: Transaction) -> Optional[float]:
+    """
+    Determines what the TDS rate SHOULD be after LDC relief, if any.
+    """
+    statutory_rate = _get_statutory_rate(txn)
+    if txn.ldc_approved_rate is not None:
+        return txn.ldc_approved_rate
+    if txn.ldc_exemption_percent is not None and statutory_rate is not None:
+        return statutory_rate * (1 - txn.ldc_exemption_percent / 100)
+    return statutory_rate
 
 
 # 194J has two legitimate rates (10% professional, 2% technical) but no
@@ -609,7 +621,7 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
         cert_rate = txn.ldc_approved_rate
         rate_text = f"approved LDC rate {cert_rate}%"
     else:
-        applicable_rate = _get_applicable_rate(txn) or 0.0
+        applicable_rate = _get_statutory_rate(txn) or 0.0
         cert_rate = applicable_rate * (1 - txn.ldc_exemption_percent / 100)
         rate_text = f"{txn.ldc_exemption_percent}% exemption"
     expected_tds = txn.basic_amount * (cert_rate / 100)

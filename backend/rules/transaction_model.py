@@ -71,6 +71,8 @@ class Transaction(BaseModel):
     tds_new_section: Optional[str] = None          # e.g. "393(1)6(i)"
     tds_deducted_rate: Optional[float] = None      # e.g. 2.0 — actual percentage
     tds_deducted_amount: Optional[float] = None    # actual ₹ deducted — not yet confirmed by Mahindra
+    withholding_tax_type: Optional[str] = None
+    withholding_tax_code: Optional[str] = None
 
     # --- LDC (Lower Deduction Certificate) — optional, only if applicable ---
     ldc_exemption_percent: Optional[float] = None

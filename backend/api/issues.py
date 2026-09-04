@@ -18,6 +18,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from core.dependencies import get_current_user, get_user_company_codes
@@ -129,6 +130,19 @@ def _normalise_section(value: str | None) -> str | None:
     return value.strip().upper().split("/")[0].strip() or None
 
 
+def _withholding_key(wtax_type: str | None, wtax_code: str | None) -> str | None:
+    tax_type = (wtax_type or "").strip().upper()
+    tax_code = (wtax_code or "").strip().upper()
+    if tax_type and tax_code:
+        return f"{tax_type}/{tax_code}"
+    return tax_code or tax_type or None
+
+
+def _looks_like_pan(value: str | None) -> bool:
+    text = (value or "").strip().upper()
+    return len(text) == 10 and text[:5].isalpha() and text[5:9].isdigit() and text[9].isalpha()
+
+
 def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
     """
     Enrich in-memory SAP transactions with the uploaded LDC master before the
@@ -138,6 +152,11 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
         return
 
     vendor_codes = {txn.vendor_code.strip() for txn in transactions if txn.vendor_code}
+    vendor_codes.update(
+        txn.vendor_pan.strip()
+        for txn in transactions
+        if txn.vendor_pan and not _looks_like_pan(txn.vendor_pan)
+    )
     vendor_pan_by_code = {
         row.vendor_code: row.vendor_pan
         for row in db.query(VendorMaster).filter(
@@ -147,15 +166,25 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
     }
 
     for txn in transactions:
-        if (not txn.vendor_pan or not txn.vendor_pan.strip()) and txn.vendor_code in vendor_pan_by_code:
+        vendor_pan = (txn.vendor_pan or "").strip()
+        if txn.vendor_code in vendor_pan_by_code and (not vendor_pan or not _looks_like_pan(vendor_pan)):
             txn.vendor_pan = vendor_pan_by_code[txn.vendor_code]
+        elif vendor_pan in vendor_pan_by_code and not _looks_like_pan(vendor_pan):
+            txn.vendor_pan = vendor_pan_by_code[vendor_pan]
 
-    pans = {txn.vendor_pan.strip().upper() for txn in transactions if txn.vendor_pan}
-    if not pans:
+    pans = {txn.vendor_pan.strip().upper() for txn in transactions if txn.vendor_pan and _looks_like_pan(txn.vendor_pan)}
+    vendor_codes = {txn.vendor_code.strip() for txn in transactions if txn.vendor_code}
+    if not pans and not vendor_codes:
         return
 
+    certificate_filters = []
+    if pans:
+        certificate_filters.append(LDCCertificateMaster.vendor_pan.in_(pans))
+    if vendor_codes:
+        certificate_filters.append(LDCCertificateMaster.vendor_code.in_(vendor_codes))
+
     certificates = db.query(LDCCertificateMaster).filter(
-        LDCCertificateMaster.vendor_pan.in_(pans),
+        or_(*certificate_filters),
         LDCCertificateMaster.status == "ACTIVE",
         LDCCertificateMaster.is_verified == True,
     ).all()
@@ -166,25 +195,48 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
         pan = (txn.vendor_pan or "").strip().upper()
         company_code = (txn.company_code or "").strip()
         expected_section = PAYMENT_TYPE_TO_SECTION.get(_normalise_payment_type(txn.transaction_kind))
+        txn_withholding_key = _withholding_key(txn.withholding_tax_type, txn.withholding_tax_code)
         txn_sections = {
             _normalise_section(expected_section),
             _normalise_section(txn.tds_applicable_section),
             _normalise_section(txn.tds_deducted_section),
             _normalise_section(txn.tds_legacy_section),
             _normalise_section(txn.tds_raw_section),
+            txn_withholding_key,
         }
         txn_sections.discard(None)
 
         scoped_matches = [
             cert for cert in certificates
-            if cert.vendor_pan == pan
+            if (cert.vendor_pan == pan or (cert.vendor_code and cert.vendor_code == txn.vendor_code))
             and (not cert.company_code or cert.company_code == company_code)
         ]
-        matches = [
-            cert for cert in scoped_matches
-            if _normalise_section(cert.applicable_tds_section) in txn_sections
-            and cert.valid_from <= txn.posting_date <= cert.valid_to
-        ]
+        if txn.vendor_code:
+            code_matches = [cert for cert in scoped_matches if cert.vendor_code == txn.vendor_code]
+            if code_matches:
+                scoped_matches = code_matches
+        if txn_withholding_key:
+            matches = [
+                cert for cert in scoped_matches
+                if cert.applicable_tds_section.strip().upper() == txn_withholding_key
+                and cert.valid_from <= txn.posting_date <= cert.valid_to
+            ]
+        else:
+            matches = [
+                cert for cert in scoped_matches
+                if (
+                    cert.applicable_tds_section.strip().upper() in txn_sections
+                    or _normalise_section(cert.applicable_tds_section) in txn_sections
+                )
+                and cert.valid_from <= txn.posting_date <= cert.valid_to
+            ]
+
+        if not matches and not txn_withholding_key:
+            date_matches = [
+                cert for cert in scoped_matches
+                if cert.valid_from <= txn.posting_date <= cert.valid_to
+            ]
+            matches = date_matches
         if not matches:
             continue
 
@@ -199,7 +251,7 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
         txn.ldc_exemption_number = cert.certificate_number
         txn.ldc_exempt_from = cert.valid_from
         txn.ldc_exempt_to = cert.valid_to
-        txn.ldc_approved_rate = float(cert.approved_tds_rate)
+        txn.ldc_exemption_percent = float(cert.approved_tds_rate)
         txn.ldc_exemption_reason = f"{cert.certificate_type} certificate from LDC master"
 
 

@@ -42,6 +42,25 @@
   line-height: 1.45;
 }
 
+.ldc-kpi-button {
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.ldc-kpi-button:hover,
+.ldc-kpi-button:focus-visible {
+  border-color: #2563EB;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), var(--shadow-sm);
+  outline: none;
+}
+
+.ldc-kpi-button.is-active {
+  border-color: #E31837;
+  box-shadow: 0 0 0 3px rgba(227, 24, 55, 0.10), var(--shadow-sm);
+}
+
 .ldc-master-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;

@@ -36,7 +36,36 @@ COLUMN_ALIASES = {
     "line_item_number": ("Line_Item", "Line_Item_Number", "BUZEI"),
     "fiscal_year": ("Fiscal_Year", "GJAHR"),
     "tds_section_code": ("TDS_Section_Code",),
-    "tds_section": ("TDS_Section", "TDSSection", "tds_section", "tds_description", "TDS_Description", "withholding_tax_type"),
+    "tds_section": ("TDS_Section", "TDSSection", "tds_section", "tds_description", "TDS_Description"),
+    "withholding_tax_type": (
+        "Withholding_Tax_Type",
+        "withholding_tax_type",
+        "withholding_tax_ty",
+        "withholding_tax_typ",
+        "withholding_tax_t",
+        "withholding_tax_type_",
+        "WTax_Type",
+        "WTaxType",
+        "WTax_Type_",
+        "WITHT",
+        "WHT_Type",
+        "WHTType",
+    ),
+    "withholding_tax_code": (
+        "Withholding_Tax_Code",
+        "withholding_tax_code",
+        "withholding_tax_cod",
+        "withholding_tax_cd",
+        "withholding_tax_c",
+        "withholding_tax_code_",
+        "WTx",
+        "WTx_Code",
+        "WTax_Code",
+        "WTaxCode",
+        "WT_WITHCD",
+        "WHT_Code",
+        "WHTCode",
+    ),
     "tds_rate": ("TDS_Rate", "TDSRate", "tds_rate"),
     "tds_amount": ("TDS_Amount", "TDSAmount", "TDS_Deducted_Amount", "Withholding_Tax_Amount"),
     "hsn_sac_code": ("HSN_SAC_Code",),
@@ -232,6 +261,10 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
 
     for row in raw_rows:
         raw_section_value = str(_get(row, "tds_section") or "").strip()
+        withholding_tax_type = str(_get(row, "withholding_tax_type") or "").strip().upper()
+        withholding_tax_code = str(_get(row, "withholding_tax_code") or "").strip().upper()
+        if not raw_section_value and withholding_tax_type and withholding_tax_code:
+            raw_section_value = f"{withholding_tax_type}/{withholding_tax_code}"
         doc_type = str(_get(row, "doc_type") or "")
         section_value, is_advance_payment = _normalise_section_and_advance(
             raw_section_value,
@@ -287,6 +320,8 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
             tds_legacy_section=section_value,
             tds_deducted_rate=rate_value,
             tds_deducted_amount=_safe_float(_get(row, "tds_amount")),
+            withholding_tax_type=withholding_tax_type or None,
+            withholding_tax_code=withholding_tax_code or None,
 
             ldc_exemption_percent=_safe_float(_get(row, "ldc_exemption_percent")),
             ldc_exempt_from=_parse_date(_get(row, "ldc_exempt_from")),
@@ -322,6 +357,10 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
         rate = _safe_float(_get(row, "tds_rate"))
 
         raw_section_text = get_tds_section_raw(row)
+        withholding_tax_type = str(_get(row, "withholding_tax_type") or "").strip().upper()
+        withholding_tax_code = str(_get(row, "withholding_tax_code") or "").strip().upper()
+        if not raw_section_text and withholding_tax_type and withholding_tax_code:
+            raw_section_text = f"{withholding_tax_type}/{withholding_tax_code}"
         old_section, parsed_rate = decode_tds_section_string(raw_section_text)
         new_section = extract_new_section_reference(raw_section_text)
         transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
@@ -387,6 +426,8 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             tds_deducted_rate=final_rate,
             tds_deducted_amount=tds_amount,
             tds_raw_amount=raw_amount,  # signed, for audit traceability
+            withholding_tax_type=withholding_tax_type or None,
+            withholding_tax_code=withholding_tax_code or None,
         )
         transactions.append(txn)
 

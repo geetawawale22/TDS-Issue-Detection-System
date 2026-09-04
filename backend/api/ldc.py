@@ -22,17 +22,12 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
 
 REQUIRED_CERTIFICATE_COLUMNS = {
-    "Certificate_Number",
-    "Certificate_Type",
     "PAN",
-    "Vendor_Name",
     "Company_Code",
-    "TDS_Section",
-    "Approved_TDS_Rate",
-    "Valid_From",
-    "Valid_To",
-    "Status",
-    "Is_Verified",
+    "Exemption_Number",
+    "Exemption_Percentage",
+    "Exemption_From",
+    "Exemption_To",
 }
 
 REQUIRED_VENDOR_COLUMNS = {"PAN", "VendorName", "VendorCode"}
@@ -52,8 +47,39 @@ def _clean_upper(value: Any) -> str:
     return _clean(value).upper()
 
 
-def _to_bool(value: Any) -> bool:
-    return _clean(value).lower() in {"true", "yes", "y", "1", "verified"}
+def _get(row: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        value = row.get(name)
+        if not _is_blank(value):
+            return value
+    return ""
+
+
+def _extract_pan(value: Any) -> str:
+    text = _clean_upper(value)
+    if len(text) == 15:
+        candidate = text[2:12]
+        if len(candidate) == 10:
+            return candidate
+    return text
+
+
+def _ldc_section_key(row: dict[str, Any]) -> str:
+    explicit_section = _clean_upper(_get(row, "TDS_Section", "Applicable_TDS_Section"))
+    if explicit_section:
+        return explicit_section
+
+    wtax_type = _clean_upper(_get(row, "WTax_Type"))
+    wtx = _clean_upper(_get(row, "WTx"))
+    if wtax_type and wtx:
+        return f"{wtax_type}/{wtx}"
+    return wtx or wtax_type
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if _is_blank(value):
+        return default
+    return _clean(value).lower() in {"true", "yes", "y", "1", "verified", "x", "active"}
 
 
 def _to_date(value: Any) -> date | None:
@@ -63,7 +89,11 @@ def _to_date(value: Any) -> date | None:
         return value.date()
     if isinstance(value, date):
         return value
-    parsed = pd.to_datetime(value, errors="coerce", dayfirst=False)
+    text = _clean(value)
+    if text.isdigit() and len(text) == 8:
+        parsed = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+    else:
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=False)
     if pd.isna(parsed):
         return None
     return parsed.date()
@@ -120,26 +150,24 @@ async def _read_frame(file: UploadFile) -> pd.DataFrame:
 
 def _validate_certificate(row: dict[str, Any], vendor_pans: set[str]) -> list[str]:
     issues: list[str] = []
-    cert_type = _clean_upper(row.get("Certificate_Type"))
-    pan = _clean_upper(row.get("PAN"))
-    rate = _to_float(row.get("Approved_TDS_Rate"))
-    valid_from = _to_date(row.get("Valid_From"))
-    valid_to = _to_date(row.get("Valid_To"))
-    status_value = _clean_upper(row.get("Status"))
+    cert_type = _clean_upper(_get(row, "Certificate_Type")) or "LOWER"
+    pan = _extract_pan(_get(row, "PAN", "Tax_Number_3", "Tax_Number_1"))
+    rate = _to_float(_get(row, "Approved_TDS_Rate", "Exemption_Percentage"))
+    valid_from = _to_date(_get(row, "Valid_From", "Exemption_From"))
+    valid_to = _to_date(_get(row, "Valid_To", "Exemption_To"))
+    status_value = _clean_upper(_get(row, "Status")) or "ACTIVE"
 
-    if not _clean(row.get("Certificate_Number")):
+    if not _clean(_get(row, "Certificate_Number", "Exemption_Number")):
         issues.append("Certificate number missing")
     if cert_type not in {"LOWER", "NIL"}:
         issues.append("Certificate type must be LOWER or NIL")
     if not pan:
         issues.append("PAN missing")
-    elif pan not in vendor_pans:
-        issues.append("PAN not found in vendor master")
-    if not _clean(row.get("Vendor_Name")):
+    if not _clean(_get(row, "Vendor_Name", "Supplier_Name", "Supplier")):
         issues.append("Vendor name missing")
-    if not _clean(row.get("Company_Code")):
+    if not _clean(_get(row, "Company_Code")):
         issues.append("Company code missing")
-    if not _clean(row.get("TDS_Section")):
+    if not _ldc_section_key(row):
         issues.append("TDS section missing")
     if rate is None:
         issues.append("Approved TDS rate missing/invalid")
@@ -155,10 +183,8 @@ def _validate_certificate(row: dict[str, Any], vendor_pans: set[str]) -> list[st
         issues.append("Valid From is after Valid To")
     if status_value != "ACTIVE":
         issues.append("Certificate status is not ACTIVE")
-    if not _to_bool(row.get("Is_Verified")):
+    if not _to_bool(_get(row, "Is_Verified", "W_Tax"), default=True):
         issues.append("Certificate not verified")
-    if _to_float(row.get("Approved_Amount_Limit")) is None:
-        issues.append("Approved amount limit missing/invalid")
     if _to_bool(row.get("Is_Child_Certificate")) and not _clean(row.get("Parent_Certificate_Number")):
         issues.append("Child certificate missing parent certificate")
 
@@ -230,6 +256,7 @@ def list_ldc_certificates(
                 "certificateNumber": row.certificate_number,
                 "certificateType": row.certificate_type,
                 "pan": row.vendor_pan,
+                "vendorCode": row.vendor_code,
                 "vendorName": row.vendor_name,
                 "companyCode": row.company_code,
                 "deductorTan": row.deductor_tan,
@@ -270,35 +297,74 @@ async def upload_ldc_certificates(
     updated = 0
     issue_rows = []
     certificate_rows = []
+    staged_vendor_codes: set[str] = set()
 
     for index, row in frame.iterrows():
         row_dict = row.to_dict()
         row_number = int(index) + 2
         issues = _validate_certificate(row_dict, vendor_pans)
 
-        cert_number = _clean(row.get("Certificate_Number"))
-        pan = _clean_upper(row.get("PAN"))
-        company_code = _clean(row.get("Company_Code")) or None
-        deductor_tan = _clean_upper(row.get("Deductor_TAN")) or None
-        section = _clean_upper(row.get("TDS_Section"))
+        cert_number = _clean(_get(row_dict, "Certificate_Number", "Exemption_Number"))
+        pan = _extract_pan(_get(row_dict, "PAN", "Tax_Number_3", "Tax_Number_1"))
+        vendor_code = _clean(_get(row_dict, "Vendor_Code", "Supplier"))
+        vendor_name = _clean(_get(row_dict, "Vendor_Name", "Supplier_Name", "Supplier"))
+        company_code = _clean(_get(row_dict, "Company_Code")) or None
+        deductor_tan = _clean_upper(_get(row_dict, "Deductor_TAN")) or None
+        section = _ldc_section_key(row_dict)
+        certificate_type = _clean_upper(_get(row_dict, "Certificate_Type")) or "LOWER"
+        status_value = _clean_upper(_get(row_dict, "Status")) or "ACTIVE"
+        approved_rate = _to_float(_get(row_dict, "Approved_TDS_Rate", "Exemption_Percentage"))
 
         certificate_rows.append({
             "rowNumber": row_number,
             "certificateNumber": cert_number,
             "pan": pan,
-            "vendorName": _clean(row.get("Vendor_Name")),
+            "vendorName": vendor_name,
             "companyCode": company_code,
             "deductorTan": deductor_tan,
             "section": section,
-            "approvedRate": _to_float(row.get("Approved_TDS_Rate")),
-            "status": _clean_upper(row.get("Status")),
-            "isVerified": _to_bool(row.get("Is_Verified")),
+            "approvedRate": approved_rate,
+            "status": status_value,
+            "isVerified": _to_bool(_get(row_dict, "Is_Verified", "W_Tax"), default=True),
             "issues": issues,
         })
 
-        if issues:
+        persist_blockers = []
+        if not cert_number:
+            persist_blockers.append("Certificate number missing")
+        if not pan:
+            persist_blockers.append("PAN missing")
+        if not section:
+            persist_blockers.append("TDS section missing")
+        if approved_rate is None:
+            persist_blockers.append("Approved TDS rate missing/invalid")
+        if _to_date(_get(row_dict, "Valid_From", "Exemption_From")) is None:
+            persist_blockers.append("Valid From date missing/invalid")
+        if _to_date(_get(row_dict, "Valid_To", "Exemption_To")) is None:
+            persist_blockers.append("Valid To date missing/invalid")
+
+        if persist_blockers:
+            certificate_rows[-1]["issues"] = sorted(set(issues + persist_blockers))
             issue_rows.append(certificate_rows[-1])
             continue
+
+        if issues:
+            issue_rows.append(certificate_rows[-1])
+
+        if vendor_code and pan and vendor_name and vendor_code not in staged_vendor_codes:
+            existing_vendor = db.query(VendorMaster).filter(VendorMaster.vendor_code == vendor_code).first()
+            if existing_vendor:
+                existing_vendor.vendor_name = vendor_name
+                existing_vendor.vendor_pan = pan
+                existing_vendor.is_active = True
+            else:
+                db.add(VendorMaster(
+                    vendor_code=vendor_code,
+                    vendor_name=vendor_name,
+                    vendor_pan=pan,
+                    is_active=True,
+                ))
+            staged_vendor_codes.add(vendor_code)
 
         existing = db.query(LDCCertificateMaster).filter(
             LDCCertificateMaster.certificate_number == cert_number,
@@ -308,20 +374,21 @@ async def upload_ldc_certificates(
         ).first()
 
         values = {
-            "certificate_type": _clean_upper(row.get("Certificate_Type")),
-            "vendor_name": _clean(row.get("Vendor_Name")),
+            "certificate_type": certificate_type,
+            "vendor_code": vendor_code or None,
+            "vendor_name": vendor_name,
             "company_code": company_code,
-            "approved_tds_rate": _to_float(row.get("Approved_TDS_Rate")),
-            "valid_from": _to_date(row.get("Valid_From")),
-            "valid_to": _to_date(row.get("Valid_To")),
-            "tax_year": _clean(row.get("Tax_Year")) or None,
-            "approved_amount_limit": _to_float(row.get("Approved_Amount_Limit")),
-            "status": _clean_upper(row.get("Status")),
-            "is_verified": _to_bool(row.get("Is_Verified")),
-            "last_verified_date": _to_date(row.get("Last_Verified_Date")),
-            "parent_certificate_number": _clean(row.get("Parent_Certificate_Number")) or None,
-            "is_child_certificate": _to_bool(row.get("Is_Child_Certificate")),
-            "remarks": _clean(row.get("Remarks")) or None,
+            "approved_tds_rate": approved_rate,
+            "valid_from": _to_date(_get(row_dict, "Valid_From", "Exemption_From")),
+            "valid_to": _to_date(_get(row_dict, "Valid_To", "Exemption_To")),
+            "tax_year": _clean(_get(row_dict, "Tax_Year")) or None,
+            "approved_amount_limit": _to_float(_get(row_dict, "Approved_Amount_Limit")),
+            "status": status_value,
+            "is_verified": _to_bool(_get(row_dict, "Is_Verified", "W_Tax"), default=True),
+            "last_verified_date": _to_date(_get(row_dict, "Last_Verified_Date")),
+            "parent_certificate_number": _clean(_get(row_dict, "Parent_Certificate_Number")) or None,
+            "is_child_certificate": _to_bool(_get(row_dict, "Is_Child_Certificate")),
+            "remarks": _clean(_get(row_dict, "Remarks", "Exemption_Reason")) or None,
         }
 
         if existing:

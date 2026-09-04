@@ -32,7 +32,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("vendor_master_pkey")),
     )
     op.create_index(op.f("ix_vendor_master_id"), "vendor_master", ["id"], unique=False)
-    op.create_index(op.f("ix_vendor_master_vendor_code"), "vendor_master", ["vendor_code"], unique=True)
+    op.create_index(op.f("ix_vendor_master_vendor_code"), "vendor_master", ["vendor_code"], unique=False)
     op.create_index(op.f("ix_vendor_master_vendor_pan"), "vendor_master", ["vendor_pan"], unique=False)
 
     op.bulk_insert(

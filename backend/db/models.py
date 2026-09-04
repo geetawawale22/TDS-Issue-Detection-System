@@ -103,7 +103,7 @@ class VendorMaster(Base):
     __tablename__ = "vendor_master"
 
     id = Column(Integer, primary_key=True, index=True)
-    vendor_code = Column(String(50), nullable=False, unique=True, index=True)
+    vendor_code = Column(String(50), nullable=False, index=True)
     vendor_name = Column(String(255), nullable=False)
     vendor_pan = Column(String(20), nullable=False, index=True)
     is_active = Column(Boolean, default=True)
@@ -135,6 +135,7 @@ class LDCCertificateMaster(Base):
     certificate_number = Column(String(100), nullable=False, index=True)
     certificate_type = Column(String(20), nullable=False)
     vendor_pan = Column(String(20), nullable=False, index=True)
+    vendor_code = Column(String(50), nullable=True, index=True)
     vendor_name = Column(String(255), nullable=True)
 
     company_code = Column(String(10), nullable=True, index=True)
