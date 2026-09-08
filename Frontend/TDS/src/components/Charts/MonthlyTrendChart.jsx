@@ -1,14 +1,41 @@
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from 'recharts'
 import { useSelector } from 'react-redux'
+import { useNavigate } from 'react-router-dom'
 import { selectMonthlyTrend } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
-export default function MonthlyTrendChart() {
+export default function MonthlyTrendChart({ onMonthClick }) {
   const data = useSelector(selectMonthlyTrend)
+  const navigate = useNavigate()
+
+  function openMonth(point) {
+    if (point?.monthKey) {
+      if (onMonthClick) onMonthClick(point)
+      else navigate(`/issues?view=issue&month=${point.monthKey}`)
+    }
+  }
+
+  function renderTooltip({ active, payload }) {
+    const point = payload?.[0]?.payload
+    if (!active || !point) return null
+    return (
+      <div className="monthly-trend-tooltip">
+        <div className="monthly-trend-tooltip-month">{point.month}</div>
+        <div className="monthly-trend-tooltip-value monthly-trend-tooltip-value--issues">Issues: {point.issues}</div>
+        <div className="monthly-trend-tooltip-value monthly-trend-tooltip-value--resolved">Resolved: {point.resolved}</div>
+        <button type="button" className="monthly-trend-tooltip-action" onClick={() => openMonth(point)}>
+          Open month issues
+        </button>
+      </div>
+    )
+  }
 
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <AreaChart data={data} margin={{ top: 2, right: 4, left: -20, bottom: 0 }}>
+      <AreaChart
+        data={data}
+        margin={{ top: 2, right: 4, left: -20, bottom: 0 }}
+      >
         <defs>
           <linearGradient id="issueGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="#E01330" stopOpacity={0.15} />
@@ -22,10 +49,10 @@ export default function MonthlyTrendChart() {
         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
         <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#64748B' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false} />
         <YAxis tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />
-        <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12, padding: '6px 10px' }} cursor={{ stroke: '#E5E7EB' }} />
+        <Tooltip content={renderTooltip} cursor={{ stroke: '#E5E7EB' }} />
         <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ fontSize: 11, color: '#64748B' }}>{v}</span>} />
-        <Area type="monotone" dataKey="issues" stroke="#E01330" strokeWidth={2} fill="url(#issueGrad)" dot={false} name="Issues" />
-        <Area type="monotone" dataKey="resolved" stroke="#10B981" strokeWidth={2} fill="url(#resolvedGrad)" dot={false} name="Resolved" />
+        <Area type="monotone" dataKey="issues" stroke="#E01330" strokeWidth={2} fill="url(#issueGrad)" name="Issues" dot={false} />
+        <Area type="monotone" dataKey="resolved" stroke="#10B981" strokeWidth={2} fill="url(#resolvedGrad)" name="Resolved" dot={false} />
       </AreaChart>
     </ResponsiveContainer>
   )

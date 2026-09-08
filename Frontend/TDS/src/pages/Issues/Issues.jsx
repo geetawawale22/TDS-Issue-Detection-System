@@ -89,6 +89,14 @@ export default function Issues() {
   const activeValidationRows = useSelector(selectActiveValidationRows)
   const vendorNames = useSelector(selectActiveVendors)
   const sections = useSelector(selectActiveSections)
+  const monthFilter = searchParams.get('month')
+
+  function rowMonth(value) {
+    if (!value) return null
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return null
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  }
 
   useEffect(() => {
     const view = searchParams.get('view')
@@ -146,6 +154,7 @@ export default function Issues() {
   }
 
   const filtered = useMemo(() => issues.filter((issue) => {
+    if (monthFilter && rowMonth(issue.date) !== monthFilter) return false
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       if (
@@ -163,7 +172,7 @@ export default function Issues() {
     if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
     if (issueTypeFilter !== 'all' && !issueTypeFilter.split(MULTI_CATEGORY_DELIMITER).includes(getDisplayIssueType(issue))) return false
     return true
-  }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
+  }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
 
@@ -330,9 +339,21 @@ export default function Issues() {
   // row) — Severity/Issue Type/Status stay issue-table-only since a passed,
   // insufficient-data, or skipped row has neither a severity nor a category.
   const validationTableRows = useMemo(() => {
+    if (validationView === 'issue') {
+      return filtered.map((issue, index) => ({
+        ...issue,
+        id: `issue-${index}-${issue.id || issue.docNo || 'row'}`,
+        issueId: issue.id,
+        status: 'issue',
+        issueTypeLabel: getDisplayIssueType(issue),
+      }))
+    }
+
     const issueByDoc = new Map(issues.map((issue) => [String(issue.docNo ?? ''), issue]))
     return adjustedValidationRows
       .filter((row) => {
+        const matchingIssue = issueByDoc.get(String(row.docNo ?? ''))
+        if (monthFilter && rowMonth(row.date || matchingIssue?.date) !== monthFilter) return false
         if (validationView !== 'all' && row.status !== validationView) return false
         if (searchQuery) {
           const q = searchQuery.toLowerCase()
@@ -347,7 +368,6 @@ export default function Issues() {
         if (vendorFilter  !== 'all' && row.vendor  !== vendorFilter)  return false
         if (sectionFilter !== 'all' && row.section !== sectionFilter) return false
         if (validationView === 'issue') {
-          const matchingIssue = issueByDoc.get(String(row.docNo ?? ''))
           if (severityFilter !== 'all' && matchingIssue?.severity !== severityFilter) return false
           if (statusFilter !== 'all' && matchingIssue?.status !== statusFilter) return false
           if (issueTypeFilter !== 'all' && (!matchingIssue || !issueTypeFilter.split(MULTI_CATEGORY_DELIMITER).includes(getDisplayIssueType(matchingIssue)))) return false
@@ -364,7 +384,7 @@ export default function Issues() {
           issueTypeLabel: matchingIssue ? getDisplayIssueType(matchingIssue) : null,
         }
       })
-  }, [adjustedValidationRows, issues, validationView, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
+  }, [adjustedValidationRows, issues, filtered, validationView, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
 
   return (
     <div>

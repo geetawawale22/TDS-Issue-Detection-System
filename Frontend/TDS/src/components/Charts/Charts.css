@@ -53,3 +53,28 @@
   color: var(--color-text-muted);
   font-size: 12px;
 }
+.monthly-trend-tooltip {
+  min-width: 128px;
+  padding: 8px 10px;
+  border: 1px solid #E5E7EB;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
+}
+
+.monthly-trend-tooltip-month { margin-bottom: 6px; font-weight: 600; color: #334155; }
+.monthly-trend-tooltip-value { line-height: 1.7; }
+.monthly-trend-tooltip-value--issues { color: #E01330; }
+.monthly-trend-tooltip-value--resolved { color: #10B981; }
+.monthly-trend-tooltip-action {
+  margin-top: 6px;
+  padding: 4px 7px;
+  border: 1px solid #E5E7EB;
+  border-radius: 5px;
+  background: #fff;
+  color: #334155;
+  font-size: 11px;
+  cursor: pointer;
+}
+.monthly-trend-tooltip-action:hover { background: #F8FAFC; }

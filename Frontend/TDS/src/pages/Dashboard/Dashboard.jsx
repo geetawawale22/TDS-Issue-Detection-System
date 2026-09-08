@@ -1,24 +1,39 @@
-import { useSelector } from 'react-redux'
+import { useMemo, useState } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, AlertOctagon, AlertTriangle, CheckCircle2,
-  Clock, FileSearch, RefreshCw, Database, CalendarDays, ArrowUp, ArrowDown,
+  Clock, FileSearch, RefreshCw, Database, CalendarDays, ArrowUp, ArrowDown, X,
 } from 'lucide-react'
 import IssuesByTypeChart from '@/components/Charts/IssuesByTypeChart'
 import SectionComplianceChart from '@/components/Charts/SectionComplianceChart'
 import MonthlyTrendChart from '@/components/Charts/MonthlyTrendChart'
 import TopVendorsChart from '@/components/Charts/TopVendorsChart'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
-import { selectDashboardKpis, selectIsLive } from '@/redux/slices/issuesSlice'
+import IssueDrawer from '@/components/Common/IssueDrawer'
+import { closeDrawer, openDrawer, selectActiveIssues, selectDashboardKpis, selectIsLive } from '@/redux/slices/issuesSlice'
 import '@/components/Common/Common.css'
 import './Dashboard.css'
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const dispatch = useDispatch()
+  const [selectedMonth, setSelectedMonth] = useState(null)
   const { financialYear, lastSyncTime, dataSource } = useSelector((s) => s.app)
   const firstName = useSelector((s) => s.auth.user?.name?.split(' ')[0]) ?? 'there'
   const kpisLive = useSelector(selectDashboardKpis)
   const isLive = useSelector(selectIsLive)
+  const issues = useSelector(selectActiveIssues)
+  const selectedIssueId = useSelector((s) => s.issues.selectedIssueId)
+  const drawerOpen = useSelector((s) => s.issues.drawerOpen)
+  const selectedIssue = issues.find((issue) => issue.id === selectedIssueId) ?? null
+  const monthIssues = useMemo(() => selectedMonth
+    ? issues.filter((issue) => {
+      const date = new Date(issue.date)
+      if (Number.isNaN(date.getTime())) return false
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` === selectedMonth.monthKey
+    })
+    : [], [issues, selectedMonth])
 
   const kpis = [
     {
@@ -186,7 +201,40 @@ export default function Dashboard() {
               </p>
             </div>
           </div>
-          <MonthlyTrendChart />
+          <MonthlyTrendChart onMonthClick={setSelectedMonth} />
+          {selectedMonth && (
+            <div className="dashboard-month-drilldown">
+              <div className="dashboard-month-drilldown-header">
+                <div>
+                  <p className="chart-title">Issues in {selectedMonth.month}</p>
+                  <p className="chart-subtitle">{monthIssues.length.toLocaleString()} issues found in this posting month</p>
+                </div>
+                <button className="btn-icon" type="button" onClick={() => setSelectedMonth(null)} aria-label="Close month issues">
+                  <X size={15} />
+                </button>
+              </div>
+              <div className="dashboard-month-issue-list">
+                {monthIssues.length ? (
+                  <>
+                    <div className="dashboard-month-issue-header" aria-hidden="true">
+                      <span>Document No.</span>
+                      <span>Vendor</span>
+                      <span>Issue Type</span>
+                      <span>Action</span>
+                    </div>
+                    {monthIssues.map((issue) => (
+                      <button key={issue.id} type="button" className="dashboard-month-issue-row" onClick={() => dispatch(openDrawer(issue.id))}>
+                        <span className="font-mono">{issue.docNo || issue.id}</span>
+                        <span>{issue.vendor}</span>
+                        <span className="dashboard-month-issue-category">{issue.category || 'Issue'}</span>
+                        <span className="dashboard-month-issue-review">Review</span>
+                      </button>
+                    ))}
+                  </>
+                ) : <div className="empty-state-desc">No issue records are available for this month.</div>}
+              </div>
+            </div>
+          )}
         </div>
         <div className="chart-card">
           <div className="chart-card-header">
@@ -200,6 +248,7 @@ export default function Dashboard() {
           <TopVendorsChart />
         </div>
       </div>
+      <IssueDrawer issue={selectedIssue} open={drawerOpen} onClose={() => dispatch(closeDrawer())} />
     </div>
   )
 }

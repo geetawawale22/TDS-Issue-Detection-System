@@ -372,7 +372,6 @@ export default function VendorLedger() {
             columns={transactionColumns}
             data={selectedTransactions}
             pageSize={50}
-            showFloatingPager
             renderPreHeaderCell={(column) => {
               if (column.key === 'baseAmount') {
                 return (
@@ -449,7 +448,6 @@ export default function VendorLedger() {
           columns={panColumns}
           data={filteredPanGroups}
           pageSize={50}
-          showFloatingPager
           onRowClick={(row) => navigate(`/vendor-ledger/${encodeURIComponent(row.ledgerKey)}`)}
           emptyState={(
             <div className="empty-state">

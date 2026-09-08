@@ -303,16 +303,17 @@ export function deriveMonthlyTrend(issues) {
     const d = new Date(issue.date)
     if (Number.isNaN(d.getTime())) continue
     const label = d.toLocaleString('en-IN', { month: 'short' })
-    if (!byMonth.has(label)) byMonth.set(label, { month: label, issues: 0, resolved: 0, _order: d.getMonth() })
-    const row = byMonth.get(label)
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    if (!byMonth.has(monthKey)) byMonth.set(monthKey, { month: label, monthKey, issues: 0, resolved: 0, _order: d.getMonth() })
+    const row = byMonth.get(monthKey)
     row.issues += 1
     if (issue.status === 'resolved') row.resolved += 1
   }
   const rows = [...byMonth.values()].sort((a, b) => a._order - b._order)
   if (rows.length === 0) {
-    return [{ month: 'Current', issues: issues.length, resolved: issues.filter((i) => i.status === 'resolved').length }]
+    return [{ month: 'Current', monthKey: null, issues: issues.length, resolved: issues.filter((i) => i.status === 'resolved').length }]
   }
-  return rows.map(({ month, issues: iss, resolved }) => ({ month, issues: iss, resolved }))
+  return rows.map(({ month, monthKey, issues: iss, resolved }) => ({ month, monthKey, issues: iss, resolved }))
 }
 
 /** Month-on-month totals with severity mix and % change vs. the prior month. */

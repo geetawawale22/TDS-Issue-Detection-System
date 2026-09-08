@@ -105,31 +105,11 @@ function ldcSectionKey(normalized) {
   return wtx || wtaxType
 }
 
-function serializeRowsForStorage(rowsToStore) {
-  return rowsToStore.map((row) => ({
-    ...row,
-    validFrom: row.validFrom instanceof Date ? row.validFrom.toISOString() : row.validFrom,
-    validTo: row.validTo instanceof Date ? row.validTo.toISOString() : row.validTo,
-    lastVerifiedDate: row.lastVerifiedDate instanceof Date ? row.lastVerifiedDate.toISOString() : row.lastVerifiedDate,
-  }))
-}
-
 function restoreRowsFromStorage() {
-  try {
-    const stored = JSON.parse(window.localStorage.getItem(LDC_TEMP_STORAGE_KEY) || '[]')
-    return stored.map((row, index) => ({
-      ...row,
-      id: row.id || `temp-ldc-${index}`,
-      validFrom: parseDateValue(row.validFrom),
-      validTo: parseDateValue(row.validTo),
-      lastVerifiedDate: parseDateValue(row.lastVerifiedDate),
-      issues: row.issues ?? [],
-      vendorCodes: row.vendorCodes ?? [],
-      validationStatus: row.validationStatus || ((row.issues ?? []).length ? 'Issue' : 'Valid'),
-    }))
-  } catch {
-    return []
-  }
+  // The backend is the source of truth for saved certificates. Older builds
+  // stored the complete upload here, which can exceed the browser quota.
+  try { window.localStorage.removeItem(LDC_TEMP_STORAGE_KEY) } catch { /* storage may be unavailable */ }
+  return []
 }
 
 function uploadSummary(uploadResult, rowCount) {
@@ -321,7 +301,9 @@ export default function LDCCompliance() {
         }
       })
       setRows(mergedRows)
-      window.localStorage.setItem(LDC_TEMP_STORAGE_KEY, JSON.stringify(serializeRowsForStorage(mergedRows)))
+      // Do not cache the full certificate master in localStorage. The backend
+      // persists this upload and the saved-list endpoint restores it on load.
+      try { window.localStorage.removeItem(LDC_TEMP_STORAGE_KEY) } catch { /* storage may be unavailable */ }
       setUploadResult(result)
       setFileName(file.name)
       toast.success(`LDC file saved. ${result.inserted} inserted, ${result.updated} updated.`)
