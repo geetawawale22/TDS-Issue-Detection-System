@@ -1,12 +1,13 @@
 import os
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from dotenv import load_dotenv
 import secrets
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")

@@ -2,10 +2,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Create backend/.env with "
+        "DATABASE_URL=postgresql://<user>:<password>@localhost:5432/<dbname>"
+    )
 
 # Engine is the actual connection to PostgreSQL
 # pool_size=10 means 10 connections stay open (handles concurrent requests)
