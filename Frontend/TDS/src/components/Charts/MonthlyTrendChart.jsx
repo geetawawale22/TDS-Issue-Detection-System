@@ -1,4 +1,5 @@
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from 'recharts'
+import { useState } from 'react'
 import { useSelector } from 'react-redux'
 import { useNavigate } from 'react-router-dom'
 import { selectMonthlyTrend } from '@/redux/slices/issuesSlice'
@@ -7,6 +8,7 @@ import './Charts.css'
 export default function MonthlyTrendChart({ onMonthClick }) {
   const data = useSelector(selectMonthlyTrend)
   const navigate = useNavigate()
+  const [hoveredIndex, setHoveredIndex] = useState(null)
 
   function openMonth(point) {
     if (point?.monthKey) {
@@ -35,6 +37,13 @@ export default function MonthlyTrendChart({ onMonthClick }) {
       <AreaChart
         data={data}
         margin={{ top: 2, right: 4, left: -20, bottom: 0 }}
+        onMouseMove={(state) => {
+          if (Number.isInteger(state?.activeTooltipIndex)) setHoveredIndex(state.activeTooltipIndex)
+        }}
+        onClick={(state) => {
+          const index = Number.isInteger(state?.activeTooltipIndex) ? state.activeTooltipIndex : hoveredIndex
+          if (Number.isInteger(index)) openMonth(data[index])
+        }}
       >
         <defs>
           <linearGradient id="issueGrad" x1="0" y1="0" x2="0" y2="1">
