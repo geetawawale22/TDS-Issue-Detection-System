@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import { useSearchParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
-  AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash,
+  Activity, AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
@@ -31,6 +32,13 @@ const DEFAULT_SECTION_RATES = {
   '194C': 1,
   '194H': 5,
   '194Q': 0.1,
+}
+const VIEW_LABELS = {
+  all: 'All Transactions',
+  issue: 'Issues Found',
+  passed: 'Passed',
+  insufficient: 'Insufficient Data',
+  skipped: 'Skipped',
 }
 
 function inferRateFromAmount(baseAmount, tdsAmount) {
@@ -69,7 +77,8 @@ function SectionCell({ issue }) {
 
 export default function Issues() {
   const dispatch = useDispatch()
-  const [validationView, setValidationView] = useState('issue')
+  const [searchParams] = useSearchParams()
+  const [validationView, setValidationView] = useState('all')
   const [reviewValidationRow, setReviewValidationRow] = useState(null)
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
@@ -80,6 +89,21 @@ export default function Issues() {
   const activeValidationRows = useSelector(selectActiveValidationRows)
   const vendorNames = useSelector(selectActiveVendors)
   const sections = useSelector(selectActiveSections)
+
+  useEffect(() => {
+    const view = searchParams.get('view')
+    const severity = searchParams.get('severity')
+    const status = searchParams.get('status')
+
+    dispatch(resetFilters())
+    if (['all', 'issue', 'passed', 'insufficient', 'skipped'].includes(view)) {
+      setValidationView(view)
+    } else {
+      setValidationView('all')
+    }
+    if (severity) dispatch(setSeverityFilter(severity))
+    if (status) dispatch(setStatusFilter(status))
+  }, [dispatch, searchParams])
 
   // PAN is verified for every vendor in the loaded issue set at once, not
   // per-issue (see IssueDrawer, which just displays the result) — this
@@ -193,8 +217,9 @@ export default function Issues() {
   // attributed to a company or date either) — that count always reflects the
   // whole upload, read straight from the backend stat.
   const summary = useMemo(() => {
-    if (!uploadMeta) return { passedRows: 0, issueRows: issues.length, insufficientDataRows: 0, skippedRows: 0 }
+    if (!uploadMeta) return { totalRows: issues.length, passedRows: 0, issueRows: issues.length, insufficientDataRows: 0, skippedRows: 0 }
     return {
+      totalRows: adjustedValidationRows.length + (uploadMeta.stats?.rowsSkipped ?? 0),
       passedRows: adjustedValidationRows.filter((r) => r.status === 'passed').length,
       issueRows: adjustedValidationRows.filter((r) => r.status === 'issue').length,
       insufficientDataRows: adjustedValidationRows.filter((r) => r.status === 'insufficient').length,
@@ -210,6 +235,7 @@ export default function Issues() {
   function handleExportKpi(kind) {
     const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
     const exportSpec = {
+      all: { rows: adjustedValidationRows, columns: VALIDATION_CSV_COLUMNS, suffix: 'all-transactions' },
       passed: { rows: adjustedValidationRows.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
       issue: { rows: issues, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
       insufficient: { rows: adjustedValidationRows.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
@@ -260,9 +286,10 @@ export default function Issues() {
     )},
   ]
 
-  const validationColumns = [
+  const transactionColumns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
     { key: 'docNo', header: 'Doc No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span> },
+    { key: 'poNo', header: 'PO No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.poNo || r.poNumber || '-'}</span> },
     { key: 'vendor', header: 'Vendor', render: (r) => (
       <div>
         <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
@@ -272,6 +299,12 @@ export default function Issues() {
     { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
     { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
+    { key: 'status', header: 'Status', render: (r) => (
+      <StatusBadge
+        label={r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)}
+        tone={r.status === 'passed' ? 'success' : r.status === 'insufficient' ? 'warning' : r.status === 'issue' ? 'danger' : 'default'}
+      />
+    )},
     { header: '', render: (r) => (
       r.status === 'passed'
         ? (
@@ -283,6 +316,12 @@ export default function Issues() {
             Review
           </button>
         )
+        : r.status === 'issue' && r.issueId
+          ? (
+            <button className="issues-review-btn" type="button" onClick={() => dispatch(openDrawer(r.issueId))}>
+              Review
+            </button>
+          )
         : null
     )},
   ]
@@ -291,10 +330,10 @@ export default function Issues() {
   // row) — Severity/Issue Type/Status stay issue-table-only since a passed,
   // insufficient-data, or skipped row has neither a severity nor a category.
   const validationTableRows = useMemo(() => {
-    if (validationView === 'issue') return []
+    const issueByDoc = new Map(issues.map((issue) => [String(issue.docNo ?? ''), issue]))
     return adjustedValidationRows
       .filter((row) => {
-        if (row.status !== validationView) return false
+        if (validationView !== 'all' && row.status !== validationView) return false
         if (searchQuery) {
           const q = searchQuery.toLowerCase()
           if (
@@ -307,10 +346,25 @@ export default function Issues() {
         }
         if (vendorFilter  !== 'all' && row.vendor  !== vendorFilter)  return false
         if (sectionFilter !== 'all' && row.section !== sectionFilter) return false
+        if (validationView === 'issue') {
+          const matchingIssue = issueByDoc.get(String(row.docNo ?? ''))
+          if (severityFilter !== 'all' && matchingIssue?.severity !== severityFilter) return false
+          if (statusFilter !== 'all' && matchingIssue?.status !== statusFilter) return false
+          if (issueTypeFilter !== 'all' && (!matchingIssue || !issueTypeFilter.split(MULTI_CATEGORY_DELIMITER).includes(getDisplayIssueType(matchingIssue)))) return false
+        }
         return true
       })
-      .map((row, index) => ({ ...row, id: `${validationView}-${index}-${row.id || row.docNo || 'row'}` }))
-  }, [adjustedValidationRows, validationView, searchQuery, vendorFilter, sectionFilter])
+      .map((row, index) => {
+        const matchingIssue = issueByDoc.get(String(row.docNo ?? ''))
+        return {
+          ...row,
+          id: `${validationView}-${index}-${row.id || row.docNo || 'row'}`,
+          issueId: matchingIssue?.id,
+          severity: matchingIssue?.severity,
+          issueTypeLabel: matchingIssue ? getDisplayIssueType(matchingIssue) : null,
+        }
+      })
+  }, [adjustedValidationRows, issues, validationView, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter])
 
   return (
     <div>
@@ -336,8 +390,26 @@ export default function Issues() {
 
       <SapUploadPanel />
 
-      {/* Summary strip */}
-      <div className="issues-summary-grid">
+      <div className="issues-summary-grid issues-summary-grid--five">
+        <div className={`issues-summary-card issues-summary-card--info ${validationView === 'all' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('all')}>
+            <Activity size={16} />
+            <div>
+              <div className="issues-summary-value">{summary.totalRows.toLocaleString()}</div>
+              <div className="issues-summary-label">Transactions</div>
+            </div>
+          </button>
+          {summary.totalRows > 0 && (
+            <button
+              className="issues-summary-card-download"
+              type="button"
+              title="Download CSV of all transaction rows"
+              onClick={(e) => { e.stopPropagation(); handleExportKpi('all') }}
+            >
+              <Download size={12} />
+            </button>
+          )}
+        </div>
         <div className={`issues-summary-card issues-summary-card--success ${validationView === 'passed' ? 'issues-summary-card--active' : ''}`}>
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed')}>
             <CheckCircle2 size={16} />
@@ -466,43 +538,23 @@ export default function Issues() {
 
       <div className="table-card">
         <div className="issues-count-label">
-          {validationView === 'issue'
-            ? `Showing ${filtered.length.toLocaleString()} issue${filtered.length === 1 ? '' : 's'}`
-            : `Showing ${validationTableRows.length.toLocaleString()} ${validationView} row${validationTableRows.length === 1 ? '' : 's'}`}
+          {`Showing ${validationTableRows.length.toLocaleString()} ${VIEW_LABELS[validationView] || 'rows'} row${validationTableRows.length === 1 ? '' : 's'}`}
           {dataSource === 'upload' ? ' from SAP upload' : ' awaiting SAP upload'}
         </div>
-        {validationView === 'issue' ? (
-          <DataTable
-            key="issue-table"
-            columns={columns}
-            data={filtered}
-            pageSize={50}
-            showFloatingPager
-            emptyState={
-              <div className="empty-state">
-                <div className="empty-state-icon"><FileSearch size={20} /></div>
-                <div className="empty-state-title">No issues match your filters</div>
-                <div className="empty-state-desc">Try adjusting your search or filter criteria.</div>
-                <button className="btn btn-outline btn-sm" onClick={() => dispatch(resetFilters())}>Reset Filters</button>
-              </div>
-            }
-          />
-        ) : (
-          <DataTable
-            key={`validation-table-${validationView}`}
-            columns={validationColumns}
-            data={validationTableRows}
-            pageSize={50}
-            showFloatingPager
-            emptyState={
-              <div className="empty-state">
-                <div className="empty-state-icon"><FileSearch size={20} /></div>
-                <div className="empty-state-title">No rows in this bucket</div>
-                <div className="empty-state-desc">This validation category has no rows in the latest SAP upload.</div>
-              </div>
-            }
-          />
-        )}
+        <DataTable
+          key={`validation-table-${validationView}`}
+          columns={transactionColumns}
+          data={validationTableRows}
+          pageSize={50}
+          emptyState={
+            <div className="empty-state">
+              <div className="empty-state-icon"><FileSearch size={20} /></div>
+              <div className="empty-state-title">No rows match your filters</div>
+              <div className="empty-state-desc">Try adjusting your search or filter criteria.</div>
+              <button className="btn btn-outline btn-sm" onClick={() => dispatch(resetFilters())}>Reset Filters</button>
+            </div>
+          }
+        />
       </div>
 
       <IssueDrawer

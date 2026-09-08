@@ -5,3 +5,51 @@
   padding: 6px 10px !important;
   font-family: var(--font-sans) !important;
 }
+
+.section-compliance-list {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  min-height: 200px;
+}
+
+.section-compliance-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-compliance-label {
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.section-compliance-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #FEF2F2;
+}
+
+.section-compliance-bar {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.section-compliance-count {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.section-compliance-empty {
+  display: grid;
+  min-height: 200px;
+  place-items: center;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}

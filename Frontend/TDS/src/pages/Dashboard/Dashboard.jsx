@@ -1,20 +1,20 @@
 import { useSelector } from 'react-redux'
+import { useNavigate } from 'react-router-dom'
 import {
   Activity, AlertOctagon, AlertTriangle, CheckCircle2,
   Clock, FileSearch, RefreshCw, Database, CalendarDays, ArrowUp, ArrowDown,
 } from 'lucide-react'
-import IssuesBySectionChart from '@/components/Charts/IssuesBySectionChart'
-import ComplianceHealthChart from '@/components/Charts/ComplianceHealthChart'
+import IssuesByTypeChart from '@/components/Charts/IssuesByTypeChart'
+import SectionComplianceChart from '@/components/Charts/SectionComplianceChart'
 import MonthlyTrendChart from '@/components/Charts/MonthlyTrendChart'
 import TopVendorsChart from '@/components/Charts/TopVendorsChart'
-import MonthlyComparisonChart from '@/components/Charts/MonthlyComparisonChart'
-import VendorMonthlyChart from '@/components/Charts/VendorMonthlyChart'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import { selectDashboardKpis, selectIsLive } from '@/redux/slices/issuesSlice'
 import '@/components/Common/Common.css'
 import './Dashboard.css'
 
 export default function Dashboard() {
+  const navigate = useNavigate()
   const { financialYear, lastSyncTime, dataSource } = useSelector((s) => s.app)
   const firstName = useSelector((s) => s.auth.user?.name?.split(' ')[0]) ?? 'there'
   const kpisLive = useSelector(selectDashboardKpis)
@@ -28,6 +28,7 @@ export default function Dashboard() {
       up: true,
       icon: Activity,
       tone: 'default',
+      target: '/issues?view=all',
     },
     {
       label: 'Issues Found',
@@ -36,6 +37,7 @@ export default function Dashboard() {
       up: true,
       icon: FileSearch,
       tone: 'warning',
+      target: '/issues?view=issue',
     },
     {
       label: 'High Severity',
@@ -44,6 +46,7 @@ export default function Dashboard() {
       up: true,
       icon: AlertOctagon,
       tone: 'danger',
+      target: '/issues?view=issue&severity=high',
     },
     {
       label: 'Medium Severity',
@@ -52,6 +55,7 @@ export default function Dashboard() {
       up: false,
       icon: AlertTriangle,
       tone: 'warning',
+      target: '/issues?view=issue&severity=medium',
     },
     {
       label: 'Resolved',
@@ -60,6 +64,7 @@ export default function Dashboard() {
       up: true,
       icon: CheckCircle2,
       tone: 'success',
+      target: '/issues?view=issue&status=resolved',
     },
     {
       label: 'Pending',
@@ -68,6 +73,7 @@ export default function Dashboard() {
       up: false,
       icon: Clock,
       tone: 'default',
+      target: '/issues?view=issue&status=open',
     },
   ]
 
@@ -120,7 +126,13 @@ export default function Dashboard() {
 
       <div className="kpi-grid">
         {kpis.map((k) => (
-          <div key={k.label} className="kpi-card">
+          <button
+            key={k.label}
+            className="kpi-card kpi-card-clickable"
+            type="button"
+            onClick={() => navigate(k.target)}
+            aria-label={`Open issues filtered by ${k.label}`}
+          >
             <div className="kpi-icon-row">
               <span className="kpi-label">{k.label}</span>
               <div className={`kpi-icon-box ${k.tone}`}>
@@ -137,7 +149,7 @@ export default function Dashboard() {
             {isLive && k.change == null && (
               <span className="kpi-trend" style={{ color: 'var(--color-text-muted)' }}>From SAP run</span>
             )}
-          </div>
+          </button>
         ))}
       </div>
 
@@ -145,24 +157,22 @@ export default function Dashboard() {
         <div className="chart-card">
           <div className="chart-card-header">
             <div>
-              <p className="chart-title">Issues by Section</p>
+              <p className="chart-title">Issues by Type</p>
               <p className="chart-subtitle">
-                {isLive ? 'From latest SAP upload' : 'Distribution across TDS sections'}
+                {isLive ? 'From latest SAP upload' : 'Distribution by issue type'}
               </p>
             </div>
           </div>
-          <IssuesBySectionChart />
+          <IssuesByTypeChart />
         </div>
         <div className="chart-card">
           <div className="chart-card-header">
             <div>
-              <p className="chart-title">Compliance Health</p>
-              <p className="chart-subtitle">
-                {isLive ? 'Based on transactions vs issues found' : 'Overall posture this quarter'}
-              </p>
+              <p className="chart-title">Section-wise Compliance Health</p>
+              <p className="chart-subtitle">Issue count by TDS section</p>
             </div>
           </div>
-          <ComplianceHealthChart />
+          <SectionComplianceChart />
         </div>
       </div>
 
@@ -188,27 +198,6 @@ export default function Dashboard() {
             </div>
           </div>
           <TopVendorsChart />
-        </div>
-      </div>
-
-      <div className="chart-grid-2col">
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div>
-              <p className="chart-title">Month-on-Month Comparison</p>
-              <p className="chart-subtitle">Severity mix by month, with % change vs. prior month</p>
-            </div>
-          </div>
-          <MonthlyComparisonChart />
-        </div>
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div>
-              <p className="chart-title">Vendor-wise Month-on-Month</p>
-              <p className="chart-subtitle">Issue count by month for the top 5 vendors</p>
-            </div>
-          </div>
-          <VendorMonthlyChart />
         </div>
       </div>
     </div>

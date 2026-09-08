@@ -19,7 +19,7 @@ function pctChange(current, previous) {
 }
 
 function formatPct(v) {
-  if (v == null) return '—'
+  if (v == null) return '-'
   const sign = v > 0 ? '+' : ''
   return `${sign}${v.toFixed(1)}%`
 }
@@ -101,7 +101,7 @@ export function buildExceptionReport(issues) {
 export function buildPanLevelReport(issues) {
   const byPan = new Map()
   for (const i of issues) {
-    const pan = i.vendorPan && i.vendorPan !== '—' ? i.vendorPan : 'No PAN'
+    const pan = i.vendorPan && i.vendorPan !== '-' ? i.vendorPan : 'No PAN'
     if (!byPan.has(pan)) byPan.set(pan, { pan, vendors: new Set(), issueCount: 0, baseAmount: 0, tdsAmount: 0, taxImpact: 0 })
     const row = byPan.get(pan)
     row.vendors.add(i.vendor)
@@ -133,7 +133,7 @@ const BUCKET_ORDER = ['Correct', 'Short', 'Excess', 'No Deduction', 'Not Applica
 
 function classifyValidationRow(row) {
   if (row.status === 'passed') return 'Correct'
-  if (row.status === 'insufficient') return 'Insufficient Data'
+  if (row.status === 'insufficient' || row.status === 'insufficient data') return 'Insufficient Data'
   const reason = row.reason || ''
   if (/Short/i.test(reason)) return 'Short'
   if (/Excess/i.test(reason)) return 'Excess'

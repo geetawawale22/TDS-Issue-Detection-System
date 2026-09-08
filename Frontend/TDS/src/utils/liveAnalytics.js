@@ -33,6 +33,13 @@ export function deriveIssuesBySection(issues) {
     .sort((a, b) => b.count - a.count)
 }
 
+export function deriveIssuesByType(issues) {
+  const map = countBy(issues, (i) => i.issueTypeLabel || i.category || i.issueType)
+  return [...map.entries()]
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count)
+}
+
 export function deriveTopVendors(issues, limit = 6) {
   const map = countBy(issues, (i) => i.vendor || i.vendorId)
   return [...map.entries()]

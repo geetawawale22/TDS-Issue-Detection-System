@@ -1,5 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit'
 import {
+  deriveIssuesByType,
   deriveIssuesBySection,
   deriveTopVendors,
   deriveComplianceHealth,
@@ -216,6 +217,10 @@ export function selectDashboardKpis(state) {
 
 export function selectIssuesBySection(state) {
   return deriveIssuesBySection(selectActiveIssues(state))
+}
+
+export function selectIssuesByType(state) {
+  return deriveIssuesByType(selectActiveIssues(state))
 }
 
 export function selectTopVendors(state) {

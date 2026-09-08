@@ -75,6 +75,26 @@
   white-space: nowrap;
 }
 
+.kpi-card-clickable {
+  width: 100%;
+  appearance: none;
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.kpi-card-clickable:hover {
+  border-color: rgba(224, 19, 48, 0.28);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.kpi-card-clickable:focus-visible {
+  outline: 2px solid rgba(224, 19, 48, 0.35);
+  outline-offset: 2px;
+}
+
 @media (max-width: 768px) {
   .dashboard-banner-meta { display: none; }
 }

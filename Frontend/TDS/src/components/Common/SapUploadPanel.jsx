@@ -353,7 +353,7 @@ export default function SapUploadPanel() {
           hiding the drop zone/form once you've already run an upload, not
           for hiding the result you came here to see. Placed after the form
           (rather than between the header and the form) so the two KPI rows
-          — this one and Issues.jsx's Passed/Issue Found/Insufficient/Skipped
+          — this one and Issues.jsx's Passed/Issue Found/Insufficient Data/Skipped
           strip — sit next to each other instead of with the form wedged
           between them. */}
       {dataSource === 'upload' && stats && (

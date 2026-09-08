@@ -56,7 +56,7 @@
 
 /* ── Data Table ───────────────────────────────────────── */
 .data-table-wrapper {
-  overflow-x: auto;
+  overflow: auto;
   width: 100%;
 
   /* Scroll-shadow hint: the two "cover" gradients scroll WITH the content
@@ -81,6 +81,9 @@
 }
 
 .data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   padding: 9px 12px;
   text-align: left;
   font-size: 11px;
@@ -101,6 +104,7 @@
 }
 
 .data-table thead tr.data-table-preheader-row th {
+  top: 0;
   padding: 8px 12px;
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border-light);
@@ -763,6 +767,10 @@
   border-radius: var(--border-radius);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
+}
+
+.table-card .data-table-wrapper {
+  max-height: min(58vh, 560px);
 }
 
 .table-card-header {

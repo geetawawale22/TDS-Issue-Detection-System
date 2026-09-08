@@ -65,6 +65,11 @@
   margin-bottom: 10px;
 }
 
+.issues-summary-grid--five {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+@media (max-width: 1100px) { .issues-summary-grid--five { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 900px) { .issues-summary-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 480px) { .issues-summary-grid { grid-template-columns: 1fr; } }
 
@@ -159,6 +164,7 @@
 .issues-summary-card--danger  svg { color: var(--color-danger); }
 .issues-summary-card--warning svg { color: #D97706; }
 .issues-summary-card--success svg { color: #059669; }
+.issues-summary-card--info    svg { color: #2563EB; }
 .issues-summary-card--neutral svg { color: var(--color-text-muted); }
 
 .issues-header-actions {

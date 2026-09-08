@@ -26,7 +26,7 @@ function statusTone(status) {
 
 function statusLabel(status) {
   if (status === 'issue') return 'Issue'
-  if (status === 'insufficient') return 'Insufficient Data'
+  if (status === 'insufficient data') return 'Insufficient Data'
   return 'Correct'
 }
 
@@ -331,7 +331,7 @@ export default function VendorLedger() {
           <FilterCard filter="all" label="Transactions" value={selectedPanGroup.transactionCount} icon={FileSearch} />
           <FilterCard filter="correct" label="Correct" value={selectedPanGroup.correctCount} icon={CheckCircle2} tone="success" />
           <FilterCard filter="issue" label="Issues" value={selectedPanGroup.issueCount} icon={TriangleAlert} tone="danger" />
-          <FilterCard filter="insufficient" label="Insufficient" value={selectedPanGroup.insufficientCount} icon={BookOpenText} tone="warning" />
+          <FilterCard filter="insufficient" label="Insufficient Data" value={selectedPanGroup.insufficientCount} icon={BookOpenText} tone="warning" />
         </div>
 
         <div className="table-card">

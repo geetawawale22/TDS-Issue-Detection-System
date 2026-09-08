@@ -2,14 +2,14 @@ import { useMemo, useState } from 'react'
 import { useSelector } from 'react-redux'
 import {
   FileBarChart, FileSpreadsheet, FileText, Eye, Download, ShieldAlert,
-  Gauge, CalendarRange, Search, Users, IdCard, PieChart,
+  Gauge, Search, Users, IdCard, PieChart,
 } from 'lucide-react'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import ReportViewModal from '@/components/Common/ReportViewModal'
 import { selectActiveIssues, selectActiveValidationRows, selectIsLive } from '@/redux/slices/issuesSlice'
 import { downloadCsv, downloadExcel, downloadPdf } from '@/utils/csvExport'
 import {
-  buildMonthlyComparisonReport, buildVendorMonthlyReport, buildExceptionReport,
+  buildVendorMonthlyReport, buildExceptionReport,
   buildPanLevelReport, buildDeductionBifurcationReport, buildLdcThresholdReport,
 } from '@/utils/reportBuilders'
 import '@/components/Common/Common.css'
@@ -34,9 +34,8 @@ export default function Reports() {
 
   const reportDefs = useMemo(() => {
     const fileBase = (fileName || 'report').replace(/\.[^.]+$/, '')
-    const period = isLive ? (fileName ? `SAP · ${fileName}` : 'Latest SAP upload') : 'Awaiting SAP upload'
+    const period = isLive ? (fileName ? `SAP - ${fileName}` : 'Latest SAP upload') : 'Awaiting SAP upload'
 
-    const monthly = buildMonthlyComparisonReport(issues)
     const vendorMonthly = buildVendorMonthlyReport(issues)
     const exception = buildExceptionReport(issues)
     const panLevel = buildPanLevelReport(issues)
@@ -44,14 +43,6 @@ export default function Reports() {
     const ldcThreshold = buildLdcThresholdReport(issues)
 
     return [
-      {
-        id: 'monthly',
-        name: 'Month-on-Month Comparison',
-        type: 'Trend',
-        icon: CalendarRange,
-        description: 'Total issues and severity mix by month, with % change against the prior month.',
-        period, filenameBase: `${fileBase}-month-on-month`, ...monthly,
-      },
       {
         id: 'vendor-monthly',
         name: 'Vendor-wise Month-on-Month',
@@ -65,7 +56,7 @@ export default function Reports() {
         name: 'Exception Report',
         type: 'Exception',
         icon: ShieldAlert,
-        description: 'No TDS deduction / Not Applicable violations only — where TDS was missed or wrongly deducted.',
+        description: 'No TDS deduction / Not Applicable violations only - where TDS was missed or wrongly deducted.',
         period, filenameBase: `${fileBase}-exception-report`, ...exception,
       },
       {
@@ -73,7 +64,7 @@ export default function Reports() {
         name: 'PAN-Level Report',
         type: 'PAN',
         icon: IdCard,
-        description: 'Issues grouped by vendor PAN rather than vendor code — surfaces one vendor operating under multiple codes.',
+        description: 'Issues grouped by vendor PAN rather than vendor code - surfaces one vendor operating under multiple codes.',
         period, filenameBase: `${fileBase}-pan-level`, ...panLevel,
       },
       {
@@ -107,7 +98,7 @@ export default function Reports() {
       <div className="page-header">
         <div>
           <div className="breadcrumb">
-            <span>Home</span><span className="breadcrumb-sep">›</span>
+            <span>Home</span><span className="breadcrumb-sep">&gt;</span>
             <span className="breadcrumb-current">Reports</span>
           </div>
           <h1 className="page-title">Reports</h1>
@@ -118,7 +109,7 @@ export default function Reports() {
             <Search size={14} className="reports-search-icon" />
             <input
               className="filter-input reports-search"
-              placeholder="Search reports…"
+              placeholder="Search reports..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
