@@ -138,6 +138,24 @@ def _withholding_key(wtax_type: str | None, wtax_code: str | None) -> str | None
     return tax_code or tax_type or None
 
 
+def _certificate_section_matches(cert_section: str | None, txn_withholding_key: str | None, txn_sections: set[str]) -> bool:
+    cert_key = (cert_section or "").strip().upper()
+    if not cert_key:
+        return False
+
+    if txn_withholding_key:
+        txn_key = txn_withholding_key.strip().upper()
+        txn_type, _, txn_code = txn_key.partition("/")
+        allowed_keys = {txn_key}
+        if txn_code:
+            allowed_keys.add(txn_code)
+        if txn_type:
+            allowed_keys.add(txn_type)
+        return cert_key in allowed_keys
+
+    return cert_key in txn_sections or _normalise_section(cert_key) in txn_sections
+
+
 def _looks_like_pan(value: str | None) -> bool:
     text = (value or "").strip().upper()
     return len(text) == 10 and text[:5].isalpha() and text[5:9].isdigit() and text[9].isalpha()
@@ -215,21 +233,11 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
             code_matches = [cert for cert in scoped_matches if cert.vendor_code == txn.vendor_code]
             if code_matches:
                 scoped_matches = code_matches
-        if txn_withholding_key:
-            matches = [
-                cert for cert in scoped_matches
-                if cert.applicable_tds_section.strip().upper() == txn_withholding_key
-                and cert.valid_from <= txn.posting_date <= cert.valid_to
-            ]
-        else:
-            matches = [
-                cert for cert in scoped_matches
-                if (
-                    cert.applicable_tds_section.strip().upper() in txn_sections
-                    or _normalise_section(cert.applicable_tds_section) in txn_sections
-                )
-                and cert.valid_from <= txn.posting_date <= cert.valid_to
-            ]
+        matches = [
+            cert for cert in scoped_matches
+            if _certificate_section_matches(cert.applicable_tds_section, txn_withholding_key, txn_sections)
+            and cert.valid_from <= txn.posting_date <= cert.valid_to
+        ]
 
         if not matches and not txn_withholding_key:
             date_matches = [
@@ -243,6 +251,7 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
         cert = sorted(
             matches,
             key=lambda item: (
+                0 if txn_withholding_key and item.applicable_tds_section.strip().upper() == txn_withholding_key else 1,
                 0 if item.company_code else 1,
                 item.valid_from,
                 item.certificate_number,
@@ -664,7 +673,18 @@ def _read_upload(filename: str, content: bytes) -> pd.DataFrame:
 
 
 def _present_aliases(columns: list[str], internal_name: str) -> set[str]:
-    return set(COLUMN_ALIASES[internal_name]).intersection(columns)
+    exact_matches = set(COLUMN_ALIASES[internal_name]).intersection(columns)
+    if exact_matches:
+        return exact_matches
+
+    normalised_columns = {
+        "".join(ch for ch in column.lower() if ch.isalnum())
+        for column in columns
+    }
+    return {
+        alias for alias in COLUMN_ALIASES[internal_name]
+        if "".join(ch for ch in alias.lower() if ch.isalnum()) in normalised_columns
+    }
 
 
 def _validate_headers(columns: list[str]) -> None:
@@ -673,7 +693,12 @@ def _validate_headers(columns: list[str]) -> None:
     missing = []
     if not _present_aliases(columns, "posting_date"):
         missing.append("Posting_Date")
-    if not _present_aliases(columns, "tds_section"):
+    has_tds_section = bool(_present_aliases(columns, "tds_section"))
+    has_withholding_pair = bool(
+        _present_aliases(columns, "withholding_tax_type")
+        and _present_aliases(columns, "withholding_tax_code")
+    )
+    if not (has_tds_section or has_withholding_pair):
         missing.append("TDS_Section")
     if not _present_aliases(columns, "tds_rate"):
         missing.append("TDS_Rate")
@@ -748,6 +773,10 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "tdsAmount": txn.tds_deducted_amount or 0.0,
         "expectedRate": expected_rate,
         "appliedRate": applied_rate,
+        "ldcCertificate": txn.ldc_exemption_number,
+        "ldcExemptionPercent": txn.ldc_exemption_percent,
+        "withholdingTaxType": txn.withholding_tax_type,
+        "withholdingTaxCode": txn.withholding_tax_code,
         "taxImpact": round(tax_impact, 2),
         "issueType": ISSUE_TYPE_BY_CATEGORY.get(category, "OTHER"),
         "issueTypeLabel": category,

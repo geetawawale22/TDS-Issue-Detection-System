@@ -464,7 +464,11 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     if applicable_rate is not None and txn.tds_deducted_rate != applicable_rate and not valid_194j_rate:
         return None  # wrong-rate issue already carries the correct amount context
 
-    expected_amount = txn.basic_amount * (txn.tds_deducted_rate / 100)
+    applicable_rate = _get_applicable_rate(txn)
+    expected_rate = applicable_rate if txn.ldc_exemption_percent is not None or txn.ldc_approved_rate is not None else txn.tds_deducted_rate
+    if expected_rate is None:
+        return None
+    expected_amount = txn.basic_amount * (expected_rate / 100)
     actual_amount = txn.tds_deducted_amount
 
     diff = abs(expected_amount - actual_amount)
@@ -476,12 +480,13 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     return TDSIssue(
         category="Short/Excess TDS Deducted — Amount Mismatch",
         message=(
-            f"Stated rate is {txn.tds_deducted_rate}%, which should give "
+            f"Expected rate is {expected_rate}%, which should give "
             f"₹{expected_amount:,.2f} on a base of ₹{txn.basic_amount:,.2f}, "
             f"but ₹{actual_amount:,.2f} was actually deducted "
             f"(implied rate: {implied_rate:.4f}%)."
         ),
         severity="high",
+        expected_rate=expected_rate,
     )
 
 

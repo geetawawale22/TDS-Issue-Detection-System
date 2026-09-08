@@ -90,6 +90,10 @@ COLUMN_ALIASES = {
 }
 
 
+def _normalise_header_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
 PAN_IN_GSTIN_REGEX = re.compile(r"^[0-9]{2}([A-Z]{5}[0-9]{4}[A-Z])[0-9A-Z]{3}$")
 PAN_REGEX = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 
@@ -141,6 +145,15 @@ def _get(row: dict, field: str) -> Any:
     for key in COLUMN_ALIASES.get(field, (field,)):
         if key in row and row[key] is not None and str(row[key]).strip() not in ("", "nan", "None"):
             return row[key]
+
+    normalised_row = {
+        _normalise_header_name(key): value
+        for key, value in row.items()
+    }
+    for key in COLUMN_ALIASES.get(field, (field,)):
+        value = normalised_row.get(_normalise_header_name(key))
+        if value is not None and str(value).strip() not in ("", "nan", "None"):
+            return value
     return None
 
 

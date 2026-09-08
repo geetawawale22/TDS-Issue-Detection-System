@@ -58,6 +58,13 @@ export default function IssueDrawer({ issue, open, onClose }) {
                       { label: issue.thresholdAmount != null ? 'FY Base Amount' : 'Base Amount',
                         value: formatCurrency(issue.baseAmount), mono: true },
                       { label: 'TDS Amount',     value: formatCurrency(Math.abs(Number(issue.tdsAmount) || 0)), mono: true },
+                      ...(issue.withholdingTaxType || issue.withholdingTaxCode ? [
+                        { label: 'WTax Type/Code', value: `${issue.withholdingTaxType || '—'}/${issue.withholdingTaxCode || '—'}`, mono: true },
+                      ] : []),
+                      ...(issue.ldcCertificate ? [
+                        { label: 'LDC Certificate', value: issue.ldcCertificate, mono: true },
+                        { label: 'LDC Exemption', value: issue.ldcExemptionPercent == null ? '—' : `${issue.ldcExemptionPercent}%`, mono: true },
+                      ] : []),
                     ]
                     const rateFields = [
                       { label: 'Applied Rate',   value: issue.appliedRate == null ? '—' : `${issue.appliedRate}%`, mono: true },

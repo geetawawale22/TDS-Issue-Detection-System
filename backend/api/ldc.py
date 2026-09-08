@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 from io import BytesIO
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -47,9 +48,22 @@ def _clean_upper(value: Any) -> str:
     return _clean(value).upper()
 
 
+def _normalise_header_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
 def _get(row: dict[str, Any], *names: str) -> Any:
     for name in names:
         value = row.get(name)
+        if not _is_blank(value):
+            return value
+
+    normalised_row = {
+        _normalise_header_name(key): value
+        for key, value in row.items()
+    }
+    for name in names:
+        value = normalised_row.get(_normalise_header_name(name))
         if not _is_blank(value):
             return value
     return ""
