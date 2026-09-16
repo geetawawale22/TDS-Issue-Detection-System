@@ -195,22 +195,30 @@ export default function Issues() {
   const drawerIsOpen = Boolean(reviewValidationRow) || drawerOpen
 
   function buildValidationReviewIssue(row) {
+    const isInsufficient = row.status === 'insufficient'
     const inferredRate = normaliseRateForDisplay(inferRateFromAmount(row.baseAmount, row.tdsAmount))
     const appliedRate = normaliseRateForDisplay(row.appliedRate ?? inferredRate)
     const expectedRate = row.section === '194J' && [2, 10].includes(appliedRate)
       ? appliedRate
       : normaliseRateForDisplay(row.expectedRate ?? inferredRate ?? DEFAULT_SECTION_RATES[row.section] ?? null)
+    const issueLabel = isInsufficient ? 'Insufficient Data' : 'Passed Validation'
 
     return {
       ...row,
-      id: row.id || `PASSED-${row.docNo}`,
-      category: 'Passed Validation',
-      issueTypeLabel: 'Passed Validation',
-      issueType: 'PASSED_VALIDATION',
-      severity: 'low',
+      id: row.id || `${isInsufficient ? 'INSUFFICIENT' : 'PASSED'}-${row.docNo}`,
+      category: issueLabel,
+      issueTypeLabel: issueLabel,
+      issueType: isInsufficient ? 'INSUFFICIENT_DATA' : 'PASSED_VALIDATION',
+      severity: isInsufficient ? 'medium' : 'low',
       status: 'open',
-      plainEnglish: row.reason || 'Validated with no issue found.',
-      recommendedAction: 'No correction required — this row passed the current validation rules.',
+      plainEnglish: row.reason || (
+        isInsufficient
+          ? 'This row does not have enough usable data to complete the TDS validation.'
+          : 'Validated with no issue found.'
+      ),
+      recommendedAction: isInsufficient
+        ? 'Review the source row and complete the missing or unusable transaction data, then analyse the file again.'
+        : 'No correction required — this row passed the current validation rules.',
       expectedRate,
       appliedRate,
       taxImpact: 0,
@@ -315,7 +323,7 @@ export default function Issues() {
       />
     )},
     { header: '', render: (r) => (
-      r.status === 'passed'
+      r.status === 'passed' || r.status === 'insufficient'
         ? (
           <button
             className="issues-review-btn"

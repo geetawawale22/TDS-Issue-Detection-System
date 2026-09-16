@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from io import BytesIO
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -14,7 +15,8 @@ from sqlalchemy.orm import Session
 
 from core.dependencies import get_current_user
 from db.database import get_db
-from db.models import LDCCertificateMaster, User, VendorMaster
+from db.models import LDCCertificateMaster, LDCUploadIssueRow, User, VendorMaster
+from rules.tds_rule_engine import decode_tds_section_string, extract_new_section_reference
 
 
 router = APIRouter(prefix="/ldc", tags=["LDC Compliance"])
@@ -32,6 +34,48 @@ REQUIRED_CERTIFICATE_COLUMNS = {
 }
 
 REQUIRED_VENDOR_COLUMNS = {"PAN", "VendorName", "VendorCode"}
+
+NEW_SECTION_BY_OLD_SECTION = {
+    "193": "393(1)5(i)",
+    "194": "393(1)7",
+    "194A": "393(1)5(ii)",
+    "194C": "393(1)6(i)",
+    "194H": "393(1)1(ii)",
+    "194I": "393(1)2(ii)",
+    "194IA": "393(1)3(i)",
+    "194J": "393(1)6(iii)",
+    "194K": "393(1)4(i)",
+    "194LA": "393(1)3(iii)",
+    "194O": "393(1)8(v)",
+    "194Q": "393(1)8(ii)",
+    "194R": "393(1)8(iv)",
+    "195": "393(2)",
+}
+
+OLD_SECTION_BY_WTAX_CODE = {
+    "8I": "194I",
+    "C1": "194C",
+    "C4": "194C",
+    "CP": "194C",
+    "JI": "194J",
+    "JP": "194J",
+    "HP": "194H",
+    "LP": "194Q",
+    "MI": "194R",
+}
+
+SECTION_BY_WTAX_PAIR = {
+    "8I/IA": ("194I", "393(1)2(ii)"),
+    "CI/C3": ("194C", "393(1)6(i)"),
+    "HI/H1": ("194H", "393(1)1(ii)"),
+    "II/I1": ("194I", "393(1)2(ii)"),
+    "II/I4": ("194I", "393(1)2(ii)"),
+    "IP/I1": ("194I", "393(1)2(ii)"),
+    "JI/J3": ("194J", "393(1)6(iii)(a)"),
+    "JP/J3": ("194J", "393(1)6(iii)(b)"),
+    "L1/L1": ("194Q", "393(1)8(ii)"),
+    "R1/I1": ("194R", "393(1)8(iv)"),
+}
 
 
 def _is_blank(value: Any) -> bool:
@@ -81,13 +125,170 @@ def _extract_pan(value: Any) -> str:
 def _ldc_section_key(row: dict[str, Any]) -> str:
     explicit_section = _clean_upper(_get(row, "TDS_Section", "Applicable_TDS_Section"))
     if explicit_section:
-        return explicit_section
+        return _format_section_display(explicit_section)
 
     wtax_type = _clean_upper(_get(row, "WTax_Type"))
     wtx = _clean_upper(_get(row, "WTx"))
     if wtax_type and wtx:
-        return f"{wtax_type}/{wtx}"
-    return wtx or wtax_type
+        return _format_section_display(f"{wtax_type}/{wtx}")
+    return _format_section_display(wtx or wtax_type)
+
+
+def _wtax_type(row: dict[str, Any]) -> str:
+    return _clean_upper(_get(row, "WTax_Type"))
+
+
+def _wtx_code(row: dict[str, Any]) -> str:
+    return _clean_upper(_get(row, "WTx"))
+
+
+def _format_section_display(value: Any) -> str:
+    text = _clean_upper(value)
+    if not text:
+        return ""
+
+    old_section, _ = decode_tds_section_string(text)
+    new_section = extract_new_section_reference(text)
+
+    if not old_section:
+        code_parts = [part for part in re.split(r"[/\s]+", text) if part]
+        pair_section = SECTION_BY_WTAX_PAIR.get("/".join(code_parts))
+        if pair_section:
+            return f"{pair_section[0]} / {pair_section[1]}"
+        for code in re.split(r"[/\s]+", text):
+            old_section = OLD_SECTION_BY_WTAX_CODE.get(code)
+            if old_section:
+                break
+
+    if old_section:
+        return f"{old_section} / {new_section or NEW_SECTION_BY_OLD_SECTION.get(old_section, '')}".rstrip(" /")
+    return text
+
+
+def _certificate_base_key(row: LDCCertificateMaster) -> tuple[Any, ...]:
+    return (
+        row.certificate_number,
+        row.vendor_pan,
+        row.vendor_code,
+        row.company_code,
+        row.deductor_tan,
+        row.wtax_type,
+        row.wtx_code,
+        row.valid_from,
+        row.valid_to,
+        float(row.approved_tds_rate) if row.approved_tds_rate is not None else None,
+    )
+
+
+def _is_mapped_section(value: Any) -> bool:
+    return " / " in _format_section_display(value)
+
+
+def _is_specific_mapped_section(value: Any) -> bool:
+    section = _format_section_display(value).upper()
+    return section.startswith("194J / 393(1)6(III)(")
+
+
+def _is_generic_mapped_section(value: Any) -> bool:
+    return _format_section_display(value).upper() == "194J / 393(1)6(III)"
+
+
+def _certificate_identity_key(row: LDCCertificateMaster) -> tuple[Any, ...]:
+    section = _format_section_display(row.applicable_tds_section)
+    return (*_certificate_base_key(row), section if " / " in section else "")
+
+
+def _prefer_certificate_row(
+    current: LDCCertificateMaster | None,
+    candidate: LDCCertificateMaster,
+) -> LDCCertificateMaster:
+    if current is None:
+        return candidate
+    current_has_mapped_section = _is_mapped_section(current.applicable_tds_section)
+    candidate_has_mapped_section = _is_mapped_section(candidate.applicable_tds_section)
+    if candidate_has_mapped_section and not current_has_mapped_section:
+        return candidate
+    if not current.vendor_name and candidate.vendor_name:
+        return candidate
+    return current
+
+
+def _unique_certificate_rows(rows: list[LDCCertificateMaster]) -> list[LDCCertificateMaster]:
+    mapped_base_keys = {
+        _certificate_base_key(row)
+        for row in rows
+        if _is_mapped_section(row.applicable_tds_section)
+    }
+    specific_base_keys = {
+        _certificate_base_key(row)
+        for row in rows
+        if _is_specific_mapped_section(row.applicable_tds_section)
+    }
+    rows_by_certificate: dict[tuple[Any, ...], LDCCertificateMaster] = {}
+    for row in rows:
+        base_key = _certificate_base_key(row)
+        if not _is_mapped_section(row.applicable_tds_section) and base_key in mapped_base_keys:
+            continue
+        if _is_generic_mapped_section(row.applicable_tds_section) and base_key in specific_base_keys:
+            continue
+        key = _certificate_identity_key(row)
+        rows_by_certificate[key] = _prefer_certificate_row(rows_by_certificate.get(key), row)
+    return list(rows_by_certificate.values())
+
+
+def _issue_row_payload(row: LDCUploadIssueRow) -> dict[str, Any]:
+    try:
+        issues = json.loads(row.issues or "[]")
+    except json.JSONDecodeError:
+        issues = [row.issues] if row.issues else []
+    return {
+        "rowNumber": row.row_number,
+        "certificateNumber": row.certificate_number or "",
+        "certificateType": row.certificate_type or "",
+        "pan": row.vendor_pan or "",
+        "vendorCode": row.vendor_code or "",
+        "vendorName": row.vendor_name or "",
+        "companyCode": row.company_code or "",
+        "deductorTan": row.deductor_tan or "",
+        "wtaxType": row.wtax_type or "",
+        "wtx": row.wtx_code or "",
+        "section": _format_section_display(row.applicable_tds_section),
+        "approvedRate": float(row.approved_tds_rate) if row.approved_tds_rate is not None else None,
+        "validFrom": row.valid_from.isoformat() if row.valid_from else None,
+        "validTo": row.valid_to.isoformat() if row.valid_to else None,
+        "status": row.status or "",
+        "isVerified": bool(row.is_verified),
+        "savedToMaster": row.saved_to_master,
+        "issues": issues,
+    }
+
+
+def _add_issue_row(
+    db: Session,
+    certificate_row: dict[str, Any],
+    *,
+    saved_to_master: bool,
+) -> None:
+    db.add(LDCUploadIssueRow(
+        row_number=certificate_row["rowNumber"],
+        certificate_number=certificate_row.get("certificateNumber") or None,
+        certificate_type=certificate_row.get("certificateType") or None,
+        vendor_pan=certificate_row.get("pan") or None,
+        vendor_code=certificate_row.get("vendorCode") or None,
+        vendor_name=certificate_row.get("vendorName") or None,
+        company_code=certificate_row.get("companyCode") or None,
+        deductor_tan=certificate_row.get("deductorTan") or None,
+        wtax_type=certificate_row.get("wtaxType") or None,
+        wtx_code=certificate_row.get("wtx") or None,
+        applicable_tds_section=certificate_row.get("section") or None,
+        approved_tds_rate=certificate_row.get("approvedRate"),
+        valid_from=certificate_row.get("validFrom"),
+        valid_to=certificate_row.get("validTo"),
+        status=certificate_row.get("status") or None,
+        is_verified=certificate_row.get("isVerified"),
+        saved_to_master=saved_to_master,
+        issues=json.dumps(certificate_row.get("issues") or []),
+    ))
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -263,6 +464,8 @@ def list_ldc_certificates(
         LDCCertificateMaster.vendor_pan,
         LDCCertificateMaster.certificate_number,
     ).all()
+    issue_rows = db.query(LDCUploadIssueRow).order_by(LDCUploadIssueRow.row_number).all()
+    unique_rows = _unique_certificate_rows(rows)
     return {
         "certificates": [
             {
@@ -274,7 +477,9 @@ def list_ldc_certificates(
                 "vendorName": row.vendor_name,
                 "companyCode": row.company_code,
                 "deductorTan": row.deductor_tan,
-                "section": row.applicable_tds_section,
+                "wtaxType": row.wtax_type,
+                "wtx": row.wtx_code,
+                "section": _format_section_display(row.applicable_tds_section),
                 "approvedRate": float(row.approved_tds_rate),
                 "validFrom": row.valid_from.isoformat() if row.valid_from else None,
                 "validTo": row.valid_to.isoformat() if row.valid_to else None,
@@ -288,8 +493,9 @@ def list_ldc_certificates(
                 "remarks": row.remarks,
                 "issues": [],
             }
-            for index, row in enumerate(rows)
+            for index, row in enumerate(unique_rows)
         ],
+        "issueRows": [_issue_row_payload(row) for row in issue_rows],
     }
 
 
@@ -312,6 +518,7 @@ async def upload_ldc_certificates(
     issue_rows = []
     certificate_rows = []
     staged_vendor_codes: set[str] = set()
+    db.query(LDCUploadIssueRow).delete()
 
     for index, row in frame.iterrows():
         row_dict = row.to_dict()
@@ -324,20 +531,30 @@ async def upload_ldc_certificates(
         vendor_name = _clean(_get(row_dict, "Vendor_Name", "Supplier_Name", "Supplier"))
         company_code = _clean(_get(row_dict, "Company_Code")) or None
         deductor_tan = _clean_upper(_get(row_dict, "Deductor_TAN")) or None
+        wtax_type = _wtax_type(row_dict) or None
+        wtx_code = _wtx_code(row_dict) or None
         section = _ldc_section_key(row_dict)
         certificate_type = _clean_upper(_get(row_dict, "Certificate_Type")) or "LOWER"
         status_value = _clean_upper(_get(row_dict, "Status")) or "ACTIVE"
         approved_rate = _to_float(_get(row_dict, "Approved_TDS_Rate", "Exemption_Percentage"))
+        valid_from = _to_date(_get(row_dict, "Valid_From", "Exemption_From"))
+        valid_to = _to_date(_get(row_dict, "Valid_To", "Exemption_To"))
 
         certificate_rows.append({
             "rowNumber": row_number,
             "certificateNumber": cert_number,
+            "certificateType": certificate_type,
             "pan": pan,
+            "vendorCode": vendor_code,
             "vendorName": vendor_name,
             "companyCode": company_code,
             "deductorTan": deductor_tan,
+            "wtaxType": wtax_type,
+            "wtx": wtx_code,
             "section": section,
             "approvedRate": approved_rate,
+            "validFrom": valid_from,
+            "validTo": valid_to,
             "status": status_value,
             "isVerified": _to_bool(_get(row_dict, "Is_Verified", "W_Tax"), default=True),
             "issues": issues,
@@ -352,18 +569,20 @@ async def upload_ldc_certificates(
             persist_blockers.append("TDS section missing")
         if approved_rate is None:
             persist_blockers.append("Approved TDS rate missing/invalid")
-        if _to_date(_get(row_dict, "Valid_From", "Exemption_From")) is None:
+        if valid_from is None:
             persist_blockers.append("Valid From date missing/invalid")
-        if _to_date(_get(row_dict, "Valid_To", "Exemption_To")) is None:
+        if valid_to is None:
             persist_blockers.append("Valid To date missing/invalid")
 
         if persist_blockers:
             certificate_rows[-1]["issues"] = sorted(set(issues + persist_blockers))
             issue_rows.append(certificate_rows[-1])
+            _add_issue_row(db, certificate_rows[-1], saved_to_master=False)
             continue
 
         if issues:
             issue_rows.append(certificate_rows[-1])
+            _add_issue_row(db, certificate_rows[-1], saved_to_master=True)
 
         if vendor_code and pan and vendor_name and vendor_code not in staged_vendor_codes:
             existing_vendor = db.query(VendorMaster).filter(VendorMaster.vendor_code == vendor_code).first()
@@ -383,8 +602,15 @@ async def upload_ldc_certificates(
         existing = db.query(LDCCertificateMaster).filter(
             LDCCertificateMaster.certificate_number == cert_number,
             LDCCertificateMaster.vendor_pan == pan,
+            LDCCertificateMaster.vendor_code == (vendor_code or None),
+            LDCCertificateMaster.company_code == company_code,
             LDCCertificateMaster.deductor_tan == deductor_tan,
+            LDCCertificateMaster.wtax_type == wtax_type,
+            LDCCertificateMaster.wtx_code == wtx_code,
             LDCCertificateMaster.applicable_tds_section == section,
+            LDCCertificateMaster.valid_from == valid_from,
+            LDCCertificateMaster.valid_to == valid_to,
+            LDCCertificateMaster.approved_tds_rate == approved_rate,
         ).first()
 
         values = {
@@ -392,9 +618,11 @@ async def upload_ldc_certificates(
             "vendor_code": vendor_code or None,
             "vendor_name": vendor_name,
             "company_code": company_code,
+            "wtax_type": wtax_type,
+            "wtx_code": wtx_code,
             "approved_tds_rate": approved_rate,
-            "valid_from": _to_date(_get(row_dict, "Valid_From", "Exemption_From")),
-            "valid_to": _to_date(_get(row_dict, "Valid_To", "Exemption_To")),
+            "valid_from": valid_from,
+            "valid_to": valid_to,
             "tax_year": _clean(_get(row_dict, "Tax_Year")) or None,
             "approved_amount_limit": _to_float(_get(row_dict, "Approved_Amount_Limit")),
             "status": status_value,

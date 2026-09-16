@@ -16,6 +16,7 @@ import {
 import { getFinancialYear } from '@/utils/utils'
 
 const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
+const LDC_UTILIZATION_STORAGE_KEY = 'tds_ldc_utilization_results'
 const LAST_UPLOAD_SCHEMA_VERSION = 4
 
 function readLastUpload() {
@@ -34,6 +35,13 @@ function readLastUpload() {
 
 function saveLastUpload(state) {
   if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(LDC_UTILIZATION_STORAGE_KEY, JSON.stringify({
+      ldcUtilization: state.uploadMeta?.ldcUtilization || [],
+    }))
+  } catch {
+    // LDC utilization is a small convenience cache; upload analysis remains the source of truth.
+  }
   const payload = {
     schemaVersion: LAST_UPLOAD_SCHEMA_VERSION,
     uploadedIssues: state.uploadedIssues,
@@ -49,6 +57,17 @@ function saveLastUpload(state) {
 function clearLastUpload() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(LAST_UPLOAD_STORAGE_KEY)
+  window.localStorage.removeItem(LDC_UTILIZATION_STORAGE_KEY)
+}
+
+function readLastLdcUtilization() {
+  if (typeof window === 'undefined') return []
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LDC_UTILIZATION_STORAGE_KEY) || 'null')
+    return Array.isArray(parsed?.ldcUtilization) ? parsed.ldcUtilization : []
+  } catch {
+    return []
+  }
 }
 
 const lastUpload = readLastUpload()
@@ -261,7 +280,7 @@ export function selectThresholdConsumptionTrend(state) {
 }
 
 export function selectLdcUtilization(state) {
-  return scopeToCompanyAndFY(state.issues.uploadMeta?.ldcUtilization || [], state)
+  return scopeToCompanyAndFY(state.issues.uploadMeta?.ldcUtilization || readLastLdcUtilization(), state)
 }
 
 export function selectGlCorrections(state) {

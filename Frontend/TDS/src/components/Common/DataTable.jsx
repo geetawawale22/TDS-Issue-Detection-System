@@ -1,6 +1,8 @@
-import { Fragment, useState, useMemo, useEffect } from 'react'
+import { Fragment, useState, useMemo, useEffect, useRef } from 'react'
 import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import './Common.css'
+
+const pageByStateKey = {}
 
 export default function DataTable({
   columns,
@@ -17,10 +19,20 @@ export default function DataTable({
   // of each other. Pass this only on the one table a page treats as its
   // primary list.
   showFloatingPager = false,
+  stateKey,
 }) {
-  const [page, setPage] = useState(1)
+  const didMountRef = useRef(false)
+  const [page, setPageState] = useState(() => stateKey ? pageByStateKey[stateKey] ?? 1 : 1)
   const [sortKey, setSortKey] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
+
+  function setPage(nextPage) {
+    setPageState((prev) => {
+      const value = typeof nextPage === 'function' ? nextPage(prev) : nextPage
+      if (stateKey) pageByStateKey[stateKey] = value
+      return value
+    })
+  }
 
   const sorted = useMemo(() => {
     if (!sortKey) return data
@@ -37,6 +49,10 @@ export default function DataTable({
 
   // Reset to page 1 when the dataset / filters change
   useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true
+      return
+    }
     setPage(1)
   }, [data])
 

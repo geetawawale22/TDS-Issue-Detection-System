@@ -140,6 +140,8 @@ class LDCCertificateMaster(Base):
 
     company_code = Column(String(10), nullable=True, index=True)
     deductor_tan = Column(String(20), nullable=True, index=True)
+    wtax_type = Column(String(20), nullable=True, index=True)
+    wtx_code = Column(String(20), nullable=True, index=True)
     applicable_tds_section = Column(String(50), nullable=False, index=True)
     approved_tds_rate = Column(Numeric(7, 4), nullable=False)
 
@@ -165,8 +167,15 @@ class LDCCertificateMaster(Base):
         UniqueConstraint(
             "certificate_number",
             "vendor_pan",
+            "vendor_code",
+            "company_code",
             "deductor_tan",
+            "wtax_type",
+            "wtx_code",
             "applicable_tds_section",
+            "valid_from",
+            "valid_to",
+            "approved_tds_rate",
             name="uq_ldc_certificate_scope",
         ),
         Index(
@@ -174,9 +183,40 @@ class LDCCertificateMaster(Base):
             "vendor_pan",
             "company_code",
             "deductor_tan",
+            "wtax_type",
+            "wtx_code",
             "applicable_tds_section",
             "valid_from",
             "valid_to",
+            "approved_tds_rate",
             "status",
         ),
     )
+
+
+class LDCUploadIssueRow(Base):
+    __tablename__ = "ldc_upload_issue_rows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    row_number = Column(Integer, nullable=False, index=True)
+    certificate_number = Column(String(100), nullable=True, index=True)
+    certificate_type = Column(String(20), nullable=True)
+    vendor_pan = Column(String(20), nullable=True, index=True)
+    vendor_code = Column(String(50), nullable=True, index=True)
+    vendor_name = Column(String(255), nullable=True)
+
+    company_code = Column(String(10), nullable=True, index=True)
+    deductor_tan = Column(String(20), nullable=True, index=True)
+    wtax_type = Column(String(20), nullable=True)
+    wtx_code = Column(String(20), nullable=True)
+    applicable_tds_section = Column(String(50), nullable=True)
+    approved_tds_rate = Column(Numeric(7, 4), nullable=True)
+
+    valid_from = Column(Date, nullable=True)
+    valid_to = Column(Date, nullable=True)
+    status = Column(String(20), nullable=True)
+    is_verified = Column(Boolean, nullable=True)
+    saved_to_master = Column(Boolean, nullable=False, default=False, index=True)
+    issues = Column(Text, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

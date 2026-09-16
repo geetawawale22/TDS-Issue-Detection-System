@@ -138,9 +138,15 @@ def _withholding_key(wtax_type: str | None, wtax_code: str | None) -> str | None
     return tax_code or tax_type or None
 
 
-def _certificate_section_matches(cert_section: str | None, txn_withholding_key: str | None, txn_sections: set[str]) -> bool:
+def _certificate_section_matches(
+    cert_section: str | None,
+    txn_withholding_key: str | None,
+    txn_sections: set[str],
+    cert_wtax_key: str | None = None,
+) -> bool:
     cert_key = (cert_section or "").strip().upper()
-    if not cert_key:
+    raw_cert_key = (cert_wtax_key or "").strip().upper()
+    if not cert_key and not raw_cert_key:
         return False
 
     if txn_withholding_key:
@@ -151,7 +157,7 @@ def _certificate_section_matches(cert_section: str | None, txn_withholding_key: 
             allowed_keys.add(txn_code)
         if txn_type:
             allowed_keys.add(txn_type)
-        return cert_key in allowed_keys
+        return raw_cert_key in allowed_keys or cert_key in allowed_keys or _normalise_section(cert_key) in txn_sections
 
     return cert_key in txn_sections or _normalise_section(cert_key) in txn_sections
 
@@ -159,6 +165,14 @@ def _certificate_section_matches(cert_section: str | None, txn_withholding_key: 
 def _looks_like_pan(value: str | None) -> bool:
     text = (value or "").strip().upper()
     return len(text) == 10 and text[:5].isalpha() and text[5:9].isdigit() and text[9].isalpha()
+
+
+def _attach_ldc_certificate(txn, cert: LDCCertificateMaster) -> None:
+    txn.ldc_exemption_number = cert.certificate_number
+    txn.ldc_exempt_from = cert.valid_from
+    txn.ldc_exempt_to = cert.valid_to
+    txn.ldc_exemption_percent = float(cert.approved_tds_rate)
+    txn.ldc_exemption_reason = f"{cert.certificate_type} certificate from LDC master"
 
 
 def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
@@ -233,10 +247,18 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
             code_matches = [cert for cert in scoped_matches if cert.vendor_code == txn.vendor_code]
             if code_matches:
                 scoped_matches = code_matches
-        matches = [
+        section_matches = [
             cert for cert in scoped_matches
-            if _certificate_section_matches(cert.applicable_tds_section, txn_withholding_key, txn_sections)
-            and cert.valid_from <= txn.posting_date <= cert.valid_to
+            if _certificate_section_matches(
+                cert.applicable_tds_section,
+                txn_withholding_key,
+                txn_sections,
+                _withholding_key(cert.wtax_type, cert.wtx_code),
+            )
+        ]
+        matches = [
+            cert for cert in section_matches
+            if cert.valid_from <= txn.posting_date <= cert.valid_to
         ]
 
         if not matches and not txn_withholding_key:
@@ -245,6 +267,25 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
                 if cert.valid_from <= txn.posting_date <= cert.valid_to
             ]
             matches = date_matches
+        if not matches and section_matches:
+            outside_period_matches = [
+                cert for cert in section_matches
+                if txn.posting_date < cert.valid_from or txn.posting_date > cert.valid_to
+            ]
+            if outside_period_matches:
+                cert = sorted(
+                    outside_period_matches,
+                    key=lambda item: (
+                        min(
+                            abs((txn.posting_date - item.valid_from).days),
+                            abs((txn.posting_date - item.valid_to).days),
+                        ),
+                        item.valid_from,
+                        item.certificate_number,
+                    ),
+                )[0]
+                _attach_ldc_certificate(txn, cert)
+                continue
         if not matches:
             continue
 
@@ -257,11 +298,7 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
                 item.certificate_number,
             ),
         )[0]
-        txn.ldc_exemption_number = cert.certificate_number
-        txn.ldc_exempt_from = cert.valid_from
-        txn.ldc_exempt_to = cert.valid_to
-        txn.ldc_exemption_percent = float(cert.approved_tds_rate)
-        txn.ldc_exemption_reason = f"{cert.certificate_type} certificate from LDC master"
+        _attach_ldc_certificate(txn, cert)
 
 
 def _ldc_limit_status(utilization_percent: float) -> tuple[str, str]:
@@ -744,6 +781,11 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         tax_impact = abs(tax_base_amount * (expected_rate - reference_rate) / 100)
         
     category = rule_issue.category
+    recommended_action = "Review the transaction and correct the TDS entry where required."
+    if category == "LDC Not Yet Valid":
+        recommended_action = "LDC exists, but the transaction date is before the certificate validity period, so LDC is not applied. Normal TDS is expected for this transaction date."
+    elif category == "LDC Expired":
+        recommended_action = "LDC exists, but the transaction date is after the certificate validity period, so LDC is not applied. Normal TDS is expected for this transaction date."
     effective_section = (
         txn.tds_new_section
         if txn.posting_date >= NEW_ACT_EFFECTIVE_DATE and txn.tds_new_section
@@ -788,8 +830,8 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "description": rule_issue.message,
         "plainEnglish": rule_issue.message,
         "issueDetail": rule_issue.message,
-        "recommendedAction": "Review the transaction and correct the TDS entry where required.",
-        "suggestedCorrection": "Review the transaction and correct the TDS entry where required.",
+        "recommendedAction": recommended_action,
+        "suggestedCorrection": recommended_action,
     }
 
 

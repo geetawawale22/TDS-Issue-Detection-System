@@ -605,19 +605,43 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
     if txn.ldc_exemption_percent is None and txn.ldc_approved_rate is None:
         return None  # no LDC on this vendor — skip, other checks apply
 
+    def normal_tds_is_satisfied(statutory_rate: Optional[float]) -> bool:
+        if statutory_rate is None or txn.basic_amount is None or txn.tds_deducted_amount is None:
+            return False
+        expected_tds = txn.basic_amount * (statutory_rate / 100)
+        return abs(expected_tds - txn.tds_deducted_amount) <= TDS_AMOUNT_ROUNDING_TOLERANCE
+
     # Check certificate is valid on the posting date
     if txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from:
+        statutory_rate = _get_statutory_rate(txn)
+        if normal_tds_is_satisfied(statutory_rate):
+            return None
+        expected_text = f" Normal TDS rate {statutory_rate}% is expected." if statutory_rate is not None else " Normal TDS rules should apply."
         return TDSIssue(
             category="LDC Not Yet Valid",
-            message=f"LDC certificate {txn.ldc_exemption_number} is not valid until {txn.ldc_exempt_from}, but transaction posted on {txn.posting_date}.",
+            message=(
+                f"LDC certificate {txn.ldc_exemption_number} exists, but it is valid from "
+                f"{txn.ldc_exempt_from}. Transaction date is {txn.posting_date}, so LDC is not "
+                f"applicable for this transaction date.{expected_text}"
+            ),
             severity="high",
+            expected_rate=statutory_rate,
         )
 
     if txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to:
+        statutory_rate = _get_statutory_rate(txn)
+        if normal_tds_is_satisfied(statutory_rate):
+            return None
+        expected_text = f" Normal TDS rate {statutory_rate}% is expected." if statutory_rate is not None else " Normal TDS rules should apply."
         return TDSIssue(
             category="LDC Expired",
-            message=f"LDC certificate {txn.ldc_exemption_number} expired on {txn.ldc_exempt_to}, but transaction posted on {txn.posting_date}. Normal TDS rules should apply.",
+            message=(
+                f"LDC certificate {txn.ldc_exemption_number} expired on {txn.ldc_exempt_to}. "
+                f"Transaction date is {txn.posting_date}, so LDC is not applicable for this "
+                f"transaction date.{expected_text}"
+            ),
             severity="high",
+            expected_rate=statutory_rate,
         )
 
     if txn.basic_amount is None:
