@@ -69,7 +69,9 @@ export default function ThresholdMonitoring() {
       </span>
     )},
     { key: 'currentAmount', header: 'Current',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.currentAmount)}</span> },
-    { key: 'status',        header: 'Status',    render: (r) => (
+    { key: 'status',        header: 'Status',    sortValue: (r) => (
+      r.status === 'pan_issue' ? 'PAN Issue' : formatStatusLabel(r.status)
+    ), render: (r) => (
       <StatusBadge label={r.status === 'pan_issue' ? 'PAN Issue' : formatStatusLabel(r.status)} tone={thresholdStatusToTone(r.status)} />
     )},
     { key: 'progress',      header: 'Progress',  render: (r) => (
@@ -101,7 +103,7 @@ export default function ThresholdMonitoring() {
     { key: 'limit', header: 'LDC Limit', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.limit == null ? 'Not set' : formatCurrency(r.limit)}</span> },
     { key: 'used', header: 'Utilized', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.used || 0)}</span> },
     { key: 'available', header: 'Available', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.available == null ? '—' : formatCurrency(r.available)}</span> },
-    { key: 'status', header: 'Status', render: (r) => <StatusBadge label={r.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(r.status)} /> },
+    { key: 'status', header: 'Status', sortValue: (r) => r.statusLabel || 'Within LDC Limit', render: (r) => <StatusBadge label={r.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(r.status)} /> },
     { key: 'utilization', header: 'Progress', render: (r) => (
       r.utilization == null
         ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>

@@ -49,6 +49,31 @@ router = APIRouter(prefix="/issues", tags=["Issues"])
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".xlsm"}
 NEW_ACT_EFFECTIVE_DATE = date(2026, 4, 1)
+NON_TDS_DEDUCTION_DOC_TYPES = {
+    # Confirmed supporting/accounting document types from the SAP document-type master.
+    "AB": "Clearing Document",
+    "TP": "Transfer Postings",
+    "BT": "TDS Payments",
+    "SA": "G/L account document",
+    "ST": "IUT - Stock Transfer",
+    "BR": "Bank Recon. Doc.",
+    "ML": "Material Ledger",
+    "PR": "Price Change",
+    "QR": "Accrual auto posting",
+    "QS": "Cost Settlement",
+    "UG": "IUTN/IDTN - GL",
+    "ZY": "IFRS - GL Reclassify",
+    "ZZ": "Sales Inv-SD RevRec",
+    "WA": "Goods Issue",
+    "WE": "Goods Receipt",
+    "WI": "Inventory Document",
+    "WL": "Goods Issue/Delivery",
+    "WN": "Net Goods Receipt",
+    "W2": "GR/IR Stock posting",
+    "W3": "Goods Receipt statement",
+    "JV": "Journal Entry",
+    "JR": "Provisional J.Vs",
+}
 
 # Matches the identifiers used by the frontend's issue-type filters.
 ISSUE_TYPE_BY_CATEGORY = {
@@ -58,6 +83,7 @@ ISSUE_TYPE_BY_CATEGORY = {
     "PAN Missing/Invalid — Short TDS Deducted": "PAN_MISSING_SHORT",
     "PAN Missing/Invalid — Correctly Handled": "PAN_CORRECT",
     "Wrong TDS Rate": "WRONG_TDS_RATE",
+    "TDS Section Missing": "MISSING_SECTION",
     "Short TDS Deducted": "SHORT_TDS",
     "Excess TDS Deducted": "EXCESS_TDS",
     "Wrong Section Applied": "WRONG_SECTION_HSN",
@@ -226,6 +252,7 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
     for txn in transactions:
         pan = (txn.vendor_pan or "").strip().upper()
         company_code = (txn.company_code or "").strip()
+        has_valid_pan = _looks_like_pan(pan)
         expected_section = PAYMENT_TYPE_TO_SECTION.get(_normalise_payment_type(txn.transaction_kind))
         txn_withholding_key = _withholding_key(txn.withholding_tax_type, txn.withholding_tax_code)
         txn_sections = {
@@ -240,33 +267,69 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
 
         scoped_matches = [
             cert for cert in certificates
-            if (cert.vendor_pan == pan or (cert.vendor_code and cert.vendor_code == txn.vendor_code))
+            if (
+                ((cert.vendor_pan or "").strip().upper() == pan)
+                if has_valid_pan
+                else ((cert.vendor_code or "").strip() == (txn.vendor_code or "").strip())
+            )
             and (not cert.company_code or cert.company_code == company_code)
         ]
-        if txn.vendor_code:
+        if txn.vendor_code and not has_valid_pan:
             code_matches = [cert for cert in scoped_matches if cert.vendor_code == txn.vendor_code]
             if code_matches:
                 scoped_matches = code_matches
-        section_matches = [
-            cert for cert in scoped_matches
-            if _certificate_section_matches(
+        def certificate_matches_section(cert: LDCCertificateMaster) -> bool:
+            return _certificate_section_matches(
                 cert.applicable_tds_section,
                 txn_withholding_key,
                 txn_sections,
                 _withholding_key(cert.wtax_type, cert.wtx_code),
             )
-        ]
+
+        def certificate_expected_gap(cert: LDCCertificateMaster) -> float:
+            if txn.basic_amount is None or txn.tds_deducted_amount is None:
+                return math.inf
+            statutory_rate = (
+                _get_rate_for_section(txn.tds_deducted_section, txn)
+                or _get_rate_for_section(txn.tds_legacy_section, txn)
+                or _get_rate_for_section(expected_section, txn)
+            )
+            if statutory_rate is None or cert.approved_tds_rate is None:
+                return math.inf
+            expected_rate = statutory_rate * (1 - float(cert.approved_tds_rate) / 100)
+            expected_amount = abs(float(txn.basic_amount) * expected_rate / 100)
+            return abs(expected_amount - abs(float(txn.tds_deducted_amount)))
+
+        def certificate_priority(cert: LDCCertificateMaster) -> tuple[Any, ...]:
+            cert_section_key = (cert.applicable_tds_section or "").strip().upper()
+            cert_wtax_key = _withholding_key(cert.wtax_type, cert.wtx_code)
+            exact_key_match = bool(
+                txn_withholding_key
+                and (
+                    cert_section_key == txn_withholding_key
+                    or (cert_wtax_key or "").strip().upper() == txn_withholding_key
+                )
+            )
+            return (
+                0 if exact_key_match else 1,
+                0 if certificate_matches_section(cert) else 1,
+                0 if cert.company_code else 1,
+                certificate_expected_gap(cert),
+                cert.valid_from,
+                cert.certificate_number,
+            )
+
+        section_matches = [cert for cert in scoped_matches if certificate_matches_section(cert)]
         matches = [
             cert for cert in section_matches
             if cert.valid_from <= txn.posting_date <= cert.valid_to
         ]
 
-        if not matches and not txn_withholding_key:
-            date_matches = [
+        if not matches:
+            matches = [
                 cert for cert in scoped_matches
                 if cert.valid_from <= txn.posting_date <= cert.valid_to
             ]
-            matches = date_matches
         if not matches and section_matches:
             outside_period_matches = [
                 cert for cert in section_matches
@@ -291,12 +354,7 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
 
         cert = sorted(
             matches,
-            key=lambda item: (
-                0 if txn_withholding_key and item.applicable_tds_section.strip().upper() == txn_withholding_key else 1,
-                0 if item.company_code else 1,
-                item.valid_from,
-                item.certificate_number,
-            ),
+            key=certificate_priority,
         )[0]
         _attach_ldc_certificate(txn, cert)
 
@@ -358,6 +416,9 @@ def _attach_ldc_limits(ldc_utilization: list[dict[str, Any]], db: Session) -> No
     for row in ldc_utilization:
         cert = certificates.get(row["certificateNumber"])
         limit = float(cert.approved_amount_limit) if cert and cert.approved_amount_limit is not None else None
+        if cert:
+            row["validFrom"] = row.get("validFrom") or (cert.valid_from.isoformat() if cert.valid_from else None)
+            row["validTo"] = row.get("validTo") or (cert.valid_to.isoformat() if cert.valid_to else None)
         row["limit"] = limit
         row["available"] = None if limit is None else limit - row["used"]
         row["utilization"] = None if not limit else round((row["used"] / limit) * 100, 2)
@@ -506,16 +567,32 @@ def _build_joined_case_transactions(vendor_rows: list[dict[str, Any]], tds_rows:
 def _event_type_from_joined_row(row: dict[str, Any]) -> str:
     doc_type = str(row.get("docType") or "").strip().upper()
     amount = float(row.get("amount") or 0)
-    if row.get("isReversed") or row.get("reversalDocument") or amount < 0:
+    if row.get("isReversed") or row.get("reversalDocument"):
         return "REVERSAL"
-    if doc_type in {"KG", "AB"}:
-        return "CREDIT_MEMO"
-    if doc_type in {"RE", "KR"}:
+    if doc_type in {"RE", "KR", "F1", "F2", "F3", "FA", "LQ", "RH", "RP", "KW", "ZU"}:
         return "INVOICE"
     if doc_type == "KA":
         return "ADVANCE_PAYMENT"
     if doc_type == "KZ":
         return "PAYMENT"
+    if doc_type in {"KG", "F4", "F5", "F6", "KC"}:
+        return "CREDIT_MEMO"
+    if doc_type in {"KN", "KD"}:
+        return "DEBIT_NOTE"
+    if doc_type == "AB":
+        return "CLEARING"
+    if doc_type in {"TP", "TM"}:
+        return "TRANSFER_POSTING"
+    if doc_type == "BT":
+        return "TDS_PAYMENT"
+    if doc_type == "JV":
+        return "JOURNAL"
+    if doc_type == "JR":
+        return "PROVISION"
+    if doc_type in {"SA", "ST", "BR", "ML", "PR", "QR", "QS", "UG", "ZY", "ZZ", "WA", "WE", "WI", "WL", "WN", "W2", "W3"}:
+        return "SUPPORTING"
+    if amount < 0:
+        return "REVERSAL"
     return "UNKNOWN"
 
 
@@ -550,6 +627,7 @@ def _build_case_ledger(joined_rows: list[dict[str, Any]], issues: list[dict[str,
             "paymentAmount": 0.0,
             "creditAmount": 0.0,
             "reversalAmount": 0.0,
+            "adjustmentAmount": 0.0,
             "tdsAmount": 0.0,
             "eventCount": 0,
             "issueCount": 0,
@@ -567,6 +645,8 @@ def _build_case_ledger(joined_rows: list[dict[str, Any]], issues: list[dict[str,
             ledger["creditAmount"] += amount
         elif event_type == "REVERSAL":
             ledger["reversalAmount"] += amount
+        else:
+            ledger["adjustmentAmount"] += amount
         ledger["tdsAmount"] += tds_amount
         ledger["eventCount"] += 1
         doc_issues = issues_by_doc.get(str(row.get("docNo") or "").strip(), [])
@@ -583,7 +663,12 @@ def _build_case_ledger(joined_rows: list[dict[str, Any]], issues: list[dict[str,
     case_ledgers = []
     for ledger in ledgers.values():
         gross_base = ledger["invoiceAmount"] + ledger["advanceAmount"]
-        adjustments = ledger["paymentAmount"] + ledger["creditAmount"] + ledger["reversalAmount"]
+        adjustments = (
+            ledger["paymentAmount"]
+            + ledger["creditAmount"]
+            + ledger["reversalAmount"]
+            + ledger["adjustmentAmount"]
+        )
         ledger["openAmount"] = max(0.0, gross_base - adjustments)
         ledger["status"] = "ISSUE" if ledger["issueCount"] else "CLOSED" if ledger["openAmount"] == 0 and gross_base > 0 else "OPEN"
         case_ledgers.append(ledger)
@@ -756,6 +841,41 @@ def _normalise_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return frame.where(pd.notna(frame), None).to_dict(orient="records")
 
 
+def _transaction_payload(txn) -> dict[str, Any]:
+    if hasattr(txn, "model_dump"):
+        return txn.model_dump(mode="json")
+    return txn.dict()
+
+
+def _dedupe_transactions(transactions) -> list[Any]:
+    """Keep only fully identical transaction objects once."""
+    deduped = []
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+
+    for txn in transactions:
+        key = tuple(sorted(_transaction_payload(txn).items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(txn)
+
+    return deduped
+
+
+def _effective_applied_rate(base_amount: float | None, tds_amount: float | None) -> float | None:
+    if base_amount is None:
+        return None
+    try:
+        base = float(base_amount)
+    except (TypeError, ValueError):
+        return None
+    if base <= 0:
+        return None
+
+    tds = abs(float(tds_amount or 0.0))
+    return round((tds / base) * 100, 4)
+
+
 def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     # Rule-specific overrides (PAN/206AA, inferred missing-deduction rates,
     # LDC, etc.) must win over the base statutory section rate.
@@ -766,19 +886,20 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
             if rule_issue.expected_section
             else _get_applicable_rate(txn)
         )
-    applied_rate = txn.tds_deducted_rate
     # Bill amount is retained for display when SAP did not provide a taxable
     # base. It is never used to calculate tax impact or rule outcomes.
     base_amount = _get_tds_base_amount(txn)
     if base_amount is None:
         base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+    applied_rate = _effective_applied_rate(base_amount, txn.tds_deducted_amount)
+    if applied_rate is None:
+        applied_rate = txn.tds_deducted_rate
     tax_impact = 0.0
     tax_base_amount = _get_tds_base_amount(txn)
     if tax_base_amount is not None and expected_rate is not None:
-        # No rate recorded on the transaction means nothing was deducted —
-        # treat that as 0% for the purpose of measuring the shortfall.
-        reference_rate = applied_rate if applied_rate is not None else 0.0
-        tax_impact = abs(tax_base_amount * (expected_rate - reference_rate) / 100)
+        expected_tds = abs(float(tax_base_amount) * expected_rate / 100)
+        actual_tds = abs(float(txn.tds_deducted_amount or 0.0))
+        tax_impact = abs(expected_tds - actual_tds)
         
     category = rule_issue.category
     recommended_action = "Review the transaction and correct the TDS entry where required."
@@ -798,6 +919,7 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     return {
         "id": f"UPL-{issue_id:06d}",
         "docNo": txn.doc_number or "—",
+        "docType": txn.doc_type or "—",
         "companyCode": txn.company_code or None,
         "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
         "vendorId": txn.vendor_code or "—",
@@ -817,6 +939,8 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "appliedRate": applied_rate,
         "ldcCertificate": txn.ldc_exemption_number,
         "ldcExemptionPercent": txn.ldc_exemption_percent,
+        "ldcValidFrom": txn.ldc_exempt_from.isoformat() if txn.ldc_exempt_from else None,
+        "ldcValidTo": txn.ldc_exempt_to.isoformat() if txn.ldc_exempt_to else None,
         "withholdingTaxType": txn.withholding_tax_type,
         "withholdingTaxCode": txn.withholding_tax_code,
         "taxImpact": round(tax_impact, 2),
@@ -827,12 +951,51 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "severity": rule_issue.severity,
         "status": "open",
         "date": txn.posting_date.isoformat(),
+        "postingDate": txn.posting_date.isoformat(),
+        "documentDate": txn.bill_date.isoformat() if txn.bill_date else None,
         "description": rule_issue.message,
         "plainEnglish": rule_issue.message,
         "issueDetail": rule_issue.message,
         "recommendedAction": recommended_action,
         "suggestedCorrection": recommended_action,
     }
+
+
+def _dedupe_issue_rows(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove exact duplicate issue rows while ignoring generated display IDs."""
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+
+    for issue in issues:
+        key = tuple(
+            sorted((field, value) for field, value in issue.items() if field != "id")
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+
+    for index, issue in enumerate(deduped, start=1):
+        issue["id"] = f"UPL-{index:06d}"
+
+    return deduped
+
+
+def _dedupe_response_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove exact duplicate response rows while ignoring generated row IDs."""
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+
+    for row in rows:
+        key = tuple(
+            sorted((field, value) for field, value in row.items() if field != "id")
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+
+    return deduped
 
 
 def _threshold_section_for_transaction(txn) -> str:
@@ -896,9 +1059,13 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int) -
     base_amount = _get_tds_base_amount(txn)
     if base_amount is None:
         base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+    applied_rate = _effective_applied_rate(base_amount, txn.tds_deducted_amount)
+    if applied_rate is None:
+        applied_rate = txn.tds_deducted_rate
     expected_rate = _get_applicable_rate(txn)
     section = (txn.tds_deducted_section or txn.tds_legacy_section or "").strip().upper()
-    if section == "194J" and txn.tds_deducted_rate in SECTION_194J_VALID_RATES:
+    has_ldc_rate = txn.ldc_exemption_percent is not None or txn.ldc_approved_rate is not None
+    if not has_ldc_rate and section == "194J" and txn.tds_deducted_rate in SECTION_194J_VALID_RATES:
         expected_rate = txn.tds_deducted_rate
 
     return {
@@ -916,9 +1083,15 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int) -
         "billAmount": txn.bill_amount,
         "baseAmount": base_amount,
         "tdsAmount": txn.tds_deducted_amount or 0.0,
-        "appliedRate": txn.tds_deducted_rate,
+        "appliedRate": applied_rate,
         "expectedRate": expected_rate,
+        "ldcCertificate": txn.ldc_exemption_number,
+        "ldcExemptionPercent": txn.ldc_exemption_percent,
+        "ldcValidFrom": txn.ldc_exempt_from.isoformat() if txn.ldc_exempt_from else None,
+        "ldcValidTo": txn.ldc_exempt_to.isoformat() if txn.ldc_exempt_to else None,
         "date": txn.posting_date.isoformat(),
+        "postingDate": txn.posting_date.isoformat(),
+        "documentDate": txn.bill_date.isoformat() if txn.bill_date else None,
     }
 
 
@@ -937,6 +1110,36 @@ def _has_validation_signal(txn) -> bool:
 def _has_zero_base_amount(txn) -> bool:
     base_amount = _get_tds_base_amount(txn)
     return base_amount is not None and float(base_amount) == 0.0
+
+
+def _blank_or_zero_amount(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_skipped_non_tds_document_without_tds_amounts(txn) -> bool:
+    doc_type = (txn.doc_type or "").strip().upper()
+    return (
+        doc_type in NON_TDS_DEDUCTION_DOC_TYPES
+        and _blank_or_zero_amount(txn.withholding_tax_base_amount)
+        and _blank_or_zero_amount(txn.tds_deducted_amount)
+    )
+
+
+def _skipped_non_tds_document_reason(txn) -> str:
+    doc_type = (txn.doc_type or "").strip().upper() or "—"
+    description = NON_TDS_DEDUCTION_DOC_TYPES.get(doc_type, "non-TDS supporting document")
+    return (
+        f"Document Type {doc_type} ({description}) is not a TDS deduction document, "
+        "and both withholding tax base amount and withholding tax amount are blank/zero; "
+        "excluded from TDS validation."
+    )
 
 
 @router.post("/upload")
@@ -996,6 +1199,7 @@ async def upload_sap_file(
             if uses_descriptive_section
             else build_transactions_from_sap_rows(records)
         )
+        transactions = _dedupe_transactions(transactions)
     except (ValidationError, ValueError, TypeError) as exc:
         raise HTTPException(
             status_code=422,
@@ -1017,7 +1221,9 @@ async def upload_sap_file(
     issue_reasons_by_transaction_id: dict[int, str] = {}
     issue_transaction_ids: set[int] = set()
     issue_eligible_transactions = [
-        txn for txn in transactions if not _has_zero_base_amount(txn)
+        txn for txn in transactions
+        if not _is_skipped_non_tds_document_without_tds_amounts(txn)
+        and not _has_zero_base_amount(txn)
     ]
     for txn in issue_eligible_transactions:
         for rule_issue in run_all_checks(txn):
@@ -1052,16 +1258,23 @@ async def upload_sap_file(
         issue_transaction_ids.add(id(txn))
         issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
+    issues = _dedupe_issue_rows(issues)
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
     threshold_vendors = _threshold_vendor_summaries(transactions)
     case_ledger = _build_case_ledger_from_transactions(transactions, issues)
+    skipped_validation_rows = sum(
+        id(txn) not in issue_transaction_ids and _is_skipped_non_tds_document_without_tds_amounts(txn)
+        for txn in transactions
+    )
     insufficient_data_rows = sum(
-        id(txn) not in issue_transaction_ids and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
+        id(txn) not in issue_transaction_ids
+        and not _is_skipped_non_tds_document_without_tds_amounts(txn)
+        and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
         for txn in transactions
     )
     issue_rows = len(issue_transaction_ids)
-    passed_rows = max(0, len(transactions) - issue_rows - insufficient_data_rows)
+    passed_rows = max(0, len(transactions) - issue_rows - insufficient_data_rows - skipped_validation_rows)
     validation_rows = []
     for row_index, txn in enumerate(transactions, start=1):
         txn_id = id(txn)
@@ -1070,6 +1283,13 @@ async def upload_sap_file(
                 txn,
                 "issue",
                 issue_reasons_by_transaction_id.get(txn_id, "Issue found"),
+                row_index,
+            ))
+        elif _is_skipped_non_tds_document_without_tds_amounts(txn):
+            validation_rows.append(_transaction_validation_row(
+                txn,
+                "skipped",
+                _skipped_non_tds_document_reason(txn),
                 row_index,
             ))
         elif _has_zero_base_amount(txn):
@@ -1094,10 +1314,16 @@ async def upload_sap_file(
                 row_index,
             ))
 
+    validation_rows = _dedupe_response_rows(validation_rows)
+    passed_rows = sum(row["status"] == "passed" for row in validation_rows)
+    issue_rows = sum(row["status"] == "issue" for row in validation_rows)
+    insufficient_data_rows = sum(row["status"] == "insufficient" for row in validation_rows)
+    skipped_validation_rows = sum(row["status"] == "skipped" for row in validation_rows)
+
     stats = {
         "rowsRead": len(records),
-        "transactionsBuilt": len(transactions),
-        "rowsSkipped": len(records) - len(transactions),
+        "transactionsBuilt": len(validation_rows),
+        "rowsSkipped": max(0, len(records) - len(validation_rows)),
         "passedRows": passed_rows,
         "issueRows": issue_rows,
         "insufficientDataRows": insufficient_data_rows,
@@ -1156,7 +1382,7 @@ async def upload_case_source_files(
     tds_rows = tds_frame.where(pd.notna(tds_frame), None).to_dict(orient="records")
     transaction_rows, joined_rows = _build_joined_case_transactions(vendor_rows, tds_rows)
 
-    transactions = build_transactions_from_sap_rows(transaction_rows)
+    transactions = _dedupe_transactions(build_transactions_from_sap_rows(transaction_rows))
     _apply_ldc_master_to_transactions(transactions, db)
     tds_cases, case_stats = build_tds_cases(transactions)
     ldc_utilization = _build_ldc_utilization(transactions)
@@ -1165,7 +1391,9 @@ async def upload_case_source_files(
     issues: list[dict[str, Any]] = []
     issue_transaction_ids: set[int] = set()
     issue_eligible_transactions = [
-        txn for txn in transactions if not _has_zero_base_amount(txn)
+        txn for txn in transactions
+        if not _is_skipped_non_tds_document_without_tds_amounts(txn)
+        and not _has_zero_base_amount(txn)
     ]
 
     for txn in issue_eligible_transactions:
@@ -1193,18 +1421,25 @@ async def upload_case_source_files(
         issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
         issue_transaction_ids.add(id(txn))
 
+    issues = _dedupe_issue_rows(issues)
     missing_tds_candidates = [
         row for row in joined_rows
         if not row["tdsFound"] and str(row.get("docType") or "").upper() in {"RE", "KR", "KA"}
     ]
     threshold_vendors = _threshold_vendor_summaries(transactions)
     case_ledger = _build_case_ledger(joined_rows, issues)
+    skipped_validation_rows = sum(
+        id(txn) not in issue_transaction_ids and _is_skipped_non_tds_document_without_tds_amounts(txn)
+        for txn in transactions
+    )
     insufficient_data_rows = sum(
-        id(txn) not in issue_transaction_ids and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
+        id(txn) not in issue_transaction_ids
+        and not _is_skipped_non_tds_document_without_tds_amounts(txn)
+        and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
         for txn in transactions
     )
     issue_rows = len(issue_transaction_ids)
-    passed_rows = max(0, len(transactions) - issue_rows - insufficient_data_rows)
+    passed_rows = max(0, len(transactions) - issue_rows - insufficient_data_rows - skipped_validation_rows)
 
     response = {
         "uploadId": str(uuid4()),
@@ -1220,6 +1455,7 @@ async def upload_case_source_files(
             "passedRows": passed_rows,
             "issueRows": issue_rows,
             "insufficientDataRows": insufficient_data_rows,
+            "skippedRows": skipped_validation_rows,
             "issuesFound": len(issues),
             "ledgerCases": len(case_ledger),
             "openLedgerCases": sum(case["status"] == "OPEN" for case in case_ledger),

@@ -43,6 +43,30 @@ PAYMENT_TYPE_TEXT_PATTERNS = (
     ("dividend", (r"\bdividend\b",)),
     ("ecommerce", (r"\be[- ]?commerce\b",)),
 )
+NON_TDS_DEDUCTION_DOC_TYPES = {
+    "AB",
+    "TP",
+    "BT",
+    "SA",
+    "ST",
+    "BR",
+    "ML",
+    "PR",
+    "QR",
+    "QS",
+    "UG",
+    "ZY",
+    "ZZ",
+    "WA",
+    "WE",
+    "WI",
+    "WL",
+    "WN",
+    "W2",
+    "W3",
+    "JV",
+    "JR",
+}
 
 
 # ============================================================
@@ -386,6 +410,10 @@ def _get_applicable_rate(txn: Transaction) -> Optional[float]:
     Determines what the TDS rate SHOULD be after LDC relief, if any.
     """
     statutory_rate = _get_statutory_rate(txn)
+    if (txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from) or (
+        txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to
+    ):
+        return statutory_rate
     if txn.ldc_approved_rate is not None:
         return txn.ldc_approved_rate
     if txn.ldc_exemption_percent is not None and statutory_rate is not None:
@@ -838,11 +866,48 @@ def check_residential_status(txn: Transaction) -> Optional[TDSIssue]:
 
 
 
+def _blank_or_zero_amount(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_supporting_adjustment_without_tds(txn: Transaction) -> bool:
-    """Adjustment rows support a document case, but should not create standalone TDS issues."""
+    """Supporting rows without withholding amounts should not create standalone TDS issues."""
     doc_type = (txn.doc_type or "").strip().upper()
-    has_tds_signal = bool(txn.tds_deducted_section or txn.tds_deducted_rate or txn.tds_deducted_amount)
-    return doc_type == "AB" and not has_tds_signal
+    return (
+        doc_type in NON_TDS_DEDUCTION_DOC_TYPES
+        and _blank_or_zero_amount(txn.withholding_tax_base_amount)
+        and _blank_or_zero_amount(txn.tds_deducted_amount)
+    )
+
+
+def check_missing_tds_section(txn: Transaction) -> Optional[TDSIssue]:
+    """TDS amount is present, but section is blank, so the deduction cannot be validated."""
+    has_tds_amount = abs(txn.tds_deducted_amount or 0.0) > 0
+    has_section = bool(
+        (txn.tds_deducted_section or "").strip()
+        or (txn.tds_legacy_section or "").strip()
+        or (txn.tds_new_section or "").strip()
+        or (txn.tds_applicable_section or "").strip()
+    )
+    if not has_tds_amount or has_section:
+        return None
+
+    return TDSIssue(
+        category="TDS Section Missing",
+        message=(
+            f"TDS amount ₹{abs(txn.tds_deducted_amount or 0.0):,.2f} was deducted, "
+            "but no TDS section is available on this row. Add/confirm the section "
+            "before validating rate and amount."
+        ),
+        severity="medium",
+    )
 
 
 def _is_payment_without_advance_obligation(txn: Transaction) -> bool:
@@ -862,6 +927,11 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
     issues = []
 
     if _is_supporting_adjustment_without_tds(txn):
+        return issues
+
+    missing_section_issue = check_missing_tds_section(txn)
+    if missing_section_issue is not None:
+        issues.append(missing_section_issue)
         return issues
 
     # 1. Applicability override.
@@ -1290,7 +1360,7 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
     for txn in transactions:
         if _is_supporting_adjustment_without_tds(txn) or _is_payment_without_advance_obligation(txn):
             continue
-        if txn.tds_deducted_section or txn.tds_deducted_rate:
+        if txn.tds_deducted_section or txn.tds_deducted_rate or abs(txn.tds_deducted_amount or 0.0) > 0:
             continue  # already has TDS data — not this check's concern
 
         if not txn.gl_account:

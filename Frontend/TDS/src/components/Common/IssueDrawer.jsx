@@ -41,6 +41,7 @@ export default function IssueDrawer({ issue, open, onClose }) {
                       { label: 'Issue Type',     value: getDisplayIssueType(issue),          mono: false },
                       { label: 'Doc No.',        value: issue.docNo,                         mono: true },
                       { label: 'Vendor ID',      value: issue.vendorId,                      mono: true },
+                      { label: 'PAN No.',        value: issue.vendorPan || issue.pan || '—', mono: true },
                       { label: 'Section (effective)', value: issue.section,                    mono: true },
                       ...(issue.newSection ? [
                         { label: 'New-law Section', value: issue.newSection,                  mono: true },
@@ -48,7 +49,10 @@ export default function IssueDrawer({ issue, open, onClose }) {
                       ...(issue.legacySection ? [
                         { label: 'Legacy Section', value: issue.legacySection,                mono: true },
                       ] : []),
-                      { label: 'Date',           value: formatDate(issue.date),              mono: false },
+                      { label: 'Posting Date',   value: formatDate(issue.postingDate || issue.date), mono: false },
+                      ...(issue.documentDate ? [
+                        { label: 'Document Date', value: formatDate(issue.documentDate), mono: false },
+                      ] : []),
                       ...(issue.thresholdAmount != null ? [
                         { label: 'FY',            value: issue.financialYear || '—',         mono: true },
                         { label: 'Txn Count',     value: String(issue.txnCount ?? '—'),      mono: true },
@@ -64,6 +68,8 @@ export default function IssueDrawer({ issue, open, onClose }) {
                       ...(issue.ldcCertificate ? [
                         { label: 'LDC Certificate', value: issue.ldcCertificate, mono: true },
                         { label: 'LDC Exemption', value: issue.ldcExemptionPercent == null ? '—' : `${issue.ldcExemptionPercent}%`, mono: true },
+                        { label: 'LDC Valid From', value: issue.ldcValidFrom ? formatDate(issue.ldcValidFrom) : '—', mono: false },
+                        { label: 'LDC Valid To', value: issue.ldcValidTo ? formatDate(issue.ldcValidTo) : '—', mono: false },
                       ] : []),
                     ]
                     const rateFields = [

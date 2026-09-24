@@ -80,6 +80,7 @@ export default function Issues() {
   const [searchParams] = useSearchParams()
   const [validationView, setValidationView] = useState('all')
   const [reviewValidationRow, setReviewValidationRow] = useState(null)
+  const [docTypeFilter, setDocTypeFilter] = useState('all')
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
     issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta,
@@ -102,8 +103,12 @@ export default function Issues() {
     const view = searchParams.get('view')
     const severity = searchParams.get('severity')
     const status = searchParams.get('status')
+    const issueType = searchParams.get('type')
+    const section = searchParams.get('section')
+    const vendor = searchParams.get('vendor')
 
     dispatch(resetFilters())
+    setDocTypeFilter('all')
     if (['all', 'issue', 'passed', 'insufficient', 'skipped'].includes(view)) {
       setValidationView(view)
     } else {
@@ -111,6 +116,9 @@ export default function Issues() {
     }
     if (severity) dispatch(setSeverityFilter(severity))
     if (status) dispatch(setStatusFilter(status))
+    if (issueType) dispatch(setIssueTypeFilter(issueType))
+    if (section) dispatch(setSectionFilter(section))
+    if (vendor) dispatch(setVendorFilter(vendor))
   }, [dispatch, searchParams])
 
   // PAN is verified for every vendor in the loaded issue set at once, not
@@ -161,6 +169,7 @@ export default function Issues() {
         !issue.vendor?.toLowerCase().includes(q) &&
         !issue.id?.toLowerCase().includes(q) &&
         !String(issue.docNo ?? '').toLowerCase().includes(q) &&
+        !String(issue.docType ?? '').toLowerCase().includes(q) &&
         !String(issue.vendorId ?? '').toLowerCase().includes(q) &&
         !String(issue.section ?? '').toLowerCase().includes(q) &&
         !String(issue.vendorPan ?? '').toLowerCase().includes(q)
@@ -168,11 +177,16 @@ export default function Issues() {
     }
     if (vendorFilter    !== 'all' && issue.vendor    !== vendorFilter)    return false
     if (sectionFilter   !== 'all' && issue.section   !== sectionFilter)   return false
+    if (docTypeFilter   !== 'all' && String(issue.docType ?? '').toUpperCase() !== docTypeFilter) return false
     if (severityFilter  !== 'all' && issue.severity  !== severityFilter)  return false
     if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
-    if (issueTypeFilter !== 'all' && !issueTypeFilter.split(MULTI_CATEGORY_DELIMITER).includes(getDisplayIssueType(issue))) return false
+    if (issueTypeFilter !== 'all') {
+      const allowedTypes = issueTypeFilter.split(MULTI_CATEGORY_DELIMITER)
+      const rowTypes = [getDisplayIssueType(issue), issue.category, issue.issueTypeLabel, issue.issueType].filter(Boolean)
+      if (!rowTypes.some((type) => allowedTypes.includes(type))) return false
+    }
     return true
-  }), [issues, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
+  }), [issues, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
 
@@ -182,7 +196,7 @@ export default function Issues() {
   // "passed".
   const adjustedValidationRows = useMemo(() => (
     activeValidationRows.map((row) => (
-      Number(row.baseAmount) === 0
+      row.status !== 'skipped' && Number(row.baseAmount) === 0
         ? {
           ...row,
           status: 'insufficient',
@@ -191,32 +205,65 @@ export default function Issues() {
         : row
     ))
   ), [activeValidationRows])
-  const drawerIssue = reviewValidationRow || selectedIssue
+  const ldcValidityByCertificate = useMemo(() => {
+    const pairs = (uploadMeta?.ldcUtilization || [])
+      .filter((row) => row.certificateNumber)
+      .map((row) => [row.certificateNumber, {
+        validFrom: row.validFrom,
+        validTo: row.validTo,
+      }])
+    return new Map(pairs)
+  }, [uploadMeta])
+  const drawerIssue = useMemo(() => {
+    const issue = reviewValidationRow || selectedIssue
+    if (!issue?.ldcCertificate) return issue
+    const ldcValidity = ldcValidityByCertificate.get(issue.ldcCertificate)
+    return {
+      ...issue,
+      ldcValidFrom: issue.ldcValidFrom ?? ldcValidity?.validFrom,
+      ldcValidTo: issue.ldcValidTo ?? ldcValidity?.validTo,
+    }
+  }, [reviewValidationRow, selectedIssue, ldcValidityByCertificate])
   const drawerIsOpen = Boolean(reviewValidationRow) || drawerOpen
 
   function buildValidationReviewIssue(row) {
     const isInsufficient = row.status === 'insufficient'
+    const isSkipped = row.status === 'skipped'
     const inferredRate = normaliseRateForDisplay(inferRateFromAmount(row.baseAmount, row.tdsAmount))
-    const appliedRate = normaliseRateForDisplay(row.appliedRate ?? inferredRate)
-    const expectedRate = row.section === '194J' && [2, 10].includes(appliedRate)
-      ? appliedRate
-      : normaliseRateForDisplay(row.expectedRate ?? inferredRate ?? DEFAULT_SECTION_RATES[row.section] ?? null)
-    const issueLabel = isInsufficient ? 'Insufficient Data' : 'Passed Validation'
+    const statedRate = normaliseRateForDisplay(row.appliedRate)
+    const expectedRate = normaliseRateForDisplay(
+      row.expectedRate
+      ?? (row.section === '194J' && [2, 10].includes(statedRate) ? statedRate : null)
+      ?? inferredRate
+      ?? DEFAULT_SECTION_RATES[row.section]
+      ?? null
+    )
+    const appliedRate = inferredRate != null && expectedRate != null && Math.abs(inferredRate - expectedRate) <= 0.05
+      ? inferredRate
+      : statedRate ?? inferredRate
+    const issueLabel = isSkipped ? 'Skipped' : isInsufficient ? 'Insufficient Data' : 'Passed Validation'
+    const ldcValidity = ldcValidityByCertificate.get(row.ldcCertificate)
 
     return {
       ...row,
-      id: row.id || `${isInsufficient ? 'INSUFFICIENT' : 'PASSED'}-${row.docNo}`,
+      ldcValidFrom: row.ldcValidFrom ?? ldcValidity?.validFrom,
+      ldcValidTo: row.ldcValidTo ?? ldcValidity?.validTo,
+      id: row.id || `${isSkipped ? 'SKIPPED' : isInsufficient ? 'INSUFFICIENT' : 'PASSED'}-${row.docNo}`,
       category: issueLabel,
       issueTypeLabel: issueLabel,
-      issueType: isInsufficient ? 'INSUFFICIENT_DATA' : 'PASSED_VALIDATION',
+      issueType: isSkipped ? 'SKIPPED_ROW' : isInsufficient ? 'INSUFFICIENT_DATA' : 'PASSED_VALIDATION',
       severity: isInsufficient ? 'medium' : 'low',
       status: 'open',
       plainEnglish: row.reason || (
-        isInsufficient
+        isSkipped
+          ? 'This row was reviewed and skipped from TDS validation.'
+          : isInsufficient
           ? 'This row does not have enough usable data to complete the TDS validation.'
           : 'Validated with no issue found.'
       ),
-      recommendedAction: isInsufficient
+      recommendedAction: isSkipped
+        ? 'No TDS issue is raised for this row. Keep it skipped unless the source row should actually carry TDS section/rate details.'
+        : isInsufficient
         ? 'Review the source row and complete the missing or unusable transaction data, then analyse the file again.'
         : 'No correction required — this row passed the current validation rules.',
       expectedRate,
@@ -235,14 +282,25 @@ export default function Issues() {
   // whole upload, read straight from the backend stat.
   const summary = useMemo(() => {
     if (!uploadMeta) return { totalRows: issues.length, passedRows: 0, issueRows: issues.length, insufficientDataRows: 0, skippedRows: 0 }
+    const skippedValidationRows = adjustedValidationRows.filter((r) => r.status === 'skipped').length
     return {
-      totalRows: adjustedValidationRows.length + (uploadMeta.stats?.rowsSkipped ?? 0),
+      totalRows: adjustedValidationRows.length,
       passedRows: adjustedValidationRows.filter((r) => r.status === 'passed').length,
       issueRows: adjustedValidationRows.filter((r) => r.status === 'issue').length,
       insufficientDataRows: adjustedValidationRows.filter((r) => r.status === 'insufficient').length,
-      skippedRows: uploadMeta.stats?.rowsSkipped ?? 0,
+      skippedRows: skippedValidationRows,
     }
   }, [issues, uploadMeta, adjustedValidationRows])
+
+  const docTypes = useMemo(() => {
+    const values = [
+      ...adjustedValidationRows.map((row) => row.docType),
+      ...issues.map((issue) => issue.docType),
+    ]
+      .map((value) => String(value || '').trim().toUpperCase())
+      .filter((value) => value && value !== '—')
+    return [...new Set(values)].sort()
+  }, [adjustedValidationRows, issues])
 
   // Each KPI card's download exports exactly the rows behind that card's own
   // number (Company/FY-scoped, like the count itself) — not whatever happens
@@ -256,6 +314,7 @@ export default function Issues() {
       passed: { rows: adjustedValidationRows.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
       issue: { rows: issues, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
       insufficient: { rows: adjustedValidationRows.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
+      skipped: { rows: adjustedValidationRows.filter((r) => r.status === 'skipped'), columns: VALIDATION_CSV_COLUMNS, suffix: 'skipped' },
     }[kind]
     if (!exportSpec || exportSpec.rows.length === 0) {
       toast('No rows to export')
@@ -266,6 +325,15 @@ export default function Issues() {
 
   const columns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
+    { key: 'vendor', header: 'Vendor',    render: (r) => (
+      <div>
+        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
+        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId || '—'}</div>
+      </div>
+    )},
+    { key: 'vendorPan', header: 'PAN', render: (r) => (
+      <span className="font-mono" style={{ fontSize: 11.5 }}>{r.vendorPan || r.vendorId || '—'}</span>
+    )},
     { key: 'docNo',   header: 'Doc No.',  render: (r) => (
       <div>
         <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span>
@@ -278,12 +346,7 @@ export default function Issues() {
         )}
       </div>
     )},
-    { key: 'vendor', header: 'Vendor',    render: (r) => (
-      <div>
-        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
-        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId}</div>
-      </div>
-    )},
+    { key: 'docType', header: 'Doc Type', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docType || '—'}</span> },
     { key: 'section',      header: 'Section',  render: (r) => <SectionCell issue={r} /> },
     { key: 'baseAmount',   header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount',    header: 'TDS (₹)',  render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
@@ -305,25 +368,32 @@ export default function Issues() {
 
   const transactionColumns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
-    { key: 'docNo', header: 'Doc No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span> },
-    { key: 'poNo', header: 'PO No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.poNo || r.poNumber || '-'}</span> },
     { key: 'vendor', header: 'Vendor', render: (r) => (
       <div>
         <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
-        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId}</div>
+        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId || '—'}</div>
       </div>
     )},
+    { key: 'vendorPan', header: 'PAN', render: (r) => (
+      <span className="font-mono" style={{ fontSize: 11.5 }}>{r.vendorPan || r.vendorId || '—'}</span>
+    )},
+    { key: 'docNo', header: 'Doc No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span> },
+    { key: 'docType', header: 'Doc Type', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docType || '—'}</span> },
+    // Temporarily hidden from the Issues UI. Keep this column definition for future restore.
+    // { key: 'poNo', header: 'PO No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.poNo || r.poNumber || '-'}</span> },
     { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
     { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
-    { key: 'status', header: 'Status', render: (r) => (
+    { key: 'status', header: 'Status', sortValue: (r) => (
+      r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)
+    ), render: (r) => (
       <StatusBadge
         label={r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)}
         tone={r.status === 'passed' ? 'success' : r.status === 'insufficient' ? 'warning' : r.status === 'issue' ? 'danger' : 'default'}
       />
     )},
     { header: '', render: (r) => (
-      r.status === 'passed' || r.status === 'insufficient'
+      r.status === 'passed' || r.status === 'insufficient' || r.status === 'skipped'
         ? (
           <button
             className="issues-review-btn"
@@ -368,6 +438,7 @@ export default function Issues() {
           if (
             !row.vendor?.toLowerCase().includes(q) &&
             !String(row.docNo ?? '').toLowerCase().includes(q) &&
+            !String(row.docType ?? '').toLowerCase().includes(q) &&
             !String(row.vendorId ?? '').toLowerCase().includes(q) &&
             !String(row.section ?? '').toLowerCase().includes(q) &&
             !String(row.vendorPan ?? '').toLowerCase().includes(q)
@@ -375,6 +446,7 @@ export default function Issues() {
         }
         if (vendorFilter  !== 'all' && row.vendor  !== vendorFilter)  return false
         if (sectionFilter !== 'all' && row.section !== sectionFilter) return false
+        if (docTypeFilter !== 'all' && String(row.docType ?? '').toUpperCase() !== docTypeFilter) return false
         if (validationView === 'issue') {
           if (severityFilter !== 'all' && matchingIssue?.severity !== severityFilter) return false
           if (statusFilter !== 'all' && matchingIssue?.status !== statusFilter) return false
@@ -392,7 +464,12 @@ export default function Issues() {
           issueTypeLabel: matchingIssue ? getDisplayIssueType(matchingIssue) : null,
         }
       })
-  }, [adjustedValidationRows, issues, filtered, validationView, searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
+  }, [adjustedValidationRows, issues, filtered, validationView, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
+
+  function handleResetFilters() {
+    setDocTypeFilter('all')
+    dispatch(resetFilters())
+  }
 
   return (
     <div>
@@ -558,7 +635,15 @@ export default function Issues() {
           >
             {STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
-          <button className="filter-reset-btn" onClick={() => dispatch(resetFilters())}>
+          <select
+            className="filter-select"
+            value={docTypeFilter}
+            onChange={(e) => setDocTypeFilter(e.target.value)}
+          >
+            <option value="all">All Doc Types</option>
+            {docTypes.map((docType) => <option key={docType} value={docType}>{docType}</option>)}
+          </select>
+          <button className="filter-reset-btn" onClick={handleResetFilters}>
             <RotateCcw size={12} />Reset
           </button>
         </div>
@@ -579,7 +664,7 @@ export default function Issues() {
               <div className="empty-state-icon"><FileSearch size={20} /></div>
               <div className="empty-state-title">No rows match your filters</div>
               <div className="empty-state-desc">Try adjusting your search or filter criteria.</div>
-              <button className="btn btn-outline btn-sm" onClick={() => dispatch(resetFilters())}>Reset Filters</button>
+              <button className="btn btn-outline btn-sm" onClick={handleResetFilters}>Reset Filters</button>
             </div>
           }
         />

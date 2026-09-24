@@ -456,6 +456,10 @@ export function getScenario(id) {
  * display — filtering still matches on the raw category from the backend.
  */
 const AMOUNT_MISMATCH_CATEGORY = 'Short/Excess TDS Deducted — Amount Mismatch'
+const ISSUE_DISPLAY_LABELS = {
+  'LDC Not Yet Valid': 'LDC Out of Date',
+  'LDC Expired': 'LDC Out of Date',
+}
 
 export function getDisplayIssueType(issue) {
   // `category` first, not `issueTypeLabel`: this value doubles as the Issue
@@ -466,16 +470,17 @@ export function getDisplayIssueType(issue) {
   // category "Short TDS Deducted — Amount Mismatch") — preferring it here
   // would make mock-data rows silently fail to match their own filter option.
   const fallback = issue.category || issue.issueTypeLabel
+  const displayLabel = ISSUE_DISPLAY_LABELS[fallback] || fallback
 
-  if (issue.category !== AMOUNT_MISMATCH_CATEGORY) return fallback
+  if (issue.category !== AMOUNT_MISMATCH_CATEGORY) return displayLabel
 
   const base = issue.baseAmount
   const rate = issue.appliedRate
-  if (base == null || rate == null || issue.tdsAmount == null) return fallback
+  if (base == null || rate == null || issue.tdsAmount == null) return displayLabel
 
   const impliedAmount = base * (rate / 100)
   const diff = issue.tdsAmount - impliedAmount
-  if (Math.abs(diff) <= 2) return fallback // within rounding tolerance — direction isn't meaningful
+  if (Math.abs(diff) <= 2) return displayLabel // within rounding tolerance — direction isn't meaningful
 
   return diff < 0
     ? 'Short TDS Deducted — Amount Mismatch'

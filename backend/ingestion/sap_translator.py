@@ -28,6 +28,7 @@ COLUMN_ALIASES = {
     "description": ("Description",),
     "bill_amount": ("Bill_Amount", "bill_amount", "Document_Amount", "Local_Amount", "Amount", "Amount_Document_Currency", "Amount_Local_Currency"),
     "basic_amount": ("Basic_Amount", "basic_amount", "TDS_Base_Amount", "Withholding_Tax_Base_Amount"),
+    "withholding_tax_base_amount": ("Withholding_Tax_Base_Amount",),
     "posting_date": ("Posting_Date", "posting_date"),
     "doc_type": ("Document_Type", "Document_Typ", "doc_type"),
     "transaction_kind": ("Payment_Type", "Nature_Of_Payment", "Transaction_Kind", "transaction_kind"),
@@ -335,6 +336,7 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
             tds_deducted_amount=_safe_float(_get(row, "tds_amount")),
             withholding_tax_type=withholding_tax_type or None,
             withholding_tax_code=withholding_tax_code or None,
+            withholding_tax_base_amount=_safe_float(_get(row, "withholding_tax_base_amount")),
 
             ldc_exemption_percent=_safe_float(_get(row, "ldc_exemption_percent")),
             ldc_exempt_from=_parse_date(_get(row, "ldc_exempt_from")),
@@ -441,6 +443,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             tds_raw_amount=raw_amount,  # signed, for audit traceability
             withholding_tax_type=withholding_tax_type or None,
             withholding_tax_code=withholding_tax_code or None,
+            withholding_tax_base_amount=_safe_float(_get(row, "withholding_tax_base_amount")),
         )
         transactions.append(txn)
 

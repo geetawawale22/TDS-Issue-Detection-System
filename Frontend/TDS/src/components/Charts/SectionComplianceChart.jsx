@@ -10,7 +10,7 @@ function barColor(ratio) {
   return `rgb(${r}, ${g}, ${b})`
 }
 
-export default function SectionComplianceChart() {
+export default function SectionComplianceChart({ onSectionClick }) {
   const data = useSelector(selectIssuesBySection)
   const max = Math.max(...data.map((d) => d.count), 1)
 
@@ -23,8 +23,13 @@ export default function SectionComplianceChart() {
       {data.map((row) => {
         const ratio = row.count / max
         return (
-          <div key={row.section} className="section-compliance-row">
-            <span className="section-compliance-label font-mono">{row.section}</span>
+          <button
+            key={row.section}
+            className="section-compliance-row section-compliance-row-clickable"
+            type="button"
+            onClick={() => onSectionClick?.(row)}
+          >
+            <span className="section-compliance-label font-mono" title={row.section}>{row.section}</span>
             <div className="section-compliance-track">
               <div
                 className="section-compliance-bar"
@@ -32,7 +37,7 @@ export default function SectionComplianceChart() {
               />
             </div>
             <span className="section-compliance-count font-mono">{row.count}</span>
-          </div>
+          </button>
         )
       })}
     </div>

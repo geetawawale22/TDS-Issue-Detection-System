@@ -36,13 +36,17 @@ export default function DataTable({
 
   const sorted = useMemo(() => {
     if (!sortKey) return data
+    const sortColumn = columns.find((col) => col.key === sortKey)
+    const valueForSort = (row) => sortColumn?.sortValue ? sortColumn.sortValue(row) : row[sortKey]
     return [...data].sort((a, b) => {
-      const av = a[sortKey], bv = b[sortKey]
+      const av = valueForSort(a), bv = valueForSort(b)
       if (av === bv) return 0
-      const cmp = av > bv ? 1 : -1
+      if (av == null) return 1
+      if (bv == null) return -1
+      const cmp = String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' })
       return sortDir === 'asc' ? cmp : -cmp
     })
-  }, [data, sortKey, sortDir])
+  }, [columns, data, sortKey, sortDir])
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize))
   const currentPage = Math.min(page, totalPages)

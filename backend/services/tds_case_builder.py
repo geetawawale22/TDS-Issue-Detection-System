@@ -15,11 +15,20 @@ from typing import Any
 from rules.transaction_model import Transaction
 
 
-INVOICE_DOC_TYPES = {"RE", "KR"}
+INVOICE_DOC_TYPES = {"RE", "KR", "F1", "F2", "F3", "FA", "LQ", "RH", "RP", "KW", "ZU"}
 ADVANCE_DOC_TYPES = {"KA"}
 PAYMENT_DOC_TYPES = {"KZ"}
-CREDIT_DOC_TYPES = {"KG", "AB"}
-REVERSAL_DOC_TYPES = {"ST"}
+CREDIT_DOC_TYPES = {"KG", "F4", "F5", "F6", "KC"}
+DEBIT_NOTE_DOC_TYPES = {"KN", "KD"}
+CLEARING_DOC_TYPES = {"AB"}
+TRANSFER_POSTING_DOC_TYPES = {"TP", "TM"}
+TDS_PAYMENT_DOC_TYPES = {"BT"}
+JOURNAL_DOC_TYPES = {"JV"}
+PROVISION_DOC_TYPES = {"JR"}
+SUPPORTING_DOC_TYPES = {
+    "SA", "ST", "BR", "ML", "PR", "QR", "QS", "UG", "ZY", "ZZ",
+    "WA", "WE", "WI", "WL", "WN", "W2", "W3",
+}
 
 
 def _financial_year(value: date) -> str:
@@ -35,22 +44,31 @@ def _base_amount(txn: Transaction) -> float:
 
 def classify_event(txn: Transaction) -> str:
     doc_type = (txn.doc_type or "").strip().upper()
-    debit_credit = (txn.debit_credit or "").strip().upper()
 
-    if doc_type in REVERSAL_DOC_TYPES or (txn.bill_amount or 0) < 0:
-        return "REVERSAL"
-    if doc_type in CREDIT_DOC_TYPES:
-        return "CREDIT_MEMO"
     if doc_type in INVOICE_DOC_TYPES:
         return "INVOICE"
     if txn.is_advance_payment or doc_type in ADVANCE_DOC_TYPES:
         return "ADVANCE_PAYMENT"
     if doc_type in PAYMENT_DOC_TYPES:
         return "PAYMENT"
-    if debit_credit == "H":
-        return "INVOICE"
-    if debit_credit == "S":
-        return "PAYMENT"
+    if doc_type in CREDIT_DOC_TYPES:
+        return "CREDIT_MEMO"
+    if doc_type in DEBIT_NOTE_DOC_TYPES:
+        return "DEBIT_NOTE"
+    if doc_type in CLEARING_DOC_TYPES:
+        return "CLEARING"
+    if doc_type in TRANSFER_POSTING_DOC_TYPES:
+        return "TRANSFER_POSTING"
+    if doc_type in TDS_PAYMENT_DOC_TYPES:
+        return "TDS_PAYMENT"
+    if doc_type in JOURNAL_DOC_TYPES:
+        return "JOURNAL"
+    if doc_type in PROVISION_DOC_TYPES:
+        return "PROVISION"
+    if doc_type in SUPPORTING_DOC_TYPES:
+        return "SUPPORTING"
+    if (txn.bill_amount or 0) < 0:
+        return "REVERSAL"
     return "UNKNOWN"
 
 
@@ -109,6 +127,15 @@ def build_tds_cases(transactions: list[Transaction]) -> tuple[list[dict[str, Any
         "paymentEvents": event_counts["PAYMENT"],
         "creditEvents": event_counts["CREDIT_MEMO"],
         "reversalEvents": event_counts["REVERSAL"],
+        "clearingEvents": event_counts["CLEARING"],
+        "transferEvents": event_counts["TRANSFER_POSTING"],
+        "supportingEvents": (
+            event_counts["SUPPORTING"]
+            + event_counts["TDS_PAYMENT"]
+            + event_counts["DEBIT_NOTE"]
+            + event_counts["JOURNAL"]
+            + event_counts["PROVISION"]
+        ),
         "unknownEvents": event_counts["UNKNOWN"],
     }
     return cases, stats

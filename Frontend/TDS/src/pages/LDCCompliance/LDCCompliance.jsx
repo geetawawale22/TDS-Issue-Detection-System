@@ -33,6 +33,7 @@ const ldcPageCache = {
   quickFilter: 'all',
   uploadResult: null,
   uploadIssues: null,
+  stats: null,
   loaded: false,
 }
 const TODAY = new Date()
@@ -424,11 +425,14 @@ export default function LDCCompliance() {
   const [quickFilter, setQuickFilter] = useState(() => ldcPageCache.quickFilter)
   const [uploadResult, setUploadResult] = useState(() => ldcPageCache.uploadResult)
   const [uploadIssues, setUploadIssues] = useState(() => ldcPageCache.uploadIssues ?? [])
+  const [isLoadingCertificates, setIsLoadingCertificates] = useState(() => !(ldcPageCache.rows ?? []).some((row) => !row.isIssueRow))
   const [isUploading, setIsUploading] = useState(false)
   const inputRef = useRef(null)
 
   useEffect(() => {
-    ldcPageCache.rows = rows
+    if (rows.length || !(ldcPageCache.rows ?? []).length) {
+      ldcPageCache.rows = rows
+    }
     ldcPageCache.fileName = fileName
     ldcPageCache.search = search
     ldcPageCache.quickFilter = quickFilter
@@ -441,6 +445,7 @@ export default function LDCCompliance() {
     if (ldcPageCache.loaded && cacheHasCertificateRows) return
     ldcPageCache.loaded = true
     let isMounted = true
+    setIsLoadingCertificates(!cacheHasCertificateRows)
     const tempRows = restoreRowsFromStorage()
     const uploadMeta = restoreUploadMeta()
     const restoredIssueRows = restoreIssueRows(uploadMeta?.issues)
@@ -452,6 +457,7 @@ export default function LDCCompliance() {
     }
     if (tempRows.length) {
       setRows(tempRows)
+      setIsLoadingCertificates(false)
       setFileName(uploadMeta?.fileName || 'Saved temporary LDC upload')
       setUploadResult({
         inserted: 0,
@@ -495,6 +501,7 @@ export default function LDCCompliance() {
         const unsavedIssueRows = savedIssueRows.filter((row) => !row.savedToMaster)
         setUploadIssues(savedIssueRows.length ? savedIssueRows : restoreIssueRows(uploadMeta?.issues))
         setRows([...savedRows, ...unsavedIssueRows])
+        setIsLoadingCertificates(false)
         if (savedRows.length || unsavedIssueRows.length) {
           setFileName(uploadMeta?.fileName || 'Saved LDC certificate master')
           setUploadResult({
@@ -506,6 +513,7 @@ export default function LDCCompliance() {
         }
       })
       .catch(() => {
+        if (isMounted) setIsLoadingCertificates(false)
         // The page can still be used for upload if the saved-list endpoint is temporarily unavailable.
       })
     return () => { isMounted = false }
@@ -552,6 +560,7 @@ export default function LDCCompliance() {
       const issueDetails = mergedRows.filter((row) => row.issues.length)
       setRows(mergedRows)
       setUploadIssues(issueDetails)
+      setIsLoadingCertificates(false)
       // Do not cache the full certificate master in localStorage. The backend
       // persists this upload and the saved-list endpoint restores it on load.
       try { window.localStorage.removeItem(LDC_TEMP_STORAGE_KEY) } catch { /* storage may be unavailable */ }
@@ -571,7 +580,7 @@ export default function LDCCompliance() {
     const activeRows = uniqueCertificateRows(rows.filter(isActiveCertificate))
     const uniquePans = new Set(rows.map((row) => row.pan).filter(Boolean))
     const expiringSoon = activeRows.filter(isExpiringSoon)
-    return {
+    const nextStats = {
       total: uploadResult?.totalRows ?? rows.length,
       valid: activeRows.length,
       issues: uploadIssues.length,
@@ -579,7 +588,18 @@ export default function LDCCompliance() {
       active: activeRows.length,
       expiringSoon: expiringSoon.length,
     }
+    if (rows.some((row) => !row.isIssueRow)) {
+      ldcPageCache.stats = nextStats
+    }
+    return nextStats
   }, [rows, uploadResult, uploadIssues])
+
+  const hasCertificateRows = rows.some((row) => !row.isIssueRow)
+  const isCertificateDataPending = isLoadingCertificates && !hasCertificateRows
+  const visibleStats = isCertificateDataPending && ldcPageCache.stats ? ldcPageCache.stats : stats
+  const kpiValue = (value) => (
+    isCertificateDataPending && !ldcPageCache.stats ? '...' : value
+  )
 
   const filteredRows = useMemo(() => {
     const needle = search.toLowerCase()
@@ -617,17 +637,17 @@ export default function LDCCompliance() {
   }[quickFilter]
 
   const columns = [
+    { key: 'vendorName', header: 'Supplier', render: (row) => (
+      <div>
+        <div className="ldc-strong">{row.vendorName || '—'}</div>
+        <div className="font-mono ldc-muted">{row.vendorCode || '—'}</div>
+      </div>
+    )},
+    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
     { key: 'certificateNumber', header: 'Certificate', render: (row) => (
       <div>
         <div className="ldc-strong">{row.certificateNumber || '—'}</div>
         <div className="ldc-muted">{row.certificateType || '—'}</div>
-      </div>
-    )},
-    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
-    { key: 'vendorName', header: 'Supplier', render: (row) => (
-      <div>
-        <div className="ldc-muted">{row.vendorName || '—'}</div>
-        <div className="font-mono ldc-strong">{row.vendorCode || '—'}</div>
       </div>
     )},
     { key: 'companyCode', header: 'Company / TAN', render: (row) => (
@@ -644,7 +664,7 @@ export default function LDCCompliance() {
         <div className="ldc-muted">{dateStatus(row)} · from {formatDate(row.validFrom)}</div>
       </div>
     )},
-    { key: 'validationStatus', header: 'Status', render: (row) => (
+    { key: 'validationStatus', header: 'Status', sortValue: (row) => row.validationStatus, render: (row) => (
       <StatusBadge label={row.validationStatus} tone={row.issues.length ? 'danger' : 'success'} />
     )},
   ]
@@ -656,22 +676,23 @@ export default function LDCCompliance() {
   }
 
   const utilizationColumns = [
+    { key: 'vendor', header: 'Vendor', render: (row) => (
+      <div>
+        <div className="ldc-strong">{row.vendor}</div>
+        <div className="font-mono ldc-muted">{row.vendorCode || row.vendorId || '—'}</div>
+      </div>
+    )},
+    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
     { key: 'certificateNumber', header: 'Certificate', render: (row) => (
       <div>
         <div className="ldc-strong">{row.certificateNumber}</div>
         <div className="ldc-muted">{row.section} · exemption {row.approvedRate ?? '—'}%</div>
       </div>
     )},
-    { key: 'vendor', header: 'Vendor / PAN', render: (row) => (
-      <div>
-        <div className="ldc-strong">{row.vendor}</div>
-        <div className="font-mono ldc-muted">{row.pan}</div>
-      </div>
-    )},
     { key: 'limit', header: 'Limit', render: (row) => <span className="font-mono">{row.limit == null ? 'Not set' : row.limit.toLocaleString('en-IN')}</span> },
     { key: 'used', header: 'Used', render: (row) => <span className="font-mono">{Number(row.used || 0).toLocaleString('en-IN')}</span> },
     { key: 'available', header: 'Available', render: (row) => <span className="font-mono">{row.available == null ? '—' : Number(row.available).toLocaleString('en-IN')}</span> },
-    { key: 'status', header: 'Status', render: (row) => <StatusBadge label={row.statusLabel || 'Within LDC Limit'} tone={utilizationTone(row.status)} /> },
+    { key: 'status', header: 'Status', sortValue: (row) => row.statusLabel || 'Within LDC Limit', render: (row) => <StatusBadge label={row.statusLabel || 'Within LDC Limit'} tone={utilizationTone(row.status)} /> },
     { key: 'utilization', header: 'Utilization', render: (row) => (
       row.utilization == null
         ? <span className="ldc-muted">—</span>
@@ -680,15 +701,15 @@ export default function LDCCompliance() {
   ]
 
   const issueColumns = [
-    { key: 'rowNumber', header: 'CSV Row', render: (row) => <span className="font-mono ldc-strong">{row.rowNumber || '—'}</span> },
-    { key: 'certificateNumber', header: 'Certificate', render: (row) => <span className="font-mono ldc-strong">{row.certificateNumber || '—'}</span> },
-    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
     { key: 'vendorName', header: 'Supplier', render: (row) => (
       <div>
-        <div className="ldc-muted">{row.vendorName || '—'}</div>
-        <div className="font-mono ldc-strong">{row.vendorCode || '—'}</div>
+        <div className="ldc-strong">{row.vendorName || '—'}</div>
+        <div className="font-mono ldc-muted">{row.vendorCode || '—'}</div>
       </div>
     )},
+    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
+    { key: 'certificateNumber', header: 'Certificate', render: (row) => <span className="font-mono ldc-strong">{row.certificateNumber || '—'}</span> },
+    { key: 'rowNumber', header: 'CSV Row', render: (row) => <span className="font-mono ldc-strong">{row.rowNumber || '—'}</span> },
     { key: 'companyCode', header: 'Company', render: (row) => <span className="font-mono">{row.companyCode || '—'}</span> },
     { key: 'section', header: 'Section', render: (row) => <span className="font-mono">{row.section || '—'}</span> },
     { key: 'approvedRate', header: 'Exemption %', render: (row) => <span className="font-mono">{row.approvedRate == null ? '—' : `${row.approvedRate}%`}</span> },
@@ -738,27 +759,27 @@ export default function LDCCompliance() {
       <div className="ldc-summary-grid">
         <button type="button" className={`kpi-card ldc-kpi-button ${quickFilter === 'all' ? 'is-active' : ''}`} onClick={() => setQuickFilter('all')}>
           <div className="kpi-icon-row"><span className="kpi-label">Uploaded Rows</span><div className="kpi-icon-box info"><FileSpreadsheet size={14} /></div></div>
-          <span className="kpi-value">{stats.total}</span>
+          <span className="kpi-value">{kpiValue(visibleStats.total)}</span>
           <span className="ldc-muted">Rows from latest LDC CSV</span>
         </button>
         <button type="button" className={`kpi-card ldc-kpi-button ${quickFilter === 'unique-pans' ? 'is-active' : ''}`} onClick={() => setQuickFilter('unique-pans')}>
           <div className="kpi-icon-row"><span className="kpi-label">Unique PANs</span><div className="kpi-icon-box warning"><IdCard size={14} /></div></div>
-          <span className="kpi-value">{stats.uniquePans}</span>
+          <span className="kpi-value">{kpiValue(visibleStats.uniquePans)}</span>
           <span className="ldc-muted">Distinct vendor PANs</span>
         </button>
         <button type="button" className={`kpi-card ldc-kpi-button ${quickFilter === 'active' ? 'is-active' : ''}`} onClick={() => setQuickFilter('active')}>
           <div className="kpi-icon-row"><span className="kpi-label">Active Certificates</span><div className="kpi-icon-box success"><ShieldCheck size={14} /></div></div>
-          <span className="kpi-value">{stats.active}</span>
+          <span className="kpi-value">{kpiValue(visibleStats.active)}</span>
           <span className="ldc-muted">Currently valid certificates</span>
         </button>
         <button type="button" className={`kpi-card ldc-kpi-button ${quickFilter === 'issues' ? 'is-active' : ''}`} onClick={() => setQuickFilter('issues')}>
           <div className="kpi-icon-row"><span className="kpi-label">LDC Upload Issues</span><div className="kpi-icon-box danger"><AlertTriangle size={14} /></div></div>
-          <span className="kpi-value">{stats.issues}</span>
+          <span className="kpi-value">{kpiValue(visibleStats.issues)}</span>
           <span className="ldc-muted">Rows needing review</span>
         </button>
         <button type="button" className={`kpi-card ldc-kpi-button ${quickFilter === 'expiring' ? 'is-active' : ''}`} onClick={() => setQuickFilter('expiring')}>
           <div className="kpi-icon-row"><span className="kpi-label">Expiring in 30 Days</span><div className="kpi-icon-box danger"><AlertTriangle size={14} /></div></div>
-          <span className="kpi-value">{stats.expiringSoon}</span>
+          <span className="kpi-value">{kpiValue(visibleStats.expiringSoon)}</span>
           <span className="ldc-muted">Active certificates near expiry</span>
         </button>
       </div>
@@ -768,7 +789,11 @@ export default function LDCCompliance() {
           <div className="table-card-header">
             <div>
               <div className="table-card-title">{quickFilter === 'issues' ? 'LDC Upload Issues' : 'LDC Certificate Validation'}</div>
-              <div className="ldc-muted">{quickFilterLabel} · {filteredRows.length} rows shown</div>
+              <div className="ldc-muted">
+                {isCertificateDataPending && quickFilter !== 'issues'
+                  ? `${quickFilterLabel} · loading saved certificates...`
+                  : `${quickFilterLabel} · ${filteredRows.length} rows shown`}
+              </div>
             </div>
             <div className="ldc-search-wrapper">
               <Search size={14} />
@@ -785,6 +810,11 @@ export default function LDCCompliance() {
             data={filteredRows}
             pageSize={8}
             stateKey="ldc-certificate-validation"
+            emptyState={
+              isCertificateDataPending && quickFilter !== 'issues'
+                ? <div className="data-table-empty">Loading saved LDC certificates...</div>
+                : null
+            }
           />
         </div>
 

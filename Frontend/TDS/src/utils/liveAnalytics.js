@@ -44,6 +44,7 @@ export function deriveTopVendors(issues, limit = 6) {
   const map = countBy(issues, (i) => i.vendor || i.vendorId)
   return [...map.entries()]
     .map(([name, issuesCount]) => ({
+      vendor: String(name),
       name: String(name).split(' ').slice(0, 2).join(' '),
       issues: issuesCount,
     }))

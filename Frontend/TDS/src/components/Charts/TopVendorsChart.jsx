@@ -3,7 +3,7 @@ import { useSelector } from 'react-redux'
 import { selectTopVendors } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
-export default function TopVendorsChart() {
+export default function TopVendorsChart({ onBarClick }) {
   const data = useSelector(selectTopVendors)
 
   return (
@@ -13,7 +13,15 @@ export default function TopVendorsChart() {
         <XAxis type="number" tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />
         <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: '#64748B', fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} width={90} />
         <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12, padding: '6px 10px' }} cursor={{ fill: '#F8FAFC' }} />
-        <Bar dataKey="issues" fill="#F59E0B" radius={[0, 4, 4, 0]} maxBarSize={18} name="Issues" />
+        <Bar
+          dataKey="issues"
+          fill="#F59E0B"
+          radius={[0, 4, 4, 0]}
+          maxBarSize={18}
+          name="Issues"
+          cursor={onBarClick ? 'pointer' : 'default'}
+          onClick={(row) => onBarClick?.(row)}
+        />
       </BarChart>
     </ResponsiveContainer>
   )
