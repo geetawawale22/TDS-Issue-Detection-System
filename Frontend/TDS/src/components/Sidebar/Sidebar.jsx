@@ -17,7 +17,7 @@ const navItems = [
   { label: 'Correction Center',    path: '/correction-center',     icon: GitPullRequestArrow },
   { label: 'Reports',              path: '/reports',               icon: FileBarChart },
   { label: 'LDC Compliance',        path: '/ldc-compliance',        icon: BadgePercent },
-  { label: 'TDS Case Builder',      path: '/tds-case-builder',      icon: GitBranch },
+  { label: 'TDS Analysis',          path: '/tds-case-builder',      icon: GitBranch },
   { label: 'Settings',             path: '/settings',              icon: Settings },
 ]
 

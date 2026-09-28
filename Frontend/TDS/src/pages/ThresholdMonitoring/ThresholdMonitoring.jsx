@@ -1,29 +1,139 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSelector } from 'react-redux'
 import { AlertOctagon, Gauge, ShieldCheck, Download, BadgePercent } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { thresholdStatusToTone } from '@/components/Common/StatusBadge'
 import ProgressBar from '@/components/Common/ProgressBar'
-import ThresholdConsumptionChart from '@/components/Charts/ThresholdConsumptionChart'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
   selectThresholdVendors,
-  selectThresholdSectionBreakdown,
   selectIsLive,
   selectLdcUtilization,
 } from '@/redux/slices/issuesSlice'
-import { formatCurrency, formatStatusLabel } from '@/utils/utils'
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { fetchLdcCertificates } from '@/services/ldcService'
+import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import '@/components/Common/Common.css'
 import './ThresholdMonitoring.css'
 
+const roundToTwo = (value) => Math.round(Number(value || 0) * 100) / 100
+const ldcLimitStatus = (utilization) => {
+  if (utilization == null) return ['safe', 'Within LDC Limit']
+  if (utilization > 100) return ['over_utilized', 'LDC Over-utilized']
+  if (utilization >= 100) return ['exhausted', 'LDC Limit Exhausted']
+  if (utilization >= 90) return ['high_warning', 'LDC Limit 90% Utilized']
+  if (utilization >= 80) return ['warning', 'LDC Limit 80% Utilized']
+  return ['safe', 'Within LDC Limit']
+}
+const hasPositiveLimit = (row) => Number(row?.approvedLimit) > 0
+const preferCertificateRow = (current, candidate) => {
+  if (!current) return candidate
+  if (hasPositiveLimit(candidate) && !hasPositiveLimit(current)) return candidate
+  return current
+}
+const CRORE = 10000000
+const toCrore = (value) => roundToTwo(Number(value || 0) / CRORE)
+const TOP_LIMIT_BARS = 8
+const TOP_TREND_LINES = 4
+const TREND_COLORS = ['#E01330', '#2563EB', '#10B981', '#F59E0B', '#64748B']
+const TODAY = new Date()
+TODAY.setHours(0, 0, 0, 0)
+
+function parseDateValue(value) {
+  if (!value) return null
+  const date = value instanceof Date ? new Date(value) : new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function certificateValidity(validFromValue, validToValue) {
+  const validFrom = parseDateValue(validFromValue)
+  const validTo = parseDateValue(validToValue)
+  if (!validFrom || !validTo) return ['neutral', 'Validity Unknown']
+  if (TODAY < validFrom) return ['warning', 'Future']
+  if (TODAY > validTo) return ['danger', 'Expired']
+  return ['success', 'Active']
+}
+
 export default function ThresholdMonitoring() {
   const [search, setSearch] = useState('')
-  const [activeTracker, setActiveTracker] = useState('vendor')
+  const [activeTracker, setActiveTracker] = useState('ldc')
+  const [ldcCertificates, setLdcCertificates] = useState([])
   const vendors = useSelector(selectThresholdVendors)
-  const thresholdSectionBreakdown = useSelector(selectThresholdSectionBreakdown)
   const ldcUtilization = useSelector(selectLdcUtilization)
   const isLive = useSelector(selectIsLive)
+
+  useEffect(() => {
+    let isMounted = true
+    fetchLdcCertificates()
+      .then((result) => {
+        if (isMounted) setLdcCertificates(result.certificates ?? [])
+      })
+      .catch(() => {
+        if (isMounted) setLdcCertificates([])
+      })
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  const ldcCertificateByKey = useMemo(() => {
+    const byKey = new Map()
+    const byCertificate = new Map()
+    ldcCertificates.forEach((row) => {
+      const cert = String(row.certificateNumber || '').trim()
+      const pan = String(row.pan || '').trim().toUpperCase()
+      if (!cert) return
+      byCertificate.set(cert, preferCertificateRow(byCertificate.get(cert), row))
+      if (pan) {
+        const key = `${cert}||${pan}`
+        byKey.set(key, preferCertificateRow(byKey.get(key), row))
+      }
+    })
+    return { byKey, byCertificate }
+  }, [ldcCertificates])
+
+  const currentLdcUtilization = useMemo(() => {
+    if (!ldcCertificateByKey.byCertificate.size) return ldcUtilization
+    return ldcUtilization
+      .map((row) => {
+        const cert = String(row.certificateNumber || '').trim()
+        const pan = String(row.pan || '').trim().toUpperCase()
+        const masterRow = ldcCertificateByKey.byKey.get(`${cert}||${pan}`) || ldcCertificateByKey.byCertificate.get(cert)
+        if (!masterRow) return null
+
+        const limit = masterRow.approvedLimit ?? row.limit
+        const used = Number(row.used || 0)
+        const numericLimit = Number(limit)
+        const hasLimit = Number.isFinite(numericLimit) && numericLimit > 0
+        const available = hasLimit ? numericLimit - used : null
+        const utilization = hasLimit ? roundToTwo((used / numericLimit) * 100) : null
+        const [status, statusLabel] = ldcLimitStatus(utilization)
+        const validFrom = masterRow.validFrom ?? row.validFrom ?? null
+        const validTo = masterRow.validTo ?? row.validTo ?? null
+        const [validityTone, validityLabel] = certificateValidity(validFrom, validTo)
+
+        return {
+          ...row,
+          vendor: masterRow.vendorName || row.vendor,
+          vendorId: masterRow.vendorCode || row.vendorId,
+          pan: masterRow.pan || row.pan,
+          section: masterRow.section || row.section,
+          approvedRate: masterRow.approvedRate ?? row.approvedRate,
+          limit: hasLimit ? numericLimit : limit,
+          available,
+          utilization,
+          status,
+          statusLabel,
+          validFrom,
+          validTo,
+          validityTone,
+          validityLabel,
+        }
+      })
+      .filter(Boolean)
+  }, [ldcCertificateByKey, ldcUtilization])
 
   const exceeded = vendors.filter((v) => v.status === 'exceeded')
   const near      = vendors.filter((v) => v.status === 'near')
@@ -35,16 +145,78 @@ export default function ThresholdMonitoring() {
     [search, vendors],
   )
   const filteredLdc = useMemo(
-    () => ldcUtilization.filter((r) =>
+    () => currentLdcUtilization.filter((r) =>
       (r.vendor || '').toLowerCase().includes(search.toLowerCase()) ||
       (r.pan || '').toLowerCase().includes(search.toLowerCase()) ||
       (r.certificateNumber || '').toLowerCase().includes(search.toLowerCase())
     ),
-    [ldcUtilization, search],
+    [currentLdcUtilization, search],
   )
 
-  const ldcWarning = ldcUtilization.filter((r) => ['warning', 'high_warning'].includes(r.status))
-  const ldcCritical = ldcUtilization.filter((r) => ['exhausted', 'over_utilized'].includes(r.status))
+  const ldcWarning = currentLdcUtilization.filter((r) => ['warning', 'high_warning'].includes(r.status))
+  const ldcCritical = currentLdcUtilization.filter((r) => ['exhausted', 'over_utilized'].includes(r.status))
+
+  const ldcLimitVsUsedData = useMemo(() => {
+    const rows = [...currentLdcUtilization]
+      .sort((a, b) => Number(b.used || 0) - Number(a.used || 0))
+    const visible = rows.slice(0, TOP_LIMIT_BARS)
+    const rest = rows.slice(TOP_LIMIT_BARS)
+    const data = visible.map((row) => ({
+      certificate: row.certificateNumber || '—',
+      vendor: row.vendor || row.pan || '—',
+      limit: toCrore(row.limit),
+      used: toCrore(row.used),
+      available: row.available == null ? null : toCrore(row.available),
+    }))
+    if (rest.length) {
+      data.push({
+        certificate: `Other (${rest.length})`,
+        vendor: 'Remaining certificates',
+        limit: toCrore(rest.reduce((sum, row) => sum + (Number(row.limit) || 0), 0)),
+        used: toCrore(rest.reduce((sum, row) => sum + (Number(row.used) || 0), 0)),
+        available: toCrore(rest.reduce((sum, row) => sum + (Number(row.available) || 0), 0)),
+      })
+    }
+    return data
+  }, [currentLdcUtilization])
+
+  const ldcTrendSeries = useMemo(() => {
+    const rowsWithMonthlyUsage = currentLdcUtilization.filter((row) => Array.isArray(row.monthlyUsage) && row.monthlyUsage.length)
+    if (!rowsWithMonthlyUsage.length) return { data: [], keys: [] }
+
+    const topRows = [...rowsWithMonthlyUsage]
+      .sort((a, b) => Number(b.used || 0) - Number(a.used || 0))
+      .slice(0, TOP_TREND_LINES)
+    const topCertificates = new Set(topRows.map((row) => row.certificateNumber))
+    const months = new Map()
+
+    for (const row of rowsWithMonthlyUsage) {
+      const key = topCertificates.has(row.certificateNumber) ? row.certificateNumber : 'Other'
+      for (const item of row.monthlyUsage) {
+        if (!months.has(item.monthKey)) {
+          months.set(item.monthKey, { monthKey: item.monthKey, month: item.month })
+        }
+        const monthRow = months.get(item.monthKey)
+        monthRow[key] = (monthRow[key] || 0) + Number(item.used || 0)
+      }
+    }
+
+    const sortedMonths = [...months.values()].sort((a, b) => a.monthKey.localeCompare(b.monthKey))
+    const keys = [...topRows.map((row) => row.certificateNumber)]
+    if (rowsWithMonthlyUsage.length > topRows.length) keys.push('Other')
+
+    const cumulative = Object.fromEntries(keys.map((key) => [key, 0]))
+    const data = sortedMonths.map((row) => {
+      const next = { month: row.month, monthKey: row.monthKey }
+      for (const key of keys) {
+        cumulative[key] += Number(row[key] || 0)
+        next[key] = toCrore(cumulative[key])
+      }
+      return next
+    })
+
+    return { data, keys }
+  }, [currentLdcUtilization])
 
   const summaryCards = [
     { label: 'Exceeded',   value: exceeded.length, icon: AlertOctagon, tone: 'danger',  sub: 'Requires immediate review' },
@@ -103,7 +275,16 @@ export default function ThresholdMonitoring() {
     { key: 'limit', header: 'LDC Limit', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.limit == null ? 'Not set' : formatCurrency(r.limit)}</span> },
     { key: 'used', header: 'Utilized', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.used || 0)}</span> },
     { key: 'available', header: 'Available', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.available == null ? '—' : formatCurrency(r.available)}</span> },
-    { key: 'status', header: 'Status', sortValue: (r) => r.statusLabel || 'Within LDC Limit', render: (r) => <StatusBadge label={r.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(r.status)} /> },
+    { key: 'validity', header: 'Validity', sortValue: (r) => `${r.validTo || ''}`, render: (r) => (
+      <div>
+        <div className="font-mono" style={{ fontSize: 11.5 }}>{formatDate(r.validFrom)} - {formatDate(r.validTo)}</div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Certificate period</div>
+      </div>
+    )},
+    { key: 'validityStatus', header: 'Cert Status', sortValue: (r) => r.validityLabel || 'Validity Unknown', render: (r) => (
+      <StatusBadge label={r.validityLabel || 'Validity Unknown'} tone={r.validityTone || 'neutral'} />
+    )},
+    { key: 'status', header: 'Utilization Status', sortValue: (r) => r.statusLabel || 'Within LDC Limit', render: (r) => <StatusBadge label={r.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(r.status)} /> },
     { key: 'utilization', header: 'Progress', render: (r) => (
       r.utilization == null
         ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
@@ -150,7 +331,7 @@ export default function ThresholdMonitoring() {
         <div className="summary-grid-4" style={{ marginTop: 12 }}>
           <div className="kpi-card">
             <div className="kpi-icon-row"><span className="kpi-label">LDC Certificates Used</span><div className="kpi-icon-box info"><BadgePercent size={14} /></div></div>
-            <span className="kpi-value">{ldcUtilization.length}</span>
+            <span className="kpi-value">{currentLdcUtilization.length}</span>
             <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>From latest SAP upload</span>
           </div>
           <div className="kpi-card">
@@ -165,7 +346,7 @@ export default function ThresholdMonitoring() {
           </div>
           <div className="kpi-card">
             <div className="kpi-icon-row"><span className="kpi-label">LDC Utilized Base</span><div className="kpi-icon-box success"><ShieldCheck size={14} /></div></div>
-            <span className="kpi-value">{formatCurrency(ldcUtilization.reduce((sum, row) => sum + (Number(row.used) || 0), 0))}</span>
+            <span className="kpi-value">{formatCurrency(currentLdcUtilization.reduce((sum, row) => sum + (Number(row.used) || 0), 0))}</span>
             <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Eligible base under LDC</span>
           </div>
         </div>
@@ -175,34 +356,67 @@ export default function ThresholdMonitoring() {
         <div className="chart-card">
           <div className="chart-card-header">
             <div>
-              <p className="chart-title">Threshold Consumption Trend</p>
-              <p className="chart-subtitle">
-                {isLive ? 'From SAP upload posting months' : 'Average across vendors, last 6 months'}
-              </p>
+              <p className="chart-title">LDC Limit vs Used Amount</p>
+              <p className="chart-subtitle">Top certificates by utilized base, values in ₹ crore</p>
             </div>
           </div>
-          <ThresholdConsumptionChart />
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={ldcLimitVsUsedData} margin={{ top: 2, right: 4, left: -10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+              <XAxis dataKey="certificate" tick={{ fontSize: 10, fill: '#64748B', fontFamily: 'JetBrains Mono' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false} interval={0} />
+              <YAxis tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />
+              <Tooltip
+                contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12, padding: '6px 10px' }}
+                formatter={(value, name) => [`₹${Number(value || 0).toLocaleString('en-IN')} Cr`, name]}
+                labelFormatter={(label, rows) => {
+                  const row = rows?.[0]?.payload
+                  return row?.vendor ? `${label} · ${row.vendor}` : label
+                }}
+                cursor={{ fill: '#F8FAFC' }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="limit" fill="#CBD5E1" radius={[4, 4, 0, 0]} maxBarSize={24} name="Limit" />
+              <Bar dataKey="used" fill="#E01330" radius={[4, 4, 0, 0]} maxBarSize={24} name="Used" />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
         <div className="chart-card">
           <div className="chart-card-header">
             <div>
-              <p className="chart-title">Section Analysis</p>
-              <p className="chart-subtitle">Vendor status distribution per section</p>
+              <p className="chart-title">LDC Utilization Trend Over Time</p>
+              <p className="chart-subtitle">Cumulative used base by posting month, top certificates + other</p>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={thresholdSectionBreakdown} margin={{ top: 2, right: 4, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-              <XAxis dataKey="section" tick={{ fontSize: 11, fill: '#64748B', fontFamily: 'JetBrains Mono' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12, padding: '6px 10px' }} cursor={{ fill: '#F8FAFC' }} />
-              <Bar dataKey="safe"     stackId="a" fill="#10B981" maxBarSize={28} name="Safe" />
-              <Bar dataKey="unclassified" stackId="a" fill="#94A3B8" maxBarSize={28} name="Unclassified" />
-              <Bar dataKey="near"     stackId="a" fill="#F59E0B" maxBarSize={28} name="Near" />
-              <Bar dataKey="pan_issue" stackId="a" fill="#DC2626" maxBarSize={28} name="PAN Issue" />
-              <Bar dataKey="exceeded" stackId="a" fill="#EF4444" radius={[4,4,0,0]} maxBarSize={28} name="Exceeded" />
-            </BarChart>
-          </ResponsiveContainer>
+          {ldcTrendSeries.data.length ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={ldcTrendSeries.data} margin={{ top: 2, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#64748B' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  contentStyle={{ borderRadius: 8, border: '1px solid #E5E7EB', fontSize: 12, padding: '6px 10px' }}
+                  formatter={(value, name) => [`₹${Number(value || 0).toLocaleString('en-IN')} Cr`, name]}
+                  cursor={{ stroke: '#E5E7EB' }}
+                />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {ldcTrendSeries.keys.map((key, index) => (
+                  <Line
+                    key={key}
+                    type="monotone"
+                    dataKey={key}
+                    stroke={TREND_COLORS[index % TREND_COLORS.length]}
+                    strokeWidth={2}
+                    dot={false}
+                    name={key}
+                  />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="data-table-empty" style={{ height: 220 }}>
+              Re-analyse the SAP file to build month-wise LDC utilization from posting dates.
+            </div>
+          )}
         </div>
       </div>
 
@@ -213,20 +427,20 @@ export default function ThresholdMonitoring() {
               <button
                 type="button"
                 role="tab"
-                aria-selected={activeTracker === 'vendor'}
-                className={`threshold-tab ${activeTracker === 'vendor' ? 'active' : ''}`}
-                onClick={() => setActiveTracker('vendor')}
-              >
-                Vendor Threshold Tracker
-              </button>
-              <button
-                type="button"
-                role="tab"
                 aria-selected={activeTracker === 'ldc'}
                 className={`threshold-tab ${activeTracker === 'ldc' ? 'active' : ''}`}
                 onClick={() => setActiveTracker('ldc')}
               >
                 LDC Certificate Limit Tracker
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTracker === 'vendor'}
+                className={`threshold-tab ${activeTracker === 'vendor' ? 'active' : ''}`}
+                onClick={() => setActiveTracker('vendor')}
+              >
+                Vendor Threshold Tracker
               </button>
             </div>
           </div>
@@ -238,15 +452,15 @@ export default function ThresholdMonitoring() {
             style={{ width: 180 }}
           />
         </div>
-        {activeTracker === 'vendor' ? (
-          <DataTable columns={columns} data={filtered} pageSize={8} />
-        ) : (
+        {activeTracker === 'ldc' ? (
           <DataTable
             columns={ldcColumns}
             data={filteredLdc}
             pageSize={8}
             emptyState={<div className="data-table-empty">No LDC utilization found in the latest SAP upload</div>}
           />
+        ) : (
+          <DataTable columns={columns} data={filtered} pageSize={8} />
         )}
       </div>
     </div>

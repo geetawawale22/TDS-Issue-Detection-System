@@ -31,12 +31,36 @@ export function getFinancialYear(dateInput) {
   return `FY ${year}-${String(year + 1).slice(-2)}`
 }
 
-export function formatDate(isoString) {
-  return new Date(isoString).toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  })
+function parseDateInput(dateInput) {
+  if (!dateInput) return null
+  if (dateInput instanceof Date) {
+    return Number.isNaN(dateInput.getTime()) ? null : dateInput
+  }
+  const text = String(dateInput).trim()
+  const dateOnlyMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch
+    const localDate = new Date(Number(year), Number(month) - 1, Number(day))
+    return Number.isNaN(localDate.getTime()) ? null : localDate
+  }
+  const date = new Date(dateInput)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+export function formatDate(dateInput) {
+  const date = parseDateInput(dateInput)
+  if (!date) return '—'
+  const day = String(date.getDate()).padStart(2, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  return `${day}/${month}/${date.getFullYear()}`
+}
+
+export function formatDateTime(dateInput) {
+  const date = parseDateInput(dateInput)
+  if (!date) return '—'
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `${formatDate(date)} ${hours}:${minutes}`
 }
 
 export function cn(...classes) {

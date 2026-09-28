@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import { autoTable } from 'jspdf-autotable'
 import { getDisplayIssueType, getRecommendedAction } from '@/data/issueTypes'
-import { formatCurrency, formatDate } from '@/utils/utils'
+import { formatCurrency, formatDate, formatDateTime } from '@/utils/utils'
 
 /** Columns for exporting `issue`-shaped rows (Issues Found, High, Medium). */
 export const ISSUE_CSV_COLUMNS = [
@@ -80,7 +80,7 @@ export function downloadPdf(filename, title, columns, rows) {
   doc.text(title, 14, 15)
   doc.setFontSize(9)
   doc.setTextColor(120)
-  doc.text(`Generated ${new Date().toLocaleString('en-IN')} · ${rows.length.toLocaleString()} row${rows.length === 1 ? '' : 's'}`, 14, 21)
+  doc.text(`Generated ${formatDateTime(new Date())} · ${rows.length.toLocaleString()} row${rows.length === 1 ? '' : 's'}`, 14, 21)
 
   autoTable(doc, {
     startY: 26,

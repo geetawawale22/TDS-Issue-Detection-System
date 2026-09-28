@@ -446,14 +446,8 @@ export function getScenario(id) {
   return RULE_SCENARIOS.find((s) => s.id === id)
 }
 
-/**
- * The backend's amount-consistency check reports both directions under one
- * generic category ("Short/Excess TDS Deducted — Amount Mismatch") because
- * it's a cross-check on the ₹ math, not a rate comparison — but the issue
- * already carries baseAmount/appliedRate/tdsAmount, which is enough to work
- * out which direction actually happened (e.g. tdsAmount of ₹0 is
- * unambiguously "Short", not "Short/Excess"). Computed here purely for
- * display — filtering still matches on the raw category from the backend.
+/** Older cached uploads may still carry the combined backend category; resolve
+ * those to the directional label for display and filtering compatibility.
  */
 const AMOUNT_MISMATCH_CATEGORY = 'Short/Excess TDS Deducted — Amount Mismatch'
 const ISSUE_DISPLAY_LABELS = {

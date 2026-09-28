@@ -1,3 +1,4 @@
+import { formatDate } from '@/utils/utils'
 import './Common.css'
 
 export default function Timeline({ stages }) {
@@ -10,7 +11,7 @@ export default function Timeline({ stages }) {
           </div>
           <div className="timeline-content">
             <div className="timeline-stage">{item.stage}</div>
-            {item.date && <div className="timeline-date">{item.date}</div>}
+            {item.date && <div className="timeline-date">{formatDate(item.date)}</div>}
           </div>
         </div>
       ))}

@@ -51,6 +51,49 @@ function hasAdvanceSignal(row) {
   return (row.events || []).some((event) => event.referenceDoc && event.referenceDoc !== '—')
 }
 
+function splitLedgerDetailEvents(row) {
+  const anchorDocNo = presentValue(row.anchorDocNo)
+  const events = row.events || []
+  if (row.groupType !== 'CLEARING' || !anchorDocNo) {
+    return { linkedEvents: events, clearingEvents: [] }
+  }
+  return {
+    linkedEvents: events.filter((event) => presentValue(event.docNo) !== anchorDocNo),
+    clearingEvents: events.filter((event) => presentValue(event.docNo) === anchorDocNo),
+  }
+}
+
+function sumEventAmount(events) {
+  return events.reduce((total, event) => total + Number(event.amount || 0), 0)
+}
+
+function ledgerBaseAmount(row) {
+  const backendTotal = Number(row.baseAmount || 0)
+  if (backendTotal) return backendTotal
+  return (row.events || [])
+    .filter((event) => ['INVOICE', 'ADVANCE_PAYMENT'].includes(event.eventType))
+    .reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0)
+}
+
+function appliedRateForEvent(event) {
+  if (event.tdsRate != null && event.tdsRate !== '') return Number(event.tdsRate)
+  const baseAmount = Math.abs(Number(event.baseAmount || 0))
+  if (!baseAmount) return null
+  const tdsAmount = Math.abs(Number(event.tdsAmount || 0))
+  if (!tdsAmount) return null
+  return Math.round((tdsAmount / baseAmount) * 10000) / 100
+}
+
+function formatRate(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return `${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 4 })}%`
+}
+
+function formatGroupType(row) {
+  if (row.openItem) return 'Open Item'
+  return String(row.groupType || 'DOCUMENT').replace(/^OPEN_/, 'Open ').replace(/_/g, ' ')
+}
+
 export default function TDSCaseBuilder() {
   const savedView = useMemo(readSavedCaseBuilderView, [])
   const [activeTab, setActiveTab] = useState(savedView.activeTab)
@@ -79,27 +122,27 @@ export default function TDSCaseBuilder() {
       quickFilter,
     }))
   }, [activeTab, quickFilter])
-  const advanceTotals = useMemo(() => {
-    const totals = advanceLedgerRows.reduce((acc, row) => {
+  const caseOverviewTotals = useMemo(() => {
+    const totals = ledgerRows.reduce((acc, row) => {
       acc.invoice += Number(row.invoiceAmount || 0)
       acc.advance += Number(row.advanceAmount || 0)
-      acc.payment += Number(row.paymentAmount || 0)
+      acc.base += ledgerBaseAmount(row)
       acc.tds += Number(row.tdsAmount || 0)
       if (row.status === 'ISSUE') acc.issueGroups += 1
       return acc
-    }, { invoice: 0, advance: 0, payment: 0, tds: 0, issueGroups: 0 })
+    }, { invoice: 0, advance: 0, base: 0, tds: 0, issueGroups: 0 })
     return {
       ...totals,
-      groups: advanceLedgerRows.length,
+      groups: ledgerRows.length,
       issues: advanceIssueRows.length,
     }
-  }, [advanceLedgerRows, advanceIssueRows])
+  }, [ledgerRows, advanceIssueRows])
 
   const summaryCards = useMemo(() => [
     { label: 'Rows Read', value: stats.rowsRead ?? 0, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all' },
     { label: 'Document Groups', value: stats.ledgerCases ?? 0, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all' },
     { label: 'Balanced Groups', value: stats.balancedLedgerCases ?? 0, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced' },
-    { label: 'Open Groups', value: stats.openLedgerCases ?? 0, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open' },
+    { label: 'Open Items', value: stats.openLedgerCases ?? 0, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open' },
     { label: 'Advance Rows', value: caseStats.advanceCases ?? 0, icon: GitBranch, tone: 'info', tab: 'advance', filter: 'advance-with-amount' },
     { label: 'Rule Issues', value: stats.issuesFound ?? 0, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all' },
   ], [stats, caseStats])
@@ -117,14 +160,14 @@ export default function TDSCaseBuilder() {
     { key: 'anchorDocNo', header: 'Document Group', render: (row) => (
       <div>
         <div className="font-mono case-strong">{row.anchorDocNo}</div>
-        <div className="case-muted">{row.groupType} · {row.eventCount} rows</div>
+        <div className="case-muted">{formatGroupType(row)} · {row.eventCount} rows</div>
       </div>
     )},
     { key: 'section', header: 'Section', render: renderSection },
     { key: 'assignmentNumber', header: 'Assignment No.', render: (row) => <span className="font-mono case-strong">{row.assignmentNumber || '—'}</span> },
     { key: 'invoiceAmount', header: 'Invoice', render: (row) => <span className="font-mono">{formatCurrency(row.invoiceAmount)}</span> },
     { key: 'advanceAmount', header: 'Advance', render: (row) => <span className="font-mono">{formatCurrency(row.advanceAmount)}</span> },
-    { key: 'paymentAmount', header: 'Payment', render: (row) => <span className="font-mono">{formatCurrency(row.paymentAmount)}</span> },
+    { key: 'baseAmount', header: 'Base Amount', render: (row) => <span className="font-mono">{formatCurrency(ledgerBaseAmount(row))}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
     { key: 'issueCount', header: 'Issues', render: (row) => <span className="font-mono">{row.issueCount}</span> },
     { key: 'status', header: 'Status', sortValue: (row) => row.status, render: (row) => <StatusBadge label={row.status} tone={row.status === 'ISSUE' ? 'danger' : row.status === 'BALANCED' ? 'success' : 'warning'} /> },
@@ -158,7 +201,7 @@ export default function TDSCaseBuilder() {
     if (activeTab === 'advanceIssues') return advanceIssueRows
     if (activeTab === 'issues') return issueRows
     if (quickFilter === 'ledger-balanced') return ledgerRows.filter((row) => row.status === 'BALANCED')
-    if (quickFilter === 'ledger-open') return ledgerRows.filter((row) => row.status === 'OPEN')
+    if (quickFilter === 'ledger-open') return ledgerRows.filter((row) => row.openItem || row.status === 'OPEN')
     if (quickFilter === 'ledger-issue') return ledgerRows.filter((row) => row.status === 'ISSUE')
     return ledgerRows
   }, [activeTab, quickFilter, advanceLedgerRows, advanceIssueRows, issueRows, ledgerRows])
@@ -208,8 +251,47 @@ export default function TDSCaseBuilder() {
   }
 
   function renderLedgerLines(row) {
+    const { linkedEvents, clearingEvents } = splitLedgerDetailEvents(row)
+    const linkedNet = sumEventAmount(linkedEvents)
+    const clearingNet = sumEventAmount(clearingEvents)
+    const groupNet = Number(row.netAmount ?? linkedNet + clearingNet)
+
+    const renderRows = (events) => events.map((event, index) => (
+      <div className="case-ledger-line" key={`${event.docNo}-${event.lineItem}-${index}`}>
+        <span className="font-mono">{event.docType}</span>
+        <span className="font-mono">{event.docNo}</span>
+        <span className="font-mono">{event.assignmentNumber}</span>
+        <span>{event.eventType}</span>
+        <span className="font-mono">{event.glAccount}</span>
+        <span className="font-mono">{event.debitCredit}</span>
+        <span className="font-mono">{formatCurrency(event.amount)}</span>
+        <span className="font-mono">{formatCurrency(event.baseAmount)}</span>
+        <span className="font-mono">{event.tdsSection}</span>
+        <span className="font-mono">{formatRate(appliedRateForEvent(event))}</span>
+        <span className="font-mono">{formatCurrency(event.tdsAmount)}</span>
+        <span className="font-mono">{event.referenceDoc}</span>
+      </div>
+    ))
+
     return (
       <div className="case-ledger-detail">
+        {clearingEvents.length > 0 && (
+          <div className="case-ledger-balance-strip">
+            <div>
+              <span>Linked documents net</span>
+              <strong>{formatCurrency(linkedNet)}</strong>
+            </div>
+            <div>
+              <span>Clearing entries net</span>
+              <strong>{formatCurrency(clearingNet)}</strong>
+            </div>
+            <div>
+              <span>Group net</span>
+              <strong>{formatCurrency(groupNet)}</strong>
+            </div>
+          </div>
+        )}
+        <div className="case-ledger-section-title">Linked documents</div>
         <div className="case-ledger-line case-ledger-line--head">
           <span>Type</span>
           <span>Doc No.</span>
@@ -217,25 +299,38 @@ export default function TDSCaseBuilder() {
           <span>Event</span>
           <span>GL</span>
           <span>D/C</span>
-          <span>Amount</span>
+          <span>Document Amount</span>
+          <span>Base Amount</span>
           <span>Section</span>
+          <span>Rate</span>
           <span>TDS</span>
           <span>Reference</span>
         </div>
-        {(row.events || []).map((event, index) => (
-          <div className="case-ledger-line" key={`${event.docNo}-${event.lineItem}-${index}`}>
-            <span className="font-mono">{event.docType}</span>
-            <span className="font-mono">{event.docNo}</span>
-            <span className="font-mono">{event.assignmentNumber}</span>
-            <span>{event.eventType}</span>
-            <span className="font-mono">{event.glAccount}</span>
-            <span className="font-mono">{event.debitCredit}</span>
-            <span className="font-mono">{formatCurrency(event.amount)}</span>
-            <span className="font-mono">{event.tdsSection}</span>
-            <span className="font-mono">{formatCurrency(event.tdsAmount)}</span>
-            <span className="font-mono">{event.referenceDoc}</span>
-          </div>
-        ))}
+        {linkedEvents.length ? renderRows(linkedEvents) : (
+          <div className="case-ledger-empty-line">No linked business documents in this group.</div>
+        )}
+        {clearingEvents.length > 0 && (
+          <>
+            <div className="case-ledger-section-title case-ledger-section-title--clearing">
+              Clearing / balancing entries
+            </div>
+            <div className="case-ledger-line case-ledger-line--head">
+              <span>Type</span>
+              <span>Doc No.</span>
+              <span>Assignment</span>
+              <span>Event</span>
+              <span>GL</span>
+              <span>D/C</span>
+              <span>Document Amount</span>
+              <span>Base Amount</span>
+              <span>Section</span>
+              <span>Rate</span>
+              <span>TDS</span>
+              <span>Reference</span>
+            </div>
+            {renderRows(clearingEvents)}
+          </>
+        )}
       </div>
     )
   }
@@ -246,9 +341,9 @@ export default function TDSCaseBuilder() {
         <div>
           <div className="breadcrumb">
             <span>Home</span><span className="breadcrumb-sep">›</span>
-            <span className="breadcrumb-current">TDS Case Builder</span>
+            <span className="breadcrumb-current">TDS Analysis</span>
           </div>
-          <h1 className="page-title">TDS Case Builder</h1>
+          <h1 className="page-title">TDS Analysis</h1>
           {hasUpload && <div className="case-source-line">Using latest Issues upload: <span className="font-mono">{uploadMeta.fileName}</span></div>}
         </div>
       </div>
@@ -282,10 +377,10 @@ export default function TDSCaseBuilder() {
           <button
             type="button"
             className={`case-overview-button ${quickFilter === 'advance-all' ? 'is-active' : ''}`}
-            onClick={() => applyQuickFilter('advance', 'advance-all')}
+            onClick={() => applyQuickFilter('ledger', 'ledger-all')}
           >
             <span className="case-overview-label">Linked Groups</span>
-            <strong>{advanceTotals.groups.toLocaleString()}</strong>
+            <strong>{caseOverviewTotals.groups.toLocaleString()}</strong>
           </button>
           <button
             type="button"
@@ -293,7 +388,7 @@ export default function TDSCaseBuilder() {
             onClick={() => applyQuickFilter('advance', 'advance-with-amount')}
           >
             <span className="case-overview-label">Advance Amount</span>
-            <strong>{formatCurrency(advanceTotals.advance)}</strong>
+            <strong>{formatCurrency(caseOverviewTotals.advance)}</strong>
           </button>
           <button
             type="button"
@@ -301,15 +396,15 @@ export default function TDSCaseBuilder() {
             onClick={() => applyQuickFilter('advance', 'advance-invoice')}
           >
             <span className="case-overview-label">Invoice Amount</span>
-            <strong>{formatCurrency(advanceTotals.invoice)}</strong>
+            <strong>{formatCurrency(caseOverviewTotals.invoice)}</strong>
           </button>
           <button
             type="button"
             className={`case-overview-button ${quickFilter === 'advance-tds' ? 'is-active' : ''}`}
             onClick={() => applyQuickFilter('advance', 'advance-tds')}
           >
-            <span className="case-overview-label">TDS In Chain</span>
-            <strong>{formatCurrency(advanceTotals.tds)}</strong>
+            <span className="case-overview-label">TDS</span>
+            <strong>{formatCurrency(caseOverviewTotals.tds)}</strong>
           </button>
           <button
             type="button"
@@ -317,7 +412,7 @@ export default function TDSCaseBuilder() {
             onClick={() => applyQuickFilter('advanceIssues', 'advance-issues')}
           >
             <span className="case-overview-label">Advance Issues</span>
-            <strong>{advanceTotals.issues.toLocaleString()}</strong>
+            <strong>{caseOverviewTotals.issues.toLocaleString()}</strong>
           </button>
         </div>
       )}

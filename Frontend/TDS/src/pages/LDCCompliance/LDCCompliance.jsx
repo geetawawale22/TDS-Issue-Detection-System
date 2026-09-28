@@ -3,7 +3,7 @@ import { useSelector } from 'react-redux'
 import * as XLSX from 'xlsx'
 import toast from 'react-hot-toast'
 import {
-  AlertTriangle, FileSpreadsheet, IdCard, Upload,
+  AlertTriangle, Download, FileSpreadsheet, IdCard, Upload,
   ShieldCheck, Search,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
@@ -11,6 +11,8 @@ import ProgressBar from '@/components/Common/ProgressBar'
 import StatusBadge from '@/components/Common/StatusBadge'
 import { selectLdcUtilization } from '@/redux/slices/issuesSlice'
 import { fetchLdcCertificates, uploadLdcCertificates } from '@/services/ldcService'
+import { downloadCsv, downloadExcel } from '@/utils/csvExport'
+import { formatDate } from '@/utils/utils'
 import '@/components/Common/Common.css'
 import './LDCCompliance.css'
 
@@ -39,6 +41,21 @@ const ldcPageCache = {
 const TODAY = new Date()
 TODAY.setHours(0, 0, 0, 0)
 const EXPIRING_SOON_DAYS = 30
+const ALLOWED_LDC_COMPANY_CODES = new Set(['1001', '1079', '1081'])
+const amountDisplay = (value) => (
+  value == null || value === '' ? '—' : Number(value).toLocaleString('en-IN')
+)
+const roundToTwo = (value) => Math.round(Number(value || 0) * 100) / 100
+const ldcLimitStatus = (utilization) => {
+  if (utilization == null) return ['safe', 'Within LDC Limit']
+  if (utilization > 100) return ['over_utilized', 'LDC Over-utilized']
+  if (utilization >= 100) return ['exhausted', 'LDC Limit Exhausted']
+  if (utilization >= 90) return ['high_warning', 'LDC Limit 90% Utilized']
+  if (utilization >= 80) return ['warning', 'LDC Limit 80% Utilized']
+  return ['safe', 'Within LDC Limit']
+}
+const hasPositiveLimit = (row) => Number(row?.approvedLimit) > 0
+const isAllowedLdcCompanyCode = (companyCode) => ALLOWED_LDC_COMPANY_CODES.has(String(companyCode || '').trim())
 const NEW_SECTION_BY_OLD_SECTION = {
   '193': '393(1)5(i)',
   '194': '393(1)7',
@@ -169,16 +186,27 @@ function formatSectionDisplay(value) {
   return oldSection || text
 }
 
-function formatDate(date) {
-  if (!date) return '—'
-  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-}
-
 function dateStatus(row) {
   if (!row.validFrom || !row.validTo) return 'Unknown'
   if (TODAY < row.validFrom) return 'Future'
   if (TODAY > row.validTo) return 'Expired'
   return 'Active'
+}
+
+function certificateStatus(validFromValue, validToValue) {
+  return dateStatus({
+    validFrom: parseDateValue(validFromValue),
+    validTo: parseDateValue(validToValue),
+  })
+}
+
+function utilizationLookupKeys(row) {
+  const cert = clean(row?.certificateNumber).toUpperCase()
+  const pan = clean(row?.pan).toUpperCase()
+  return [
+    `${cert}||${pan}`,
+    `${cert}||`,
+  ]
 }
 
 function isActiveCertificate(row) {
@@ -229,6 +257,7 @@ function certificateIdentityKey(row) {
 
 function preferCertificateRow(current, candidate) {
   if (!current) return candidate
+  if (hasPositiveLimit(candidate) && !hasPositiveLimit(current)) return candidate
   const currentHasMappedSection = isMappedSection(current.section)
   const candidateHasMappedSection = isMappedSection(candidate.section)
   if (candidateHasMappedSection && !currentHasMappedSection) return candidate
@@ -351,7 +380,7 @@ function normalizeRow(row, index) {
   const validFrom = parseDateValue(normalized.Valid_From || normalized.Exemption_From)
   const validTo = parseDateValue(normalized.Valid_To || normalized.Exemption_To)
   const rate = Number(clean(normalized.Approved_TDS_Rate || normalized.Exemption_Percentage))
-  const limit = Number(clean(normalized.Approved_Amount_Limit))
+  const limit = Number(clean(normalized.Approved_Amount_Limit || normalized.Exemption_Threshold))
 
   return {
     id: `ldc-${index}`,
@@ -411,10 +440,16 @@ function validateRows(rows) {
     return {
       ...row,
       vendorCodes: row.vendorCode ? [row.vendorCode] : [],
-      validationStatus: issues.length ? 'Issue' : 'Valid',
+      validationStatus: validationStatusForIssues(issues),
       issues,
     }
   })
+}
+
+function validationStatusForIssues(issues = []) {
+  if (issues.includes('PAN format invalid')) return 'Invalid PAN'
+  if (issues.includes('PAN missing')) return 'PAN Missing'
+  return issues.length ? 'Issue' : 'Valid'
 }
 
 export default function LDCCompliance() {
@@ -469,34 +504,37 @@ export default function LDCCompliance() {
     fetchLdcCertificates()
       .then((result) => {
         if (!isMounted || tempRows.length) return
-        const savedRows = (result.certificates ?? []).map((row, index) => ({
-          id: `saved-ldc-${index}`,
-          rowNumber: row.rowNumber,
-          certificateNumber: row.certificateNumber || '',
-          certificateType: row.certificateType || '',
-          pan: row.pan || '',
-          vendorName: row.vendorName || '',
-          vendorCode: row.vendorCode || '',
-          companyCode: row.companyCode || '',
-          deductorTan: row.deductorTan || '',
-          wtaxType: row.wtaxType || '',
-          wtx: row.wtx || '',
-          section: formatSectionDisplay(row.section),
-          approvedRate: row.approvedRate ?? null,
-          validFrom: parseDateValue(row.validFrom),
-          validTo: parseDateValue(row.validTo),
-          taxYear: row.taxYear || '',
-          approvedLimit: row.approvedLimit ?? null,
-          status: row.status || '',
-          isVerified: Boolean(row.isVerified),
-          lastVerifiedDate: parseDateValue(row.lastVerifiedDate),
-          parentCertificateNumber: row.parentCertificateNumber || '',
-          isChildCertificate: Boolean(row.isChildCertificate),
-          remarks: row.remarks || '',
-          vendorCodes: [],
-          validationStatus: (row.issues ?? []).length ? 'Issue' : 'Valid',
-          issues: row.issues ?? [],
-        }))
+        const savedRows = (result.certificates ?? []).map((row, index) => {
+          const issues = row.issues ?? []
+          return {
+            id: `saved-ldc-${index}`,
+            rowNumber: row.rowNumber,
+            certificateNumber: row.certificateNumber || '',
+            certificateType: row.certificateType || '',
+            pan: row.pan || '',
+            vendorName: row.vendorName || '',
+            vendorCode: row.vendorCode || '',
+            companyCode: row.companyCode || '',
+            deductorTan: row.deductorTan || '',
+            wtaxType: row.wtaxType || '',
+            wtx: row.wtx || '',
+            section: formatSectionDisplay(row.section),
+            approvedRate: row.approvedRate ?? null,
+            validFrom: parseDateValue(row.validFrom),
+            validTo: parseDateValue(row.validTo),
+            taxYear: row.taxYear || '',
+            approvedLimit: row.approvedLimit ?? null,
+            status: row.status || '',
+            isVerified: Boolean(row.isVerified),
+            lastVerifiedDate: parseDateValue(row.lastVerifiedDate),
+            parentCertificateNumber: row.parentCertificateNumber || '',
+            isChildCertificate: Boolean(row.isChildCertificate),
+            remarks: row.remarks || '',
+            vendorCodes: [],
+            validationStatus: validationStatusForIssues(issues),
+            issues,
+          }
+        })
         const savedIssueRows = restoreIssueRows(result.issueRows)
         const unsavedIssueRows = savedIssueRows.filter((row) => !row.savedToMaster)
         setUploadIssues(savedIssueRows.length ? savedIssueRows : restoreIssueRows(uploadMeta?.issues))
@@ -554,7 +592,7 @@ export default function LDCCompliance() {
         return {
           ...row,
           issues: backendIssues,
-          validationStatus: backendIssues.length ? 'Issue' : 'Valid',
+          validationStatus: validationStatusForIssues(backendIssues),
         }
       })
       const issueDetails = mergedRows.filter((row) => row.issues.length)
@@ -577,13 +615,22 @@ export default function LDCCompliance() {
   }
 
   const stats = useMemo(() => {
-    const activeRows = uniqueCertificateRows(rows.filter(isActiveCertificate))
-    const uniquePans = new Set(rows.map((row) => row.pan).filter(Boolean))
+    const allowedRows = rows.filter((row) => isAllowedLdcCompanyCode(row.companyCode))
+    const allowedIssueCount = [
+      ...uploadIssues.filter((row) => isAllowedLdcCompanyCode(row.companyCode) && (row.issues ?? []).length),
+      ...allowedRows.filter((row) => (row.issues ?? []).length),
+    ].reduce((seen, row) => {
+      const key = row.id || `${row.rowNumber || ''}|${row.certificateNumber || ''}|${row.pan || ''}|${row.companyCode || ''}`
+      seen.add(key)
+      return seen
+    }, new Set()).size
+    const activeRows = uniqueCertificateRows(allowedRows.filter(isActiveCertificate))
+    const uniquePans = new Set(allowedRows.map((row) => row.pan).filter(Boolean))
     const expiringSoon = activeRows.filter(isExpiringSoon)
     const nextStats = {
-      total: uploadResult?.totalRows ?? rows.length,
+      total: allowedRows.length,
       valid: activeRows.length,
-      issues: uploadIssues.length,
+      issues: allowedIssueCount,
       uniquePans: uniquePans.size,
       active: activeRows.length,
       expiringSoon: expiringSoon.length,
@@ -601,17 +648,34 @@ export default function LDCCompliance() {
     isCertificateDataPending && !ldcPageCache.stats ? '...' : value
   )
 
+  const allowedRows = useMemo(
+    () => rows.filter((row) => isAllowedLdcCompanyCode(row.companyCode)),
+    [rows],
+  )
+
+  const allowedIssueRows = useMemo(() => {
+    const byKey = new Map()
+    const addRow = (row) => {
+      if (!isAllowedLdcCompanyCode(row.companyCode) || !(row.issues ?? []).length) return
+      const key = row.id || `${row.rowNumber || ''}|${row.certificateNumber || ''}|${row.pan || ''}|${row.companyCode || ''}`
+      if (!byKey.has(key)) byKey.set(key, row)
+    }
+    uploadIssues.forEach(addRow)
+    allowedRows.forEach(addRow)
+    return [...byKey.values()]
+  }, [allowedRows, uploadIssues])
+
   const filteredRows = useMemo(() => {
     const needle = search.toLowerCase()
-    const activeRows = uniqueCertificateRows(rows.filter(isActiveCertificate))
+    const activeRows = uniqueCertificateRows(allowedRows.filter(isActiveCertificate))
     const displayRows = quickFilter === 'issues'
-      ? uploadIssues
+      ? allowedIssueRows
       : quickFilter === 'all' || quickFilter === 'unique-pans'
-        ? rows
+        ? allowedRows
         : activeRows
     return displayRows.filter((row) => {
       if (quickFilter === 'unique-pans') {
-        const firstPanRow = rows.find((candidate) => candidate.pan && candidate.pan === row.pan)
+        const firstPanRow = allowedRows.find((candidate) => candidate.pan && candidate.pan === row.pan)
         if (firstPanRow?.id !== row.id) return false
       }
       if (quickFilter === 'active' && !isActiveCertificate(row)) return false
@@ -626,7 +690,128 @@ export default function LDCCompliance() {
       (row.issues ?? []).join(' ').toLowerCase().includes(needle)
       )
     })
-  }, [rows, uploadIssues, search, quickFilter])
+  }, [allowedRows, allowedIssueRows, search, quickFilter])
+
+  const currentCertificateByKey = useMemo(() => {
+    const byKey = new Map()
+    const byCertificate = new Map()
+    rows
+      .filter((row) => !row.isIssueRow && row.certificateNumber && isAllowedLdcCompanyCode(row.companyCode))
+      .forEach((row) => {
+        const cert = String(row.certificateNumber || '').trim()
+        const pan = String(row.pan || '').trim().toUpperCase()
+        byCertificate.set(cert, preferCertificateRow(byCertificate.get(cert), row))
+        if (pan) {
+          const key = `${cert}||${pan}`
+          byKey.set(key, preferCertificateRow(byKey.get(key), row))
+        }
+      })
+    return { byKey, byCertificate }
+  }, [rows])
+
+  const currentLdcUtilization = useMemo(() => {
+    const hasCurrentCertificates = currentCertificateByKey.byCertificate.size > 0
+    if (!hasCurrentCertificates) {
+      return liveLdcUtilization
+        .filter((row) => isAllowedLdcCompanyCode(row.companyCode))
+        .map((row) => ({
+          ...row,
+          certificateStatus: certificateStatus(row.validFrom, row.validTo),
+        }))
+    }
+
+    return liveLdcUtilization
+      .filter((row) => isAllowedLdcCompanyCode(row.companyCode))
+      .map((row) => {
+        const cert = String(row.certificateNumber || '').trim()
+        const pan = String(row.pan || '').trim().toUpperCase()
+        const masterRow = currentCertificateByKey.byKey.get(`${cert}||${pan}`) || currentCertificateByKey.byCertificate.get(cert)
+        if (!masterRow) return null
+        const limit = masterRow.approvedLimit ?? row.limit
+        const used = Number(row.used || 0)
+        const numericLimit = Number(limit)
+        const hasLimit = Number.isFinite(numericLimit) && numericLimit > 0
+        const available = hasLimit ? numericLimit - used : null
+        const utilization = hasLimit ? roundToTwo((used / numericLimit) * 100) : null
+        const [status, statusLabel] = ldcLimitStatus(utilization)
+        const validFrom = masterRow.validFrom ?? row.validFrom ?? null
+        const validTo = masterRow.validTo ?? row.validTo ?? null
+        return {
+          ...row,
+          vendor: masterRow.vendorName || row.vendor,
+          vendorId: masterRow.vendorCode || row.vendorId,
+          vendorCode: masterRow.vendorCode || row.vendorCode || row.vendorId,
+          pan: masterRow.pan || row.pan,
+          companyCode: masterRow.companyCode || row.companyCode,
+          section: masterRow.section || row.section,
+          approvedRate: masterRow.approvedRate ?? row.approvedRate,
+          validFrom,
+          validTo,
+          certificateStatus: certificateStatus(validFrom, validTo),
+          limit: hasLimit ? numericLimit : limit,
+          available,
+          utilization,
+          status,
+          statusLabel,
+        }
+      })
+      .filter(Boolean)
+  }, [currentCertificateByKey, liveLdcUtilization])
+
+  const utilizationByCertificate = useMemo(() => {
+    const byKey = new Map()
+    currentLdcUtilization.forEach((row) => {
+      const [certPanKey, certOnlyKey] = utilizationLookupKeys(row)
+      if (!byKey.has(certPanKey)) byKey.set(certPanKey, row)
+      if (!byKey.has(certOnlyKey)) byKey.set(certOnlyKey, row)
+    })
+    return byKey
+  }, [currentLdcUtilization])
+
+  const exportRows = useMemo(() => (
+    filteredRows.map((row) => {
+      const [certPanKey, certOnlyKey] = utilizationLookupKeys(row)
+      const utilizationRow = utilizationByCertificate.get(certPanKey) || utilizationByCertificate.get(certOnlyKey) || null
+      return { ...row, utilizationRow }
+    })
+  ), [filteredRows, utilizationByCertificate])
+
+  const exportColumns = useMemo(() => ([
+    { label: 'Supplier', value: (row) => row.vendorName || '—' },
+    { label: 'Vendor Code', value: (row) => row.vendorCode || '—' },
+    { label: 'PAN', value: (row) => row.pan || '—' },
+    { label: 'Certificate Number', value: (row) => row.certificateNumber || '—' },
+    { label: 'Certificate Type', value: (row) => row.certificateType || '—' },
+    { label: 'Company Code', value: (row) => row.companyCode || '—' },
+    { label: 'Deductor TAN', value: (row) => row.deductorTan || '—' },
+    { label: 'Old Section / New Section', value: (row) => row.section || '—' },
+    { label: 'Exemption %', value: (row) => row.approvedRate == null ? '—' : `${row.approvedRate}%` },
+    { label: 'Threshold', value: (row) => amountDisplay(row.approvedLimit) },
+    { label: 'Valid From', value: (row) => formatDate(row.validFrom) },
+    { label: 'Valid Till', value: (row) => formatDate(row.validTo) },
+    { label: 'Certificate Status', value: (row) => certificateStatus(row.validFrom, row.validTo) },
+    { label: 'Validation Status', value: (row) => row.validationStatus || '—' },
+    { label: 'Issue Details', value: (row) => (row.issues ?? []).join('; ') || '—' },
+    { label: 'LDC Limit', value: (row) => row.utilizationRow ? amountDisplay(row.utilizationRow.limit) : '—' },
+    { label: 'LDC Used', value: (row) => row.utilizationRow ? amountDisplay(row.utilizationRow.used) : '—' },
+    { label: 'LDC Available', value: (row) => row.utilizationRow ? amountDisplay(row.utilizationRow.available) : '—' },
+    { label: 'LDC Utilization %', value: (row) => row.utilizationRow?.utilization == null ? '—' : `${row.utilizationRow.utilization}%` },
+    { label: 'LDC Utilization Status', value: (row) => row.utilizationRow?.statusLabel || '—' },
+  ]), [])
+
+  function handleExport(format) {
+    if (!exportRows.length) {
+      toast('No LDC rows to export')
+      return
+    }
+    const suffix = quickFilter === 'issues' ? 'issues' : 'certificates'
+    const baseName = `ldc-compliance-${suffix}`
+    if (format === 'excel') {
+      downloadExcel(`${baseName}.xlsx`, exportColumns, exportRows, 'LDC Compliance')
+      return
+    }
+    downloadCsv(`${baseName}.csv`, exportColumns, exportRows)
+  }
 
   const quickFilterLabel = {
     all: 'Uploaded Rows',
@@ -637,13 +822,11 @@ export default function LDCCompliance() {
   }[quickFilter]
 
   const columns = [
-    { key: 'vendorName', header: 'Supplier', render: (row) => (
-      <div>
-        <div className="ldc-strong">{row.vendorName || '—'}</div>
-        <div className="font-mono ldc-muted">{row.vendorCode || '—'}</div>
-      </div>
-    )},
     { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
+    { key: 'vendorName', header: 'Supplier', render: (row) => (
+      <div className="ldc-strong">{row.vendorName || '—'}</div>
+    )},
+    { key: 'vendorCode', header: 'Vendor Code', render: (row) => <span className="font-mono ldc-strong">{row.vendorCode || '—'}</span> },
     { key: 'certificateNumber', header: 'Certificate', render: (row) => (
       <div>
         <div className="ldc-strong">{row.certificateNumber || '—'}</div>
@@ -658,6 +841,7 @@ export default function LDCCompliance() {
     )},
     { key: 'section', header: 'Old Section / New Section', render: (row) => <span className="font-mono">{row.section || '—'}</span> },
     { key: 'approvedRate', header: 'Exemption %', render: (row) => <span className="font-mono">{row.approvedRate == null ? '—' : `${row.approvedRate}%`}</span> },
+    { key: 'approvedLimit', header: 'Threshold', render: (row) => <span className="font-mono">{amountDisplay(row.approvedLimit)}</span> },
     { key: 'validTo', header: 'Valid Till', render: (row) => (
       <div>
         <div className="font-mono">{formatDate(row.validTo)}</div>
@@ -676,22 +860,21 @@ export default function LDCCompliance() {
   }
 
   const utilizationColumns = [
-    { key: 'vendor', header: 'Vendor', render: (row) => (
-      <div>
-        <div className="ldc-strong">{row.vendor}</div>
-        <div className="font-mono ldc-muted">{row.vendorCode || row.vendorId || '—'}</div>
-      </div>
-    )},
     { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
+    { key: 'vendor', header: 'Vendor', render: (row) => (
+      <div className="ldc-strong">{row.vendor}</div>
+    )},
+    { key: 'vendorCode', header: 'Vendor Code', render: (row) => <span className="font-mono ldc-strong">{row.vendorCode || row.vendorId || '—'}</span> },
     { key: 'certificateNumber', header: 'Certificate', render: (row) => (
       <div>
         <div className="ldc-strong">{row.certificateNumber}</div>
         <div className="ldc-muted">{row.section} · exemption {row.approvedRate ?? '—'}%</div>
       </div>
     )},
-    { key: 'limit', header: 'Limit', render: (row) => <span className="font-mono">{row.limit == null ? 'Not set' : row.limit.toLocaleString('en-IN')}</span> },
+    { key: 'limit', header: 'Limit', render: (row) => <span className="font-mono">{row.limit == null ? 'Not set' : amountDisplay(row.limit)}</span> },
     { key: 'used', header: 'Used', render: (row) => <span className="font-mono">{Number(row.used || 0).toLocaleString('en-IN')}</span> },
-    { key: 'available', header: 'Available', render: (row) => <span className="font-mono">{row.available == null ? '—' : Number(row.available).toLocaleString('en-IN')}</span> },
+    { key: 'available', header: 'Available', render: (row) => <span className="font-mono">{amountDisplay(row.available)}</span> },
+    { key: 'certificateStatus', header: 'Certificate Status', render: (row) => <StatusBadge label={row.certificateStatus || 'Unknown'} tone={row.certificateStatus === 'Active' ? 'success' : row.certificateStatus === 'Expired' ? 'danger' : 'warning'} /> },
     { key: 'status', header: 'Status', sortValue: (row) => row.statusLabel || 'Within LDC Limit', render: (row) => <StatusBadge label={row.statusLabel || 'Within LDC Limit'} tone={utilizationTone(row.status)} /> },
     { key: 'utilization', header: 'Utilization', render: (row) => (
       row.utilization == null
@@ -700,27 +883,7 @@ export default function LDCCompliance() {
     )},
   ]
 
-  const issueColumns = [
-    { key: 'vendorName', header: 'Supplier', render: (row) => (
-      <div>
-        <div className="ldc-strong">{row.vendorName || '—'}</div>
-        <div className="font-mono ldc-muted">{row.vendorCode || '—'}</div>
-      </div>
-    )},
-    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
-    { key: 'certificateNumber', header: 'Certificate', render: (row) => <span className="font-mono ldc-strong">{row.certificateNumber || '—'}</span> },
-    { key: 'rowNumber', header: 'CSV Row', render: (row) => <span className="font-mono ldc-strong">{row.rowNumber || '—'}</span> },
-    { key: 'companyCode', header: 'Company', render: (row) => <span className="font-mono">{row.companyCode || '—'}</span> },
-    { key: 'section', header: 'Section', render: (row) => <span className="font-mono">{row.section || '—'}</span> },
-    { key: 'approvedRate', header: 'Exemption %', render: (row) => <span className="font-mono">{row.approvedRate == null ? '—' : `${row.approvedRate}%`}</span> },
-    { key: 'validTo', header: 'Valid Till', render: (row) => (
-      <div>
-        <div className="font-mono">{formatDate(row.validTo)}</div>
-        <div className="ldc-muted">from {formatDate(row.validFrom)}</div>
-      </div>
-    )},
-    { key: 'issues', header: 'Issue Details', render: (row) => <span className="ldc-issue-text">{(row.issues ?? []).join('; ') || '—'}</span> },
-  ]
+  const issueColumns = columns
 
   return (
     <div>
@@ -750,7 +913,7 @@ export default function LDCCompliance() {
           <div className="ldc-upload-title">{fileName || 'Upload LDC certificate master'}</div>
           <div className="ldc-upload-sub">
             {uploadResult
-              ? uploadSummary(uploadResult, rows.length)
+              ? uploadSummary({ ...uploadResult, issueRows: visibleStats.issues }, rows.length)
               : `Required columns: ${REQUIRED_COLUMNS.join(', ')}`}
           </div>
         </div>
@@ -795,14 +958,22 @@ export default function LDCCompliance() {
                   : `${quickFilterLabel} · ${filteredRows.length} rows shown`}
               </div>
             </div>
-            <div className="ldc-search-wrapper">
-              <Search size={14} />
-              <input
-                className="filter-input"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search LDC, PAN, vendor..."
-              />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button className="btn btn-outline btn-sm" type="button" onClick={() => handleExport('csv')}>
+                <Download size={13} />CSV
+              </button>
+              <button className="btn btn-outline btn-sm" type="button" onClick={() => handleExport('excel')}>
+                <FileSpreadsheet size={13} />Excel
+              </button>
+              <div className="ldc-search-wrapper">
+                <Search size={14} />
+                <input
+                  className="filter-input"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search LDC, PAN, vendor..."
+                />
+              </div>
             </div>
           </div>
           <DataTable
@@ -828,7 +999,7 @@ export default function LDCCompliance() {
         </div>
         <DataTable
           columns={utilizationColumns}
-          data={liveLdcUtilization}
+          data={currentLdcUtilization}
           pageSize={8}
           emptyState={<div className="data-table-empty">Upload and analyse an SAP file to see live LDC utilization</div>}
         />

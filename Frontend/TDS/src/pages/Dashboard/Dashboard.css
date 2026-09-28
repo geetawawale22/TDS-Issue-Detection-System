@@ -154,3 +154,60 @@
   .dashboard-month-issue-header { display: none; }
   .dashboard-month-issue-row { grid-template-columns: 1fr; gap: 3px; }
 }
+
+.dashboard-filter-bar {
+  margin-bottom: 12px;
+}
+
+.dashboard-filter-controls {
+  grid-template-columns: repeat(3, minmax(150px, 0.85fr)) repeat(2, minmax(170px, 1fr)) auto;
+  align-items: end;
+}
+
+.dashboard-filter-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dashboard-filter-control > span {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dashboard-date-filter {
+  width: 100%;
+}
+
+.dashboard-filter-state {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(224, 19, 48, 0.16);
+  border-radius: 999px;
+  padding: 0 8px;
+  background: rgba(224, 19, 48, 0.06);
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dashboard-filter-reset {
+  height: 32px;
+  padding: 0 4px;
+}
+
+.dashboard-filter-reset:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .dashboard-filter-controls {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+}

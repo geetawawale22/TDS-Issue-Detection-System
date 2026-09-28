@@ -1,24 +1,47 @@
-import { useSelector } from 'react-redux'
+import { useDispatch, useSelector } from 'react-redux'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, AlertOctagon, AlertTriangle, CheckCircle2,
   Clock, FileSearch, RefreshCw, Database, CalendarDays, ArrowUp, ArrowDown,
+  SlidersHorizontal, RotateCcw,
 } from 'lucide-react'
 import IssuesByTypeChart from '@/components/Charts/IssuesByTypeChart'
 import SectionComplianceChart from '@/components/Charts/SectionComplianceChart'
 import MonthlyTrendChart from '@/components/Charts/MonthlyTrendChart'
 import TopVendorsChart from '@/components/Charts/TopVendorsChart'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
-import { selectDashboardKpis, selectIsLive } from '@/redux/slices/issuesSlice'
+import {
+  resetDashboardFilters, selectActiveSections, selectActiveVendorCodeOptions,
+  selectDashboardKpis, selectIsLive, setDashboardDateFromFilter,
+  setDashboardDateToFilter, setDashboardMonthFilter, setDashboardSectionFilter,
+  setDashboardVendorCodeFilter,
+} from '@/redux/slices/issuesSlice'
 import '@/components/Common/Common.css'
 import './Dashboard.css'
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const dispatch = useDispatch()
   const { financialYear, lastSyncTime, dataSource } = useSelector((s) => s.app)
   const firstName = useSelector((s) => s.auth.user?.name?.split(' ')[0]) ?? 'there'
   const kpisLive = useSelector(selectDashboardKpis)
   const isLive = useSelector(selectIsLive)
+  const sections = useSelector(selectActiveSections)
+  const vendorCodeOptions = useSelector(selectActiveVendorCodeOptions)
+  const {
+    dashboardDateFromFilter,
+    dashboardDateToFilter,
+    dashboardMonthFilter,
+    dashboardVendorCodeFilter,
+    dashboardSectionFilter,
+  } = useSelector((s) => s.issues)
+  const hasDashboardFilters = Boolean(
+    dashboardDateFromFilter
+    || dashboardDateToFilter
+    || dashboardMonthFilter
+    || dashboardVendorCodeFilter !== 'all'
+    || dashboardSectionFilter !== 'all'
+  )
   const navigateToIssues = (filters = {}) => {
     const params = new URLSearchParams({ view: 'issue' })
     Object.entries(filters).forEach(([key, value]) => {
@@ -128,6 +151,80 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      <div className="filter-bar dashboard-filter-bar">
+        <div className="filter-bar-top">
+          <div className="filter-bar-label">
+            <SlidersHorizontal size={14} />Dashboard Filters
+          </div>
+          {hasDashboardFilters && <span className="dashboard-filter-state">Filtered view</span>}
+        </div>
+        <div className="filter-bar-controls dashboard-filter-controls">
+          <label className="dashboard-filter-control">
+            <span>From Date</span>
+            <input
+              className="filter-input dashboard-date-filter"
+              type="date"
+              value={dashboardDateFromFilter}
+              onChange={(e) => dispatch(setDashboardDateFromFilter(e.target.value))}
+            />
+          </label>
+          <label className="dashboard-filter-control">
+            <span>To Date</span>
+            <input
+              className="filter-input dashboard-date-filter"
+              type="date"
+              value={dashboardDateToFilter}
+              onChange={(e) => dispatch(setDashboardDateToFilter(e.target.value))}
+            />
+          </label>
+          <label className="dashboard-filter-control">
+            <span>Month</span>
+            <input
+              className="filter-input dashboard-date-filter"
+              type="month"
+              value={dashboardMonthFilter}
+              onChange={(e) => dispatch(setDashboardMonthFilter(e.target.value))}
+            />
+          </label>
+          <label className="dashboard-filter-control">
+            <span>Vendor Code</span>
+            <select
+              className="filter-select"
+              value={dashboardVendorCodeFilter}
+              onChange={(e) => dispatch(setDashboardVendorCodeFilter(e.target.value))}
+            >
+              <option value="all">All Vendor Codes</option>
+              {vendorCodeOptions.map(({ vendorCode, supplierName }) => (
+                <option key={vendorCode} value={vendorCode}>
+                  {supplierName ? `${vendorCode} (${supplierName})` : vendorCode}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="dashboard-filter-control">
+            <span>Section</span>
+            <select
+              className="filter-select"
+              value={dashboardSectionFilter}
+              onChange={(e) => dispatch(setDashboardSectionFilter(e.target.value))}
+            >
+              <option value="all">All Sections</option>
+              {sections.map((section) => (
+                <option key={section} value={section}>{section}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="filter-reset-btn dashboard-filter-reset"
+            type="button"
+            disabled={!hasDashboardFilters}
+            onClick={() => dispatch(resetDashboardFilters())}
+          >
+            <RotateCcw size={12} />Reset
+          </button>
         </div>
       </div>
 

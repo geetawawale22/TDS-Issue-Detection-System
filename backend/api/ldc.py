@@ -23,6 +23,7 @@ router = APIRouter(prefix="/ldc", tags=["LDC Compliance"])
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 
 REQUIRED_CERTIFICATE_COLUMNS = {
     "PAN",
@@ -120,6 +121,10 @@ def _extract_pan(value: Any) -> str:
         if len(candidate) == 10:
             return candidate
     return text
+
+
+def _is_valid_pan(value: Any) -> bool:
+    return bool(PAN_RE.match(_clean_upper(value)))
 
 
 def _ldc_section_key(row: dict[str, Any]) -> str:
@@ -378,6 +383,8 @@ def _validate_certificate(row: dict[str, Any], vendor_pans: set[str]) -> list[st
         issues.append("Certificate type must be LOWER or NIL")
     if not pan:
         issues.append("PAN missing")
+    elif not _is_valid_pan(pan):
+        issues.append("PAN format invalid")
     if not _clean(_get(row, "Vendor_Name", "Supplier_Name", "Supplier")):
         issues.append("Vendor name missing")
     if not _clean(_get(row, "Company_Code")):
@@ -491,7 +498,11 @@ def list_ldc_certificates(
                 "parentCertificateNumber": row.parent_certificate_number,
                 "isChildCertificate": row.is_child_certificate,
                 "remarks": row.remarks,
-                "issues": [],
+                "issues": (
+                    ["PAN format invalid"]
+                    if row.vendor_pan and not _is_valid_pan(row.vendor_pan)
+                    else ["PAN missing"] if not row.vendor_pan else []
+                ),
             }
             for index, row in enumerate(unique_rows)
         ],
@@ -624,7 +635,7 @@ async def upload_ldc_certificates(
             "valid_from": valid_from,
             "valid_to": valid_to,
             "tax_year": _clean(_get(row_dict, "Tax_Year")) or None,
-            "approved_amount_limit": _to_float(_get(row_dict, "Approved_Amount_Limit")),
+            "approved_amount_limit": _to_float(_get(row_dict, "Approved_Amount_Limit", "Exemption_Threshold")),
             "status": status_value,
             "is_verified": _to_bool(_get(row_dict, "Is_Verified", "W_Tax"), default=True),
             "last_verified_date": _to_date(_get(row_dict, "Last_Verified_Date")),

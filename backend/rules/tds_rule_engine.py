@@ -16,6 +16,10 @@ NON_RESIDENT_SECTIONS = {"195", "196A", "196B", "196C", "196D"}
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "tds_sections.yaml"
 PAN_FORMAT_REGEX = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 
+
+def _format_display_date(value: date | None) -> str:
+    return value.strftime("%d/%m/%Y") if value else "—"
+
 with open(CONFIG_PATH, "r") as f:
     TDS_CONFIG = yaml.safe_load(f)
 
@@ -43,8 +47,15 @@ PAYMENT_TYPE_TEXT_PATTERNS = (
     ("dividend", (r"\bdividend\b",)),
     ("ecommerce", (r"\be[- ]?commerce\b",)),
 )
+ALWAYS_VALIDATE_DOC_TYPES = {"RE", "KZ", "KR", "KG", "LQ"}
 NON_TDS_DEDUCTION_DOC_TYPES = {
     "AB",
+    "BD",
+    "JR",
+    "JV",
+    "KW",
+    "SK",
+    "KA",
     "TP",
     "BT",
     "SA",
@@ -64,8 +75,6 @@ NON_TDS_DEDUCTION_DOC_TYPES = {
     "WN",
     "W2",
     "W3",
-    "JV",
-    "JR",
 }
 
 
@@ -421,6 +430,23 @@ def _get_applicable_rate(txn: Transaction) -> Optional[float]:
     return statutory_rate
 
 
+def _ldc_out_of_date_context(txn: Transaction) -> str:
+    if not (txn.ldc_exemption_percent is not None or txn.ldc_approved_rate is not None):
+        return ""
+    cert = txn.ldc_exemption_number or "LDC certificate"
+    if txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from:
+        return (
+            f"LDC certificate {cert} is valid from {_format_display_date(txn.ldc_exempt_from)}, "
+            f"but transaction date is {_format_display_date(txn.posting_date)}; normal statutory TDS applies. "
+        )
+    if txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to:
+        return (
+            f"LDC certificate {cert} expired on {_format_display_date(txn.ldc_exempt_to)}, "
+            f"but transaction date is {_format_display_date(txn.posting_date)}; normal statutory TDS applies. "
+        )
+    return ""
+
+
 # 194J has two legitimate rates (10% professional, 2% technical) but no
 # independent way (yet) to know which one a given transaction IS without
 # GL/nature-of-service data. To avoid false positives like Mahindra's own
@@ -454,16 +480,36 @@ def check_short_excess_tds(txn: Transaction) -> Optional[TDSIssue]:
         return None
 
     if deducted_rate < applicable_rate:
+        expected_amount_text = (
+            f" Expected TDS is ₹{abs(float(txn.basic_amount) * applicable_rate / 100):,.2f}, "
+            f"but ₹{abs(float(txn.tds_deducted_amount or 0.0)):,.2f} was deducted."
+            if txn.basic_amount is not None
+            else ""
+        )
         return TDSIssue(
             category="Wrong TDS Rate",
-            message=f"TDS deducted at {deducted_rate}%, but correct rate is {applicable_rate}% for section {section}.",
+            message=(
+                f"{_ldc_out_of_date_context(txn)}"
+                f"TDS deducted at {deducted_rate}%, but correct rate is {applicable_rate}% "
+                f"for section {section}.{expected_amount_text}"
+            ),
             severity="high",
             expected_rate=applicable_rate,
         )
     elif deducted_rate > applicable_rate:
+        expected_amount_text = (
+            f" Expected TDS is ₹{abs(float(txn.basic_amount) * applicable_rate / 100):,.2f}, "
+            f"but ₹{abs(float(txn.tds_deducted_amount or 0.0)):,.2f} was deducted."
+            if txn.basic_amount is not None
+            else ""
+        )
         return TDSIssue(
             category="Wrong TDS Rate",
-            message=f"TDS deducted at {deducted_rate}%, but correct rate is {applicable_rate}% for section {section}.",
+            message=(
+                f"{_ldc_out_of_date_context(txn)}"
+                f"TDS deducted at {deducted_rate}%, but correct rate is {applicable_rate}% "
+                f"for section {section}.{expected_amount_text}"
+            ),
             severity="high",
             expected_rate=applicable_rate,
         )
@@ -504,10 +550,21 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
         return None  # within rounding tolerance — fine
 
     implied_rate = (actual_amount / txn.basic_amount) * 100
+    ldc_context = ""
+    if txn.ldc_exemption_reason and not txn.ldc_exemption_number:
+        ldc_context = f"{txn.ldc_exemption_reason} Normal statutory rate is therefore used. "
+    ldc_context = _ldc_out_of_date_context(txn) or ldc_context
+
+    mismatch_category = (
+        "Short TDS Deducted — Amount Mismatch"
+        if actual_amount < expected_amount
+        else "Excess TDS Deducted — Amount Mismatch"
+    )
 
     return TDSIssue(
-        category="Short/Excess TDS Deducted — Amount Mismatch",
+        category=mismatch_category,
         message=(
+            f"{ldc_context}"
             f"Expected rate is {expected_rate}%, which should give "
             f"₹{expected_amount:,.2f} on a base of ₹{txn.basic_amount:,.2f}, "
             f"but ₹{actual_amount:,.2f} was actually deducted "
@@ -644,33 +701,13 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
         statutory_rate = _get_statutory_rate(txn)
         if normal_tds_is_satisfied(statutory_rate):
             return None
-        expected_text = f" Normal TDS rate {statutory_rate}% is expected." if statutory_rate is not None else " Normal TDS rules should apply."
-        return TDSIssue(
-            category="LDC Not Yet Valid",
-            message=(
-                f"LDC certificate {txn.ldc_exemption_number} exists, but it is valid from "
-                f"{txn.ldc_exempt_from}. Transaction date is {txn.posting_date}, so LDC is not "
-                f"applicable for this transaction date.{expected_text}"
-            ),
-            severity="high",
-            expected_rate=statutory_rate,
-        )
+        return None
 
     if txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to:
         statutory_rate = _get_statutory_rate(txn)
         if normal_tds_is_satisfied(statutory_rate):
             return None
-        expected_text = f" Normal TDS rate {statutory_rate}% is expected." if statutory_rate is not None else " Normal TDS rules should apply."
-        return TDSIssue(
-            category="LDC Expired",
-            message=(
-                f"LDC certificate {txn.ldc_exemption_number} expired on {txn.ldc_exempt_to}. "
-                f"Transaction date is {txn.posting_date}, so LDC is not applicable for this "
-                f"transaction date.{expected_text}"
-            ),
-            severity="high",
-            expected_rate=statutory_rate,
-        )
+        return None
 
     if txn.basic_amount is None:
         return None  # certificate validity can be checked above; amount cannot
@@ -683,11 +720,23 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
         rate_text = f"{txn.ldc_exemption_percent}% exemption"
     expected_tds = txn.basic_amount * (cert_rate / 100)
     actual_tds = txn.tds_deducted_amount or 0.0
+    actual_rate = (actual_tds / txn.basic_amount) * 100 if txn.basic_amount else 0.0
 
     if abs(expected_tds - actual_tds) > 1:
+        statutory_rate_text = (
+            f" Normal statutory rate is {applicable_rate}%;"
+            if txn.ldc_approved_rate is None
+            else ""
+        )
         return TDSIssue(
             category="TDS Deducted as per LDC — Mismatch",
-            message=f"LDC certificate {txn.ldc_exemption_number} allows {rate_text}. Expected TDS ~₹{expected_tds:.2f}, but ₹{actual_tds:.2f} was deducted.",
+            message=(
+                f"LDC certificate {txn.ldc_exemption_number} is applicable for this PAN/section/date "
+                f"and allows {rate_text}.{statutory_rate_text} expected effective rate is "
+                f"{cert_rate:.4g}%, so expected TDS is ~₹{expected_tds:.2f}. "
+                f"Actual TDS deducted is ₹{actual_tds:.2f} "
+                f"(implied rate {actual_rate:.4f}%), hence the LDC amount is mismatched."
+            ),
             severity="high",
             expected_rate=cert_rate,
         )
@@ -715,7 +764,7 @@ def check_timing(txn: Transaction) -> Optional[TDSIssue]:
 
     deducted = txn.tds_deducted_amount or 0.0
 
-    if txn.is_advance_payment and deducted == 0:
+    if txn.is_advance_payment and deducted == 0 and not _is_advance_clearing_adjustment(txn):
         return TDSIssue(
             category="TDS Not Deducted — Advance Payment",
             message="TDS not deducted on advance payment. TDS is due at the time of payment (whichever is earlier: credit or payment).",
@@ -730,6 +779,23 @@ def check_timing(txn: Transaction) -> Optional[TDSIssue]:
         )
 
     return None
+
+
+def _is_advance_clearing_adjustment(txn: Transaction) -> bool:
+    """Advance adjustment line inside a clearing document, not a fresh advance payment."""
+    doc_no = str(txn.doc_number or "").strip()
+    clearing_doc = str(txn.clearing_document or "").strip()
+    reference_doc = str(txn.invoice_reference_document or "").strip()
+    doc_type = str(txn.doc_type or "").strip().upper()
+    return bool(
+        txn.is_advance_payment
+        and doc_type == "KZ"
+        and doc_no
+        and clearing_doc
+        and doc_no == clearing_doc
+        and reference_doc
+        and reference_doc != doc_no
+    )
 
 
 def check_206ab_non_filer(txn: Transaction) -> Optional[TDSIssue]:
@@ -877,12 +943,34 @@ def _blank_or_zero_amount(value) -> bool:
         return False
 
 
+def _blank_or_zero_section(value) -> bool:
+    text = str(value or "").strip()
+    if not text or text in {"-", "—"}:
+        return True
+    try:
+        return float(text) == 0.0
+    except ValueError:
+        return False
+
+
+def _has_tds_section_signal(txn: Transaction) -> bool:
+    return not all(_blank_or_zero_section(value) for value in (
+        txn.tds_raw_section,
+        txn.tds_deducted_section,
+        txn.tds_legacy_section,
+        txn.tds_new_section,
+        txn.tds_applicable_section,
+    ))
+
+
 def _is_supporting_adjustment_without_tds(txn: Transaction) -> bool:
-    """Supporting rows without withholding amounts should not create standalone TDS issues."""
+    """Skip configured supporting rows only when TDS section and amount are absent."""
     doc_type = (txn.doc_type or "").strip().upper()
+    if doc_type in ALWAYS_VALIDATE_DOC_TYPES:
+        return False
     return (
         doc_type in NON_TDS_DEDUCTION_DOC_TYPES
-        and _blank_or_zero_amount(txn.withholding_tax_base_amount)
+        and not _has_tds_section_signal(txn)
         and _blank_or_zero_amount(txn.tds_deducted_amount)
     )
 
@@ -927,6 +1015,8 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
     issues = []
 
     if _is_supporting_adjustment_without_tds(txn):
+        return issues
+    if _is_advance_clearing_adjustment(txn):
         return issues
 
     missing_section_issue = check_missing_tds_section(txn)
@@ -1070,7 +1160,7 @@ def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tup
       2. remaining invoice base at invoice time
     """
     issues: list[tuple[Transaction, TDSIssue]] = []
-    advances = [txn for txn in transactions if txn.is_advance_payment]
+    advances = [txn for txn in transactions if txn.is_advance_payment and not _is_advance_clearing_adjustment(txn)]
     invoices = [
         txn for txn in transactions
         if not txn.is_advance_payment and (txn.doc_type or "").strip().upper() in {"RE", "KR"}
@@ -1122,14 +1212,14 @@ def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tup
             continue
 
         invoice_base = _txn_base(invoice)
-        advance_base = min(sum(_txn_base(advance) for advance in linked_advances), invoice_base)
-        remaining_base = max(invoice_base - advance_base, 0.0)
+        advance_base = sum(_txn_base(advance) for advance in linked_advances)
+        total_chain_base = advance_base + invoice_base
         expected_advance_tds = _money(advance_base * section_rate / 100)
-        expected_invoice_tds = _money(remaining_base * section_rate / 100)
+        expected_invoice_tds = _money(invoice_base * section_rate / 100)
         actual_advance_tds = _money(sum(abs(advance.tds_deducted_amount or 0.0) for advance in linked_advances))
         actual_invoice_tds = _money(abs(invoice.tds_deducted_amount or 0.0))
         actual_total_tds = _money(actual_advance_tds + actual_invoice_tds)
-        expected_total_tds = _money(expected_advance_tds + expected_invoice_tds)
+        expected_total_tds = _money(total_chain_base * section_rate / 100)
 
         if expected_advance_tds > 0 and actual_advance_tds == 0:
             issues.append((
@@ -1146,18 +1236,17 @@ def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tup
                 ),
             ))
 
-        if (
-            actual_advance_tds > TDS_AMOUNT_ROUNDING_TOLERANCE
-            and actual_invoice_tds > expected_invoice_tds + TDS_AMOUNT_ROUNDING_TOLERANCE
-        ):
+        if actual_total_tds > expected_total_tds + TDS_AMOUNT_ROUNDING_TOLERANCE:
             issues.append((
                 invoice,
                 TDSIssue(
                     category="Excess TDS Deducted — Advance Adjusted Invoice",
                     message=(
-                        f"Advance TDS of ₹{actual_advance_tds:,.2f} is already available. "
-                        f"Invoice balance base is ₹{remaining_base:,.2f}, so expected invoice TDS is "
-                        f"₹{expected_invoice_tds:,.2f}, but ₹{actual_invoice_tds:,.2f} was deducted."
+                        f"Linked advance/invoice chain expected total TDS ₹{expected_total_tds:,.2f} "
+                        f"on total base ₹{total_chain_base:,.2f} "
+                        f"(advance base ₹{advance_base:,.2f} + invoice base ₹{invoice_base:,.2f}), "
+                        f"but ₹{actual_total_tds:,.2f} was deducted "
+                        f"(advance ₹{actual_advance_tds:,.2f} + invoice ₹{actual_invoice_tds:,.2f})."
                     ),
                     severity="medium",
                     expected_rate=section_rate,
@@ -1170,8 +1259,10 @@ def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tup
                     category="Short TDS Deducted — Advance Adjusted Invoice",
                     message=(
                         f"Linked advance/invoice chain expected total TDS ₹{expected_total_tds:,.2f} "
-                        f"(advance ₹{expected_advance_tds:,.2f} + invoice balance ₹{expected_invoice_tds:,.2f}), "
-                        f"but only ₹{actual_total_tds:,.2f} was deducted."
+                        f"on total base ₹{total_chain_base:,.2f} "
+                        f"(advance base ₹{advance_base:,.2f} + invoice base ₹{invoice_base:,.2f}), "
+                        f"but only ₹{actual_total_tds:,.2f} was deducted "
+                        f"(advance ₹{actual_advance_tds:,.2f} + invoice ₹{actual_invoice_tds:,.2f})."
                     ),
                     severity="high",
                     expected_rate=section_rate,

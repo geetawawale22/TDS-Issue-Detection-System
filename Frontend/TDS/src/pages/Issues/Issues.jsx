@@ -75,6 +75,18 @@ function SectionCell({ issue }) {
   )
 }
 
+function issueRowKey(row) {
+  return [
+    row.docNo,
+    row.vendorId,
+    row.vendorPan,
+    row.docType,
+    row.section,
+    row.baseAmount,
+    row.tdsAmount,
+  ].map((value) => String(value ?? '').trim().toUpperCase()).join('|')
+}
+
 export default function Issues() {
   const dispatch = useDispatch()
   const [searchParams] = useSearchParams()
@@ -90,15 +102,6 @@ export default function Issues() {
   const activeValidationRows = useSelector(selectActiveValidationRows)
   const vendorNames = useSelector(selectActiveVendors)
   const sections = useSelector(selectActiveSections)
-  const monthFilter = searchParams.get('month')
-
-  function rowMonth(value) {
-    if (!value) return null
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return null
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-  }
-
   useEffect(() => {
     const view = searchParams.get('view')
     const severity = searchParams.get('severity')
@@ -162,7 +165,6 @@ export default function Issues() {
   }
 
   const filtered = useMemo(() => issues.filter((issue) => {
-    if (monthFilter && rowMonth(issue.date) !== monthFilter) return false
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       if (
@@ -186,7 +188,7 @@ export default function Issues() {
       if (!rowTypes.some((type) => allowedTypes.includes(type))) return false
     }
     return true
-  }), [issues, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
+  }), [issues, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
 
@@ -205,6 +207,7 @@ export default function Issues() {
         : row
     ))
   ), [activeValidationRows])
+  const displayValidationRows = adjustedValidationRows
   const ldcValidityByCertificate = useMemo(() => {
     const pairs = (uploadMeta?.ldcUtilization || [])
       .filter((row) => row.certificateNumber)
@@ -282,25 +285,86 @@ export default function Issues() {
   // whole upload, read straight from the backend stat.
   const summary = useMemo(() => {
     if (!uploadMeta) return { totalRows: issues.length, passedRows: 0, issueRows: issues.length, insufficientDataRows: 0, skippedRows: 0 }
-    const skippedValidationRows = adjustedValidationRows.filter((r) => r.status === 'skipped').length
+    const skippedValidationRows = displayValidationRows.filter((r) => r.status === 'skipped').length
     return {
-      totalRows: adjustedValidationRows.length,
-      passedRows: adjustedValidationRows.filter((r) => r.status === 'passed').length,
-      issueRows: adjustedValidationRows.filter((r) => r.status === 'issue').length,
-      insufficientDataRows: adjustedValidationRows.filter((r) => r.status === 'insufficient').length,
+      totalRows: displayValidationRows.length,
+      passedRows: displayValidationRows.filter((r) => r.status === 'passed').length,
+      issueRows: displayValidationRows.filter((r) => r.status === 'issue').length,
+      insufficientDataRows: displayValidationRows.filter((r) => r.status === 'insufficient').length,
       skippedRows: skippedValidationRows,
     }
-  }, [issues, uploadMeta, adjustedValidationRows])
+  }, [issues, uploadMeta, displayValidationRows])
 
   const docTypes = useMemo(() => {
     const values = [
-      ...adjustedValidationRows.map((row) => row.docType),
+      ...displayValidationRows.map((row) => row.docType),
       ...issues.map((issue) => issue.docType),
     ]
       .map((value) => String(value || '').trim().toUpperCase())
       .filter((value) => value && value !== '—')
     return [...new Set(values)].sort()
-  }, [adjustedValidationRows, issues])
+  }, [displayValidationRows, issues])
+
+  const issuesByRow = useMemo(() => {
+    const grouped = new Map()
+    issues.forEach((issue) => {
+      const key = issueRowKey(issue)
+      if (!grouped.has(key)) grouped.set(key, [])
+      grouped.get(key).push(issue)
+    })
+    return grouped
+  }, [issues])
+
+  const filteredIssuesByRow = useMemo(() => {
+    const grouped = new Map()
+    filtered.forEach((issue) => {
+      const key = issueRowKey(issue)
+      if (!grouped.has(key)) grouped.set(key, [])
+      grouped.get(key).push(issue)
+    })
+    return grouped
+  }, [filtered])
+
+  const buildIssueValidationRows = (issueGroupsByRow) => (
+    displayValidationRows
+      .filter((row) => row.status === 'issue')
+      .map((row, index) => {
+        const rowIssues = issueGroupsByRow.get(issueRowKey(row)) || []
+        const primaryIssue = rowIssues[0]
+        if (!primaryIssue) return null
+        const issueTypes = rowIssues.map((issue) => ({
+          id: issue.id,
+          label: getDisplayIssueType(issue),
+          severity: issue.severity,
+        }))
+        return {
+          ...row,
+          id: `issue-${index}-${row.id || row.docNo || 'row'}`,
+          issueId: primaryIssue.id,
+          category: primaryIssue.category,
+          issueType: primaryIssue.issueType,
+          issueTypeLabel: issueTypes.map((issue) => issue.label).join(' | '),
+          issueTypes,
+          severity: primaryIssue.severity,
+          legacySection: primaryIssue.legacySection,
+          ruleSection: primaryIssue.ruleSection,
+          newSection: primaryIssue.newSection,
+          plainEnglish: primaryIssue.plainEnglish,
+          recommendedAction: primaryIssue.recommendedAction,
+          status: 'issue',
+        }
+      })
+      .filter(Boolean)
+  )
+
+  const allIssueValidationRows = useMemo(
+    () => buildIssueValidationRows(issuesByRow),
+    [displayValidationRows, issuesByRow],
+  )
+  const issueValidationRows = useMemo(
+    () => buildIssueValidationRows(filteredIssuesByRow),
+    [displayValidationRows, filteredIssuesByRow],
+  )
 
   // Each KPI card's download exports exactly the rows behind that card's own
   // number (Company/FY-scoped, like the count itself) — not whatever happens
@@ -310,11 +374,11 @@ export default function Issues() {
   function handleExportKpi(kind) {
     const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
     const exportSpec = {
-      all: { rows: adjustedValidationRows, columns: VALIDATION_CSV_COLUMNS, suffix: 'all-transactions' },
-      passed: { rows: adjustedValidationRows.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
-      issue: { rows: issues, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
-      insufficient: { rows: adjustedValidationRows.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
-      skipped: { rows: adjustedValidationRows.filter((r) => r.status === 'skipped'), columns: VALIDATION_CSV_COLUMNS, suffix: 'skipped' },
+      all: { rows: displayValidationRows, columns: VALIDATION_CSV_COLUMNS, suffix: 'all-transactions' },
+      passed: { rows: displayValidationRows.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
+      issue: { rows: allIssueValidationRows, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
+      insufficient: { rows: displayValidationRows.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
+      skipped: { rows: displayValidationRows.filter((r) => r.status === 'skipped'), columns: VALIDATION_CSV_COLUMNS, suffix: 'skipped' },
     }[kind]
     if (!exportSpec || exportSpec.rows.length === 0) {
       toast('No rows to export')
@@ -384,14 +448,29 @@ export default function Issues() {
     { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
     { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
-    { key: 'status', header: 'Status', sortValue: (r) => (
+    { key: 'status', header: validationView === 'issue' ? 'Issue Type' : 'Validation Result', sortValue: (r) => (
       r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)
-    ), render: (r) => (
-      <StatusBadge
-        label={r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)}
-        tone={r.status === 'passed' ? 'success' : r.status === 'insufficient' ? 'warning' : r.status === 'issue' ? 'danger' : 'default'}
-      />
-    )},
+    ), render: (r) => {
+      if (r.status === 'issue' && r.issueTypes?.length) {
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+            {r.issueTypes.map((issue) => (
+              <StatusBadge
+                key={`${r.id}-${issue.id || issue.label}`}
+                label={issue.label}
+                tone="danger"
+              />
+            ))}
+          </div>
+        )
+      }
+      return (
+        <StatusBadge
+          label={r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)}
+          tone={r.status === 'passed' ? 'success' : r.status === 'insufficient' ? 'warning' : r.status === 'issue' ? 'danger' : 'default'}
+        />
+      )
+    }},
     { header: '', render: (r) => (
       r.status === 'passed' || r.status === 'insufficient' || r.status === 'skipped'
         ? (
@@ -418,20 +497,13 @@ export default function Issues() {
   // insufficient-data, or skipped row has neither a severity nor a category.
   const validationTableRows = useMemo(() => {
     if (validationView === 'issue') {
-      return filtered.map((issue, index) => ({
-        ...issue,
-        id: `issue-${index}-${issue.id || issue.docNo || 'row'}`,
-        issueId: issue.id,
-        status: 'issue',
-        issueTypeLabel: getDisplayIssueType(issue),
-      }))
+      return issueValidationRows
     }
 
-    const issueByDoc = new Map(issues.map((issue) => [String(issue.docNo ?? ''), issue]))
-    return adjustedValidationRows
+    const issueByRow = new Map(issues.map((issue) => [issueRowKey(issue), issue]))
+    return displayValidationRows
       .filter((row) => {
-        const matchingIssue = issueByDoc.get(String(row.docNo ?? ''))
-        if (monthFilter && rowMonth(row.date || matchingIssue?.date) !== monthFilter) return false
+        const matchingIssue = issueByRow.get(issueRowKey(row))
         if (validationView !== 'all' && row.status !== validationView) return false
         if (searchQuery) {
           const q = searchQuery.toLowerCase()
@@ -455,7 +527,7 @@ export default function Issues() {
         return true
       })
       .map((row, index) => {
-        const matchingIssue = issueByDoc.get(String(row.docNo ?? ''))
+        const matchingIssue = issueByRow.get(issueRowKey(row))
         return {
           ...row,
           id: `${validationView}-${index}-${row.id || row.docNo || 'row'}`,
@@ -464,7 +536,7 @@ export default function Issues() {
           issueTypeLabel: matchingIssue ? getDisplayIssueType(matchingIssue) : null,
         }
       })
-  }, [adjustedValidationRows, issues, filtered, validationView, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, monthFilter])
+  }, [displayValidationRows, issues, issueValidationRows, validationView, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter])
 
   function handleResetFilters() {
     setDocTypeFilter('all')
@@ -553,6 +625,17 @@ export default function Issues() {
             </button>
           )}
         </div>
+        <button
+          className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('skipped')}
+        >
+          <CircleSlash size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
+            <div className="issues-summary-label">Skipped</div>
+          </div>
+        </button>
         <div className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}>
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('insufficient')}>
             <AlertTriangle size={16} />
@@ -572,17 +655,6 @@ export default function Issues() {
             </button>
           )}
         </div>
-        <button
-          className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
-          type="button"
-          onClick={() => setValidationView('skipped')}
-        >
-          <CircleSlash size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
-            <div className="issues-summary-label">Skipped</div>
-          </div>
-        </button>
       </div>
 
       {/* Filter bar */}

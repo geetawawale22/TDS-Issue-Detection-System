@@ -78,6 +78,11 @@ const initialState = {
   severityFilter:  'all',
   statusFilter:    'all',
   issueTypeFilter: 'all',
+  dashboardDateFromFilter:   '',
+  dashboardDateToFilter:     '',
+  dashboardMonthFilter:      '',
+  dashboardVendorCodeFilter: 'all',
+  dashboardSectionFilter:    'all',
   selectedIssueId: null,
   drawerOpen:      false,
 
@@ -99,12 +104,24 @@ const issuesSlice = createSlice({
     setSeverityFilter: (state, action) => { state.severityFilter  = action.payload },
     setStatusFilter:   (state, action) => { state.statusFilter    = action.payload },
     setIssueTypeFilter:(state, action) => { state.issueTypeFilter = action.payload },
+    setDashboardDateFromFilter:   (state, action) => { state.dashboardDateFromFilter   = action.payload },
+    setDashboardDateToFilter:     (state, action) => { state.dashboardDateToFilter     = action.payload },
+    setDashboardMonthFilter:      (state, action) => { state.dashboardMonthFilter      = action.payload },
+    setDashboardVendorCodeFilter: (state, action) => { state.dashboardVendorCodeFilter = action.payload },
+    setDashboardSectionFilter:    (state, action) => { state.dashboardSectionFilter    = action.payload },
     openDrawer:       (state, action) => { state.selectedIssueId = action.payload; state.drawerOpen = true },
     closeDrawer:      (state)         => { state.drawerOpen      = false },
     resetFilters:     (state)         => {
       state.searchQuery = ''; state.vendorFilter = 'all'; state.sectionFilter = 'all';
       state.severityFilter = 'all'; state.statusFilter = 'all';
       state.issueTypeFilter = 'all';
+    },
+    resetDashboardFilters: (state) => {
+      state.dashboardDateFromFilter = ''
+      state.dashboardDateToFilter = ''
+      state.dashboardMonthFilter = ''
+      state.dashboardVendorCodeFilter = 'all'
+      state.dashboardSectionFilter = 'all'
     },
 
     uploadStarted: (state) => {
@@ -147,6 +164,11 @@ const issuesSlice = createSlice({
       state.severityFilter = 'all'
       state.statusFilter = 'all'
       state.issueTypeFilter = 'all'
+      state.dashboardDateFromFilter = ''
+      state.dashboardDateToFilter = ''
+      state.dashboardMonthFilter = ''
+      state.dashboardVendorCodeFilter = 'all'
+      state.dashboardSectionFilter = 'all'
       saveLastUpload(state)
     },
     uploadFailed: (state, action) => {
@@ -170,7 +192,10 @@ const issuesSlice = createSlice({
 
 export const {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters,
+  setStatusFilter, setIssueTypeFilter, setDashboardDateFromFilter,
+  setDashboardDateToFilter, setDashboardMonthFilter, setDashboardVendorCodeFilter,
+  setDashboardSectionFilter,
+  openDrawer, closeDrawer, resetFilters, resetDashboardFilters,
   uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
 } = issuesSlice.actions
 
@@ -223,47 +248,105 @@ export function selectActiveSections(state) {
   return [...new Set(selectActiveIssues(state).map((i) => i.section).filter(Boolean))].sort()
 }
 
+export function selectActiveVendorCodes(state) {
+  return [...new Set(selectActiveIssues(state).map((i) => i.vendorId).filter(Boolean))].sort()
+}
+
+export function selectActiveVendorCodeOptions(state) {
+  const byCode = new Map()
+  for (const issue of selectActiveIssues(state)) {
+    if (!issue.vendorId) continue
+    if (!byCode.has(issue.vendorId)) byCode.set(issue.vendorId, new Set())
+    if (issue.vendor) byCode.get(issue.vendorId).add(issue.vendor)
+  }
+
+  return [...byCode.entries()]
+    .map(([vendorCode, supplierNames]) => {
+      const names = [...supplierNames].filter(Boolean).sort()
+      const supplierName = names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0] || ''
+      return { vendorCode, supplierName }
+    })
+    .sort((a, b) => a.vendorCode.localeCompare(b.vendorCode))
+}
+
+function issueDateKey(issue) {
+  if (!issue?.date) return ''
+  const d = new Date(issue.date)
+  if (Number.isNaN(d.getTime())) return String(issue.date).slice(0, 10)
+  return d.toISOString().slice(0, 10)
+}
+
+function hasDashboardFilters(state) {
+  return Boolean(
+    state.issues.dashboardDateFromFilter
+    || state.issues.dashboardDateToFilter
+    || state.issues.dashboardMonthFilter
+    || state.issues.dashboardVendorCodeFilter !== 'all'
+    || state.issues.dashboardSectionFilter !== 'all'
+  )
+}
+
+export function selectDashboardIssues(state) {
+  const {
+    dashboardDateFromFilter,
+    dashboardDateToFilter,
+    dashboardMonthFilter,
+    dashboardVendorCodeFilter,
+    dashboardSectionFilter,
+  } = state.issues
+
+  return selectActiveIssues(state).filter((issue) => {
+    const dateKey = issueDateKey(issue)
+    if (dashboardDateFromFilter && (!dateKey || dateKey < dashboardDateFromFilter)) return false
+    if (dashboardDateToFilter && (!dateKey || dateKey > dashboardDateToFilter)) return false
+    if (dashboardMonthFilter && dateKey.slice(0, 7) !== dashboardMonthFilter) return false
+    if (dashboardVendorCodeFilter !== 'all' && issue.vendorId !== dashboardVendorCodeFilter) return false
+    if (dashboardSectionFilter !== 'all' && issue.section !== dashboardSectionFilter) return false
+    return true
+  })
+}
+
 export function selectDashboardKpis(state) {
-  const issues = selectActiveIssues(state)
+  const issues = selectDashboardIssues(state)
   // The upload's transactionsBuilt total covers the WHOLE file — only a
   // valid denominator for compliance-style math when Company/FY scoping
-  // hasn't narrowed the issue set down from that total.
-  const stats = issues.length === state.issues.uploadedIssues.length
+  // or dashboard filters haven't narrowed the issue set down from that total.
+  const stats = !hasDashboardFilters(state) && issues.length === state.issues.uploadedIssues.length
     ? state.issues.uploadMeta?.stats || null
     : null
   return deriveDashboardKpis(issues, stats)
 }
 
 export function selectIssuesBySection(state) {
-  return deriveIssuesBySection(selectActiveIssues(state))
+  return deriveIssuesBySection(selectDashboardIssues(state))
 }
 
 export function selectIssuesByType(state) {
-  return deriveIssuesByType(selectActiveIssues(state))
+  return deriveIssuesByType(selectDashboardIssues(state))
 }
 
 export function selectTopVendors(state) {
-  return deriveTopVendors(selectActiveIssues(state))
+  return deriveTopVendors(selectDashboardIssues(state))
 }
 
 export function selectComplianceHealth(state) {
-  const issues = selectActiveIssues(state)
-  const transactionsBuilt = issues.length === state.issues.uploadedIssues.length
+  const issues = selectDashboardIssues(state)
+  const transactionsBuilt = !hasDashboardFilters(state) && issues.length === state.issues.uploadedIssues.length
     ? state.issues.uploadMeta?.stats?.transactionsBuilt
     : null
   return deriveComplianceHealth(issues, transactionsBuilt)
 }
 
 export function selectMonthlyTrend(state) {
-  return deriveMonthlyTrend(selectActiveIssues(state))
+  return deriveMonthlyTrend(selectDashboardIssues(state))
 }
 
 export function selectMonthlyComparison(state) {
-  return deriveMonthlyComparison(selectActiveIssues(state))
+  return deriveMonthlyComparison(selectDashboardIssues(state))
 }
 
 export function selectVendorMonthlyTrend(state) {
-  return deriveVendorMonthlyTrend(selectActiveIssues(state))
+  return deriveVendorMonthlyTrend(selectDashboardIssues(state))
 }
 
 export function selectThresholdVendors(state) {

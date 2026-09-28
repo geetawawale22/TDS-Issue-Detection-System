@@ -1,6 +1,11 @@
 from datetime import date
 
-from api.issues import _transaction_issue
+from api.issues import (
+    _build_case_ledger_from_transactions,
+    _is_skipped_non_tds_document_without_tds_amounts,
+    _skipped_non_tds_document_reason,
+    _transaction_issue,
+)
 from ingestion.sap_translator import _derive_vendor_category, build_transactions_from_sap_export, build_transactions_from_sap_rows
 from rules.tds_rule_engine import (
     _get_applicable_rate,
@@ -70,8 +75,21 @@ def test_wrong_amount_is_single_amount_mismatch_when_rate_is_correct():
     issues = run_all_checks(transaction)
 
     assert len(issues) == 1
-    assert issues[0].category == "Short/Excess TDS Deducted — Amount Mismatch"
+    assert issues[0].category == "Short TDS Deducted — Amount Mismatch"
     assert "₹400.00 was actually deducted" in issues[0].message
+
+
+def test_excess_amount_mismatch_gets_excess_category_when_rate_is_correct():
+    transaction = _contractor_transaction("ABCHP1234K", 1.0)
+    transaction.basic_amount = 100_000
+    transaction.bill_amount = 100_000
+    transaction.tds_deducted_amount = 2_000
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Excess TDS Deducted — Amount Mismatch"
+    assert "₹2,000.00 was actually deducted" in issues[0].message
 
 
 def test_194j_two_percent_still_checks_amount_consistency():
@@ -96,8 +114,8 @@ def test_194j_two_percent_still_checks_amount_consistency():
 
     issue = check_amount_consistency(transaction)
     assert issue is not None
-    assert issue.category == "Short/Excess TDS Deducted — Amount Mismatch"
-    assert "Stated rate is 2.0%" in issue.message
+    assert issue.category == "Short TDS Deducted — Amount Mismatch"
+    assert "Expected rate is 2.0%" in issue.message
 
 
 def test_classified_row_keeps_zero_basic_amount_instead_of_using_bill_amount():
@@ -243,7 +261,7 @@ def test_threshold_shortfall_is_not_duplicated_when_row_level_issue_explains_it(
 
     transactions[0].tds_deducted_amount = 400
 
-    assert run_all_checks(transactions[0])[0].category == "Short/Excess TDS Deducted — Amount Mismatch"
+    assert run_all_checks(transactions[0])[0].category == "Short TDS Deducted — Amount Mismatch"
     assert check_threshold_breach(transactions) == []
 
 
@@ -545,6 +563,74 @@ def test_ab_adjustment_without_tds_does_not_raise_transaction_issue():
     assert run_all_checks(transaction) == []
 
 
+def test_skip_eligible_doc_type_with_blank_section_and_zero_tds_is_skipped():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "1054137872",
+        "Vendor_Number": "EBU23812",
+        "Vendor_PAN": "AAEPZ9355R",
+        "Document_Type": "BD",
+        "Posting_Date": "2025-06-19",
+        "Local_Amount": 760,
+        "Withholding_Tax_Base_Amount": 100,
+        "Withholding_Tax_Amount": 0,
+        "TDS_Section": "",
+    }])[0]
+
+    assert _is_skipped_non_tds_document_without_tds_amounts(transaction) is True
+    reason = _skipped_non_tds_document_reason(transaction)
+    assert "Document Type BD" in reason
+    assert "TDS section and TDS amount are blank/zero" in reason
+
+
+def test_always_validate_doc_types_are_not_skipped_even_without_tds_signal():
+    for doc_type in ["RE", "KZ", "KR", "KG", "LQ"]:
+        transaction = build_transactions_from_sap_rows([{
+            "Company_Code": "1001",
+            "Document_Number": f"DOC-{doc_type}",
+            "Vendor_Number": "EBU23812",
+            "Vendor_PAN": "AAEPZ9355R",
+            "Document_Type": doc_type,
+            "Posting_Date": "2025-06-19",
+            "Local_Amount": 760,
+            "Withholding_Tax_Base_Amount": 0,
+            "Withholding_Tax_Amount": 0,
+            "TDS_Section": "",
+        }])[0]
+
+        assert _is_skipped_non_tds_document_without_tds_amounts(transaction) is False
+
+
+def test_skip_eligible_doc_type_with_tds_section_or_amount_is_validated():
+    with_section = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "JV-SECTION",
+        "Vendor_Number": "EBU23812",
+        "Vendor_PAN": "AAEPZ9355R",
+        "Document_Type": "JV",
+        "Posting_Date": "2025-06-19",
+        "Local_Amount": 760,
+        "Withholding_Tax_Base_Amount": 760,
+        "Withholding_Tax_Amount": 0,
+        "TDS_Section": "194C",
+    }])[0]
+    with_amount = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_Number": "JV-AMOUNT",
+        "Vendor_Number": "EBU23812",
+        "Vendor_PAN": "AAEPZ9355R",
+        "Document_Type": "JV",
+        "Posting_Date": "2025-06-19",
+        "Local_Amount": 760,
+        "Withholding_Tax_Base_Amount": 760,
+        "Withholding_Tax_Amount": 10,
+        "TDS_Section": "",
+    }])[0]
+
+    assert _is_skipped_non_tds_document_without_tds_amounts(with_section) is False
+    assert _is_skipped_non_tds_document_without_tds_amounts(with_amount) is False
+
+
 def test_kz_payment_without_advance_marker_is_not_missing_tds_candidate():
     invoice_with_tds = Transaction(
         doc_number="2510162130",
@@ -580,6 +666,50 @@ def test_kz_payment_without_advance_marker_is_not_missing_tds_candidate():
     assert check_missing_deduction([invoice_with_tds, normal_payment]) == []
 
 
+def test_uncleared_rows_are_exposed_as_open_items_in_tds_analysis():
+    invoice = Transaction(
+        doc_number="2510993976",
+        doc_type="KR",
+        posting_date=date(2026, 1, 15),
+        company_code="1001",
+        fiscal_year="2026",
+        vendor_code="DIM00420AB",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        assignment_number="20260115",
+        clearing_document=None,
+        bill_amount=-122301.44,
+        basic_amount=104308,
+        tds_deducted_section="194C",
+        tds_deducted_rate=0.75,
+        tds_deducted_amount=782,
+    )
+    payment_without_tds = Transaction(
+        doc_number="1287539966",
+        doc_type="BD",
+        posting_date=date(2026, 1, 30),
+        company_code="1001",
+        fiscal_year="2026",
+        vendor_code="DIM00420AB",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        assignment_number="20260130",
+        clearing_document="",
+        bill_amount=976004.52,
+        basic_amount=976004.52,
+        withholding_tax_base_amount=0,
+        tds_deducted_amount=0,
+    )
+
+    ledger = _build_case_ledger_from_transactions([invoice, payment_without_tds], [])
+
+    assert len(ledger) == 2
+    assert {row["anchorDocNo"] for row in ledger} == {"20260115", "20260130"}
+    assert all(row["openItem"] is True for row in ledger)
+    assert all(row["groupType"].startswith("OPEN_") for row in ledger)
+    assert all(row["status"] == "OPEN" for row in ledger)
+
+
 def test_kz_with_tds_signal_is_still_checked_for_amount_mismatch():
     transaction = Transaction(
         doc_number="2610380025",
@@ -601,7 +731,7 @@ def test_kz_with_tds_signal_is_still_checked_for_amount_mismatch():
 
     issues = run_all_checks(transaction)
 
-    assert any(issue.category == "Short/Excess TDS Deducted — Amount Mismatch" for issue in issues)
+    assert any(issue.category == "Short TDS Deducted — Amount Mismatch" for issue in issues)
 
 
 def test_advance_lifecycle_allows_partial_advance_and_balance_invoice_tds():
@@ -636,7 +766,7 @@ def test_advance_lifecycle_allows_partial_advance_and_balance_invoice_tds():
         basic_amount=500000,
         tds_deducted_section="194C",
         tds_deducted_rate=2,
-        tds_deducted_amount=6000,
+        tds_deducted_amount=10000,
     )
 
     assert check_advance_payment_lifecycle([advance, invoice]) == []
@@ -673,13 +803,13 @@ def test_advance_lifecycle_links_by_assignment_number():
         basic_amount=500000,
         tds_deducted_section="194C",
         tds_deducted_rate=2,
-        tds_deducted_amount=6000,
+        tds_deducted_amount=10000,
     )
 
     assert check_advance_payment_lifecycle([advance, invoice]) == []
 
 
-def test_advance_lifecycle_flags_invoice_tds_deducted_on_full_amount_again():
+def test_advance_lifecycle_flags_chain_level_excess_tds():
     advance = Transaction(
         doc_number="2100002001", doc_type="KA", posting_date=date(2025, 4, 1),
         company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
@@ -691,13 +821,51 @@ def test_advance_lifecycle_flags_invoice_tds_deducted_on_full_amount_again():
         doc_number="5100001001", doc_type="KR", posting_date=date(2025, 4, 10),
         company_code="1001", fiscal_year="2025", vendor_code="V001", vendor_pan="ABCFA1234K",
         vendor_category=_derive_vendor_category("ABCFA1234K"), bill_amount=500000, basic_amount=500000,
-        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=10000,
+        tds_deducted_section="194C", tds_deducted_rate=2, tds_deducted_amount=12000,
     )
 
     issues = check_advance_payment_lifecycle([advance, invoice])
 
     assert len(issues) == 1
     assert issues[0][1].category == "Excess TDS Deducted — Advance Adjusted Invoice"
+
+
+def test_advance_lifecycle_allows_chain_level_tds_for_mantra_case():
+    advance = Transaction(
+        doc_number="2610455298",
+        doc_type="KZ",
+        assignment_number="6500010688",
+        posting_date=date(2025, 11, 20),
+        company_code="1001",
+        fiscal_year="2026",
+        vendor_code="DIM00977AA",
+        vendor_pan="AAFCM9927Q",
+        vendor_category=_derive_vendor_category("AAFCM9927Q"),
+        bill_amount=3350491,
+        basic_amount=3350491,
+        tds_deducted_section="194C",
+        tds_deducted_rate=2,
+        tds_deducted_amount=67010,
+        is_advance_payment=True,
+    )
+    invoice = Transaction(
+        doc_number="3189959523",
+        doc_type="RE",
+        assignment_number="6500010688",
+        posting_date=date(2026, 1, 5),
+        company_code="1001",
+        fiscal_year="2026",
+        vendor_code="DIM00977AA",
+        vendor_pan="AAFCM9927Q",
+        vendor_category=_derive_vendor_category("AAFCM9927Q"),
+        bill_amount=-7840148.24,
+        basic_amount=3350490.56,
+        tds_deducted_section="194C",
+        tds_deducted_rate=2,
+        tds_deducted_amount=67010,
+    )
+
+    assert check_advance_payment_lifecycle([advance, invoice]) == []
 
 
 def test_advance_lifecycle_does_not_flag_rounded_invoice_tds_when_advance_tds_absent():
@@ -739,6 +907,31 @@ def test_advance_lifecycle_flags_missing_advance_tds():
 
     assert any(issue.category == "TDS Not Deducted — Advance Payment" for _, issue in issues)
     assert any(issue.category == "Short TDS Deducted — Advance Adjusted Invoice" for _, issue in issues)
+
+
+def test_advance_clearing_adjustment_does_not_raise_missing_advance_tds():
+    adjustment = Transaction(
+        doc_number="2610523222",
+        doc_type="KZ",
+        posting_date=date(2026, 1, 6),
+        company_code="1001",
+        fiscal_year="2026",
+        vendor_code="DIM00977AA",
+        vendor_pan="AAFCM9927Q",
+        vendor_category=_derive_vendor_category("AAFCM9927Q"),
+        bill_amount=-3350491,
+        basic_amount=3350491,
+        tds_deducted_section="194C",
+        tds_deducted_rate=2,
+        tds_deducted_amount=0,
+        is_advance_payment=True,
+        clearing_document="2610523222",
+        clearing_fiscal_year="2026",
+        invoice_reference_document="2610455298",
+        invoice_reference_fiscal_year="2026",
+    )
+
+    assert run_all_checks(adjustment) == []
 
 
 def test_advance_lifecycle_does_not_link_by_clearing_document_only():
