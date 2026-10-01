@@ -119,3 +119,9 @@
   cursor: pointer;
 }
 .monthly-trend-tooltip-action:hover { background: #F8FAFC; }
+
+.section-compliance-list--expanded {
+  max-height: 430px;
+  overflow: auto;
+  padding-right: 4px;
+}

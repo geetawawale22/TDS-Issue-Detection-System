@@ -3,11 +3,11 @@ import { useSelector } from 'react-redux'
 import { selectTopVendors } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
-export default function TopVendorsChart({ onBarClick }) {
+export default function TopVendorsChart({ onBarClick, height = 200 }) {
   const data = useSelector(selectTopVendors)
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
+    <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} layout="vertical" margin={{ top: 2, right: 12, left: 8, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E5E7EB" />
         <XAxis type="number" tick={{ fontSize: 11, fill: '#64748B' }} axisLine={false} tickLine={false} />

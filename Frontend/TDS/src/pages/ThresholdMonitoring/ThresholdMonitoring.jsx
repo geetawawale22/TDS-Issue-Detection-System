@@ -226,13 +226,12 @@ export default function ThresholdMonitoring() {
   ]
 
   const columns = [
-    { key: 'pan', header: 'PAN / Vendor Codes', render: (r) => (
-      <div>
-        <div className="font-mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.pan}</div>
-        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-          {(r.vendorCodes || []).length ? r.vendorCodes.join(', ') : r.name}
-        </div>
-      </div>
+    { key: 'pan', header: 'PAN', render: (r) => <span className="font-mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.pan || '—'}</span> },
+    { key: 'name', header: 'Vendor', render: (r) => <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name || '—'}</div> },
+    { key: 'vendorCodes', header: 'Vendor Code', render: (r) => (
+      <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>
+        {(r.vendorCodes || []).length ? r.vendorCodes.join(', ') : '—'}
+      </span>
     )},
     { key: 'section',       header: 'Section',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
     { key: 'threshold',     header: 'Threshold', render: (r) => (
@@ -260,16 +259,13 @@ export default function ThresholdMonitoring() {
   }
 
   const ldcColumns = [
+    { key: 'pan', header: 'PAN', render: (r) => <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>{r.pan || '—'}</span> },
+    { key: 'vendor', header: 'Vendor', render: (r) => <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.vendor || '—'}</div> },
+    { key: 'vendorId', header: 'Vendor Code', render: (r) => <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>{r.vendorId || r.vendorCode || '—'}</span> },
     { key: 'certificateNumber', header: 'Certificate', render: (r) => (
       <div>
         <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.certificateNumber}</div>
-        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.section} · {r.approvedRate ?? '—'}%</div>
-      </div>
-    )},
-    { key: 'vendor', header: 'Vendor / PAN', render: (r) => (
-      <div>
-        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
-        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.pan}</div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.section} · exemption {r.approvedRate ?? '—'}%</div>
       </div>
     )},
     { key: 'limit', header: 'LDC Limit', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.limit == null ? 'Not set' : formatCurrency(r.limit)}</span> },

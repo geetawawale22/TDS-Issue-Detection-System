@@ -13,7 +13,6 @@ import ResetPassword from '@/pages/ResetPassword/ResetPassword'
 import SetPassword from '@/pages/SetPassword/SetPassword'
 
 import Dashboard from '@/pages/Dashboard/Dashboard'
-import Issues from '@/pages/Issues/Issues'
 import ThresholdMonitoring from '@/pages/ThresholdMonitoring/ThresholdMonitoring'
 import CorrectionCenter from '@/pages/CorrectionCenter/CorrectionCenter'
 import Reports from '@/pages/Reports/Reports'
@@ -53,12 +52,12 @@ function App() {
 
             <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
               <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/issues" element={<Issues />} />
+              <Route path="/issues" element={<TDSCaseBuilder />} />
               <Route path="/threshold-monitoring" element={<ThresholdMonitoring />} />
               <Route path="/correction-center" element={<CorrectionCenter />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/ldc-compliance" element={<LDCCompliance />} />
-              <Route path="/tds-case-builder" element={<TDSCaseBuilder />} />
+              <Route path="/tds-case-builder" element={<Navigate to="/issues" replace />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
 

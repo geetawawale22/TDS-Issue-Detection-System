@@ -24,7 +24,14 @@ function formatBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export default function SapUploadPanel() {
+export default function SapUploadPanel({
+  defaultOpen = null,
+  showResults = true,
+  compact = false,
+  defaultCompanyCode = null,
+  followSelectedCompany = true,
+  forceAllCompanyOption = false,
+} = {}) {
   const dispatch = useDispatch()
   const inputRef = useRef(null)
   const {
@@ -35,23 +42,23 @@ export default function SapUploadPanel() {
   const activeValidationRows = useSelector(selectActiveValidationRows)
   const { availableCompanyCodes, selectedCompanyCode } = useSelector((s) => s.app)
 
-  const companyCodeOptions = availableCompanyCodes.length > 1
+  const companyCodeOptions = forceAllCompanyOption || availableCompanyCodes.length > 1
     ? [{ value: '', label: 'All company codes' }, ...availableCompanyCodes.map((c) => ({ value: c, label: c }))]
     : availableCompanyCodes.map((c) => ({ value: c, label: c }))
 
-  const [companyCode, setCompanyCode] = useState(selectedCompanyCode ?? '')
+  const [companyCode, setCompanyCode] = useState(defaultCompanyCode ?? selectedCompanyCode ?? '')
 
   // Follow the global company switcher (Navbar) so picking a company there
   // sets the default for the next upload too, instead of two disconnected
   // company selectors. A specific choice made here (not "All") reports back
   // up so the rest of the app (Navbar, other pages) stays in sync.
   useEffect(() => {
-    setCompanyCode(selectedCompanyCode ?? '')
-  }, [selectedCompanyCode])
+    if (followSelectedCompany) setCompanyCode(selectedCompanyCode ?? '')
+  }, [followSelectedCompany, selectedCompanyCode])
 
   function handleCompanyCodeChange(value) {
     setCompanyCode(value)
-    if (value) dispatch(setSelectedCompanyCode(value))
+    if (followSelectedCompany && value) dispatch(setSelectedCompanyCode(value))
   }
   const [includeInfo, setIncludeInfo] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -59,7 +66,7 @@ export default function SapUploadPanel() {
   // Collapsed by default so the issues table is visible without scrolling past
   // the upload form on every visit — only auto-open when there's something
   // upload-related the user actually needs to see.
-  const [open, setOpen] = useState(() => dataSource === 'upload' || uploadStatus !== 'idle')
+  const [open, setOpen] = useState(() => defaultOpen ?? (dataSource === 'upload' || uploadStatus !== 'idle'))
 
   const busy = uploadStatus === 'uploading' || uploadStatus === 'processing'
 
@@ -151,6 +158,50 @@ export default function SapUploadPanel() {
       return
     }
     downloadCsv(`${fileBase}-${exportSpec.suffix}.csv`, exportSpec.columns, exportSpec.rows)
+  }
+
+  if (compact) {
+    return (
+      <section className="sap-upload sap-upload-compact" aria-label="SAP data upload">
+        <input
+          ref={inputRef}
+          type="file"
+          accept={ACCEPTED}
+          hidden
+          disabled={busy}
+          onChange={(e) => pickFile(e.target.files?.[0])}
+        />
+        <div className="sap-compact-status" title={selectedFile?.name || uploadMeta?.fileName || ''}>
+          <FileSpreadsheet size={14} />
+          <span>{selectedFile?.name || uploadMeta?.fileName || 'No file selected'}</span>
+        </div>
+        <div className="sap-compact-actions">
+          <select
+            className="filter-select sap-compact-company"
+            value={companyCode}
+            disabled={busy}
+            title="Company code"
+            onChange={(e) => handleCompanyCodeChange(e.target.value)}
+          >
+            {companyCodeOptions.map((c) => (
+              <option key={c.value || 'all'} value={c.value}>{c.label}</option>
+            ))}
+          </select>
+          <button type="button" className="btn btn-outline btn-sm" disabled={busy} onClick={() => inputRef.current?.click()}>
+            <Upload size={13} />Upload
+          </button>
+          <button
+            type="button"
+            className={`btn ${selectedFile && !busy ? 'btn-primary' : 'btn-outline'} btn-sm`}
+            disabled={busy || !selectedFile}
+            onClick={handleRun}
+          >
+            {busy ? <Loader2 size={13} className="spin" /> : <FileUp size={13} />}
+            {busy ? (uploadStatus === 'processing' ? 'Analysing' : `${progress}%`) : 'Analyse'}
+          </button>
+        </div>
+      </section>
+    )
   }
 
   return (
@@ -356,7 +407,7 @@ export default function SapUploadPanel() {
           — this one and Issues.jsx's Passed/Issue Found/Insufficient Data/Skipped
           strip — sit next to each other instead of with the form wedged
           between them. */}
-      {dataSource === 'upload' && stats && (
+      {showResults && dataSource === 'upload' && stats && (
         <div className="sap-results">
           <div className="sap-results-label">
             <CheckCircle2 size={14} />

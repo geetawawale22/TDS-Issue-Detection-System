@@ -10,7 +10,7 @@ function barColor(ratio) {
   return `rgb(${r}, ${g}, ${b})`
 }
 
-export default function SectionComplianceChart({ onSectionClick }) {
+export default function SectionComplianceChart({ onSectionClick, expanded = false }) {
   const data = useSelector(selectIssuesBySection)
   const max = Math.max(...data.map((d) => d.count), 1)
 
@@ -19,7 +19,7 @@ export default function SectionComplianceChart({ onSectionClick }) {
   }
 
   return (
-    <div className="section-compliance-list">
+    <div className={`section-compliance-list ${expanded ? 'section-compliance-list--expanded' : ''}`}>
       {data.map((row) => {
         const ratio = row.count / max
         return (

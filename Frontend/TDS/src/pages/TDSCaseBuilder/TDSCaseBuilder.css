@@ -54,7 +54,7 @@
 
 .case-summary-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -148,6 +148,14 @@
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: #F8FAFC;
+}
+
+.case-tabs-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
 .case-toolbar {
@@ -251,6 +259,7 @@
     grid-template-columns: 1fr;
   }
 
+  .case-tabs-panel,
   .case-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -285,6 +294,8 @@
 }
 
 .case-ledger-detail {
+  max-height: min(560px, 70vh);
+  overflow: auto;
   padding: 10px 12px 12px;
   background: #F8FAFC;
   border-top: 1px solid var(--color-border);
@@ -345,11 +356,16 @@
 }
 
 .case-ledger-line--head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
   min-height: 26px;
   color: var(--color-text-muted);
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
+  background: #F8FAFC;
+  box-shadow: 0 1px 0 #E5E7EB;
 }
 
 .case-ledger-line:last-child {
@@ -378,4 +394,8 @@
   background: var(--color-surface);
   color: var(--color-text-muted);
   font-size: 13px;
+}
+
+.case-tabs-panel--after-filters {
+  margin-top: 0;
 }

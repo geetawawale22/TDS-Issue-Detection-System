@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSelector } from 'react-redux'
-import { AlertTriangle, FileSpreadsheet, GitBranch, ListTree, Search, ShieldAlert } from 'lucide-react'
+import { useDispatch, useSelector } from 'react-redux'
+import { AlertTriangle, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal } from 'lucide-react'
+import Issues from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
+import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import StatusBadge from '@/components/Common/StatusBadge'
+import { resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter, setStatusFilter, setVendorFilter } from '@/redux/slices/issuesSlice'
 import { formatCurrency } from '@/utils/utils'
+import { sectionMatches } from '@/utils/sectionAliases'
 import '@/components/Common/Common.css'
 import './TDSCaseBuilder.css'
 
-const ADVANCE_ISSUE_TEXT = /advance|advance adjusted invoice|advance payment/i
 const CASE_BUILDER_VIEW_STORAGE_KEY = 'tds_case_builder_view'
 const DEFAULT_CASE_BUILDER_VIEW = { activeTab: 'ledger', quickFilter: 'ledger-all' }
-const VALID_TABS = new Set(['ledger', 'advance', 'advanceIssues', 'issues'])
+const VALID_TABS = new Set(['ledger', 'issues'])
 
 function presentValue(value) {
   const text = String(value ?? '').trim()
@@ -45,12 +48,6 @@ function renderSection(row) {
   return <span className="font-mono">{section}</span>
 }
 
-function hasAdvanceSignal(row) {
-  if (Number(row.advanceAmount || 0) > 0) return true
-  if ((row.events || []).some((event) => event.eventType === 'ADVANCE_PAYMENT')) return true
-  return (row.events || []).some((event) => event.referenceDoc && event.referenceDoc !== '—')
-}
-
 function splitLedgerDetailEvents(row) {
   const anchorDocNo = presentValue(row.anchorDocNo)
   const events = row.events || []
@@ -68,9 +65,16 @@ function sumEventAmount(events) {
 }
 
 function ledgerBaseAmount(row) {
+  const events = row.events || []
+  const tdsRelevantBase = events
+    .filter((event) => Math.abs(Number(event.tdsAmount || 0)) > 0)
+    .reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0)
+  if (tdsRelevantBase) return tdsRelevantBase
+
   const backendTotal = Number(row.baseAmount || 0)
   if (backendTotal) return backendTotal
-  return (row.events || [])
+
+  return events
     .filter((event) => ['INVOICE', 'ADVANCE_PAYMENT'].includes(event.eventType))
     .reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0)
 }
@@ -86,7 +90,7 @@ function appliedRateForEvent(event) {
 
 function formatRate(value) {
   if (value == null || Number.isNaN(Number(value))) return '—'
-  return `${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 4 })}%`
+  return `${Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
 }
 
 function formatGroupType(row) {
@@ -95,25 +99,48 @@ function formatGroupType(row) {
 }
 
 export default function TDSCaseBuilder() {
+  const dispatch = useDispatch()
   const savedView = useMemo(readSavedCaseBuilderView, [])
   const [activeTab, setActiveTab] = useState(savedView.activeTab)
   const [quickFilter, setQuickFilter] = useState(savedView.quickFilter)
   const [caseSearch, setCaseSearch] = useState('')
+  const [docTypeFilter, setDocTypeFilter] = useState('all')
   const [expandedLedgerKey, setExpandedLedgerKey] = useState(null)
   const uploadMeta = useSelector((state) => state.issues.uploadMeta)
   const uploadedIssues = useSelector((state) => state.issues.uploadedIssues)
+  const { searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter } = useSelector((state) => state.issues)
 
   const stats = uploadMeta?.stats || {}
-  const caseStats = uploadMeta?.caseStats || {}
   const ledgerRows = useMemo(() => (
     (uploadMeta?.caseLedger || []).map((row) => ({ ...row, id: row.caseId }))
   ), [uploadMeta])
   const issueRows = uploadedIssues || []
-  const advanceIssueRows = useMemo(() => (
-    issueRows.filter((issue) => ADVANCE_ISSUE_TEXT.test(issue.category || issue.issueTypeLabel || ''))
-  ), [issueRows])
-  const advanceLedgerRows = useMemo(() => ledgerRows.filter(hasAdvanceSignal), [ledgerRows])
   const hasUpload = Boolean(uploadMeta)
+  const validationRows = uploadMeta?.validationRows || []
+  const vendorOptions = useMemo(() => {
+    const values = [
+      ...ledgerRows.map((row) => row.vendor),
+      ...issueRows.map((row) => row.vendor),
+      ...validationRows.map((row) => row.vendor),
+    ].map(presentValue).filter(Boolean)
+    return [...new Set(values)].sort()
+  }, [ledgerRows, issueRows, validationRows])
+  const sectionOptions = useMemo(() => {
+    const values = [
+      ...ledgerRows.flatMap((row) => [row.section, row.legacySection, row.newSection, ...(row.events || []).map((event) => event.tdsSection)]),
+      ...issueRows.map((row) => row.section),
+      ...validationRows.map((row) => row.section),
+    ].map(presentValue).filter(Boolean)
+    return [...new Set(values)].sort()
+  }, [ledgerRows, issueRows, validationRows])
+  const docTypeOptions = useMemo(() => {
+    const values = [
+      ...ledgerRows.flatMap((row) => (row.events || []).map((event) => event.docType)),
+      ...issueRows.map((row) => row.docType),
+      ...validationRows.map((row) => row.docType),
+    ].map((value) => String(value || '').trim().toUpperCase()).filter((value) => value && value !== '—')
+    return [...new Set(values)].sort()
+  }, [ledgerRows, issueRows, validationRows])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -122,30 +149,14 @@ export default function TDSCaseBuilder() {
       quickFilter,
     }))
   }, [activeTab, quickFilter])
-  const caseOverviewTotals = useMemo(() => {
-    const totals = ledgerRows.reduce((acc, row) => {
-      acc.invoice += Number(row.invoiceAmount || 0)
-      acc.advance += Number(row.advanceAmount || 0)
-      acc.base += ledgerBaseAmount(row)
-      acc.tds += Number(row.tdsAmount || 0)
-      if (row.status === 'ISSUE') acc.issueGroups += 1
-      return acc
-    }, { invoice: 0, advance: 0, base: 0, tds: 0, issueGroups: 0 })
-    return {
-      ...totals,
-      groups: ledgerRows.length,
-      issues: advanceIssueRows.length,
-    }
-  }, [ledgerRows, advanceIssueRows])
-
   const summaryCards = useMemo(() => [
-    { label: 'Rows Read', value: stats.rowsRead ?? 0, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all' },
-    { label: 'Document Groups', value: stats.ledgerCases ?? 0, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all' },
-    { label: 'Balanced Groups', value: stats.balancedLedgerCases ?? 0, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced' },
-    { label: 'Open Items', value: stats.openLedgerCases ?? 0, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open' },
-    { label: 'Advance Rows', value: caseStats.advanceCases ?? 0, icon: GitBranch, tone: 'info', tab: 'advance', filter: 'advance-with-amount' },
-    { label: 'Rule Issues', value: stats.issuesFound ?? 0, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all' },
-  ], [stats, caseStats])
+    { label: 'Rows Read', value: stats.rowsRead ?? 0, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Total rows read from upload' },
+    { label: 'Document Groups', value: stats.ledgerCases ?? 0, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference' },
+    { label: 'Balanced Groups', value: stats.balancedLedgerCases ?? 0, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: 'Net amount is zero' },
+    { label: 'Open Items', value: stats.openLedgerCases ?? 0, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found' },
+    { label: 'Issue Groups', value: stats.issueLedgerCases ?? 0, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Ledger groups with issue' },
+    { label: 'Issues', value: stats.issuesFound ?? 0, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
+  ], [stats])
 
   const ledgerColumns = [
     { key: 'vendor', header: 'Vendor', render: (row) => (
@@ -166,51 +177,24 @@ export default function TDSCaseBuilder() {
     { key: 'section', header: 'Section', render: renderSection },
     { key: 'assignmentNumber', header: 'Assignment No.', render: (row) => <span className="font-mono case-strong">{row.assignmentNumber || '—'}</span> },
     { key: 'invoiceAmount', header: 'Invoice', render: (row) => <span className="font-mono">{formatCurrency(row.invoiceAmount)}</span> },
-    { key: 'advanceAmount', header: 'Advance', render: (row) => <span className="font-mono">{formatCurrency(row.advanceAmount)}</span> },
     { key: 'baseAmount', header: 'Base Amount', render: (row) => <span className="font-mono">{formatCurrency(ledgerBaseAmount(row))}</span> },
+    { key: 'advanceAmount', header: 'Advance', render: (row) => <span className="font-mono">{formatCurrency(row.advanceAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
     { key: 'issueCount', header: 'Issues', render: (row) => <span className="font-mono">{row.issueCount}</span> },
     { key: 'status', header: 'Status', sortValue: (row) => row.status, render: (row) => <StatusBadge label={row.status} tone={row.status === 'ISSUE' ? 'danger' : row.status === 'BALANCED' ? 'success' : 'warning'} /> },
   ]
 
-  const issueColumns = [
-    { key: 'vendor', header: 'Vendor', render: (row) => (
-      <div>
-        <div className="case-strong">{row.vendor}</div>
-        <div className="font-mono case-muted">{row.vendorId || '—'}</div>
-      </div>
-    )},
-    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono case-muted">{row.vendorPan || row.pan || row.vendorId || '—'}</span> },
-    { key: 'docNo', header: 'Doc No.', render: (row) => <span className="font-mono">{row.docNo}</span> },
-    { key: 'section', header: 'Section', render: renderSection },
-    { key: 'baseAmount', header: 'Base', render: (row) => <span className="font-mono">{formatCurrency(row.baseAmount)}</span> },
-    { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
-    { key: 'category', header: 'Issue Type', render: (row) => <span className="case-issue-type" title={row.category}>{row.category}</span> },
-    { key: 'description', header: 'Reason', render: (row) => <span className="case-reason" title={row.description || row.plainEnglish}>{row.description || row.plainEnglish}</span> },
-    { key: 'severity', header: 'Severity', render: (row) => <StatusBadge label={row.severity} tone={row.severity === 'high' ? 'danger' : 'warning'} /> },
-  ]
-
   const activeRows = useMemo(() => {
-    if (activeTab === 'advance') {
-      if (quickFilter === 'advance-with-amount') return advanceLedgerRows.filter((row) => Number(row.advanceAmount || 0) > 0)
-      if (quickFilter === 'advance-invoice') return advanceLedgerRows.filter((row) => Number(row.invoiceAmount || 0) > 0)
-      if (quickFilter === 'advance-tds') return advanceLedgerRows.filter((row) => Number(row.tdsAmount || 0) > 0)
-      if (quickFilter === 'advance-issue-groups') return advanceLedgerRows.filter((row) => row.status === 'ISSUE')
-      return advanceLedgerRows
-    }
-    if (activeTab === 'advanceIssues') return advanceIssueRows
-    if (activeTab === 'issues') return issueRows
     if (quickFilter === 'ledger-balanced') return ledgerRows.filter((row) => row.status === 'BALANCED')
     if (quickFilter === 'ledger-open') return ledgerRows.filter((row) => row.openItem || row.status === 'OPEN')
     if (quickFilter === 'ledger-issue') return ledgerRows.filter((row) => row.status === 'ISSUE')
     return ledgerRows
-  }, [activeTab, quickFilter, advanceLedgerRows, advanceIssueRows, issueRows, ledgerRows])
+  }, [quickFilter, ledgerRows])
   const visibleRows = useMemo(() => {
-    const query = caseSearch.trim().toLowerCase()
-    if (!query) return activeRows
-
+    const query = searchQuery.trim().toLowerCase()
     return activeRows.filter((row) => {
-      const eventText = (row.events || []).map((event) => [
+      const events = row.events || []
+      const eventText = events.map((event) => [
         event.docNo,
         event.docType,
         event.assignmentNumber,
@@ -219,6 +203,16 @@ export default function TDSCaseBuilder() {
         event.tdsSection,
         event.referenceDoc,
       ].join(' ')).join(' ')
+      const rowSections = [row.section, row.legacySection, row.newSection, ...events.map((event) => event.tdsSection)]
+        .map(presentValue)
+        .filter(Boolean)
+      const rowDocTypes = events.map((event) => String(event.docType || '').trim().toUpperCase()).filter(Boolean)
+
+      if (vendorFilter !== 'all' && row.vendor !== vendorFilter) return false
+      if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, rowSections)) return false
+      if (docTypeFilter !== 'all' && !rowDocTypes.includes(docTypeFilter)) return false
+
+      if (!query) return true
       const searchable = [
         row.anchorDocNo,
         row.groupType,
@@ -239,15 +233,19 @@ export default function TDSCaseBuilder() {
       ].filter(Boolean).join(' ').toLowerCase()
       return searchable.includes(query)
     })
-  }, [activeRows, caseSearch])
-  const columns = activeTab === 'advanceIssues' || activeTab === 'issues' ? issueColumns : ledgerColumns
-  const canExpand = activeTab === 'advance' || activeTab === 'ledger'
+  }, [activeRows, searchQuery, vendorFilter, sectionFilter, docTypeFilter])
+  const canExpand = activeTab === 'ledger'
 
   function applyQuickFilter(tab, filter) {
     setActiveTab(tab)
     setQuickFilter(filter)
     setCaseSearch('')
     setExpandedLedgerKey(null)
+  }
+
+  function handleSharedFilterReset() {
+    setDocTypeFilter('all')
+    dispatch(resetFilters())
   }
 
   function renderLedgerLines(row) {
@@ -335,6 +333,91 @@ export default function TDSCaseBuilder() {
     )
   }
 
+  const resultsTabsPanel = (
+    <div className="case-tabs-panel">
+      <div className="case-tabs" role="tablist" aria-label="TDS analysis results">
+        <button type="button" className={`case-tab ${activeTab === 'ledger' ? 'active' : ''}`} onClick={() => applyQuickFilter('ledger', 'ledger-all')}>
+          Document Ledger ({ledgerRows.length.toLocaleString()})
+        </button>
+        <button type="button" className={`case-tab ${activeTab === 'issues' ? 'active' : ''}`} onClick={() => applyQuickFilter('issues', 'issues-all')}>
+          Issues ({issueRows.length.toLocaleString()})
+        </button>
+      </div>
+    </div>
+  )
+
+  const sharedFilters = (
+    <div className="filter-bar">
+      <div className="filter-bar-top">
+        <div className="filter-bar-label">
+          <SlidersHorizontal size={14} />Filters
+        </div>
+        <input
+          className="filter-input"
+          value={searchQuery}
+          onChange={(event) => dispatch(setSearchQuery(event.target.value))}
+          placeholder="Search vendor / doc / ID / section / PAN…"
+        />
+      </div>
+      <div className="filter-bar-controls">
+        <select className="filter-select" value={vendorFilter} onChange={(event) => dispatch(setVendorFilter(event.target.value))}>
+          <option value="all">All Vendors</option>
+          {vendorOptions.slice(0, 80).map((vendor) => <option key={vendor} value={vendor}>{vendor}</option>)}
+        </select>
+        <select className="filter-select" value={sectionFilter} onChange={(event) => dispatch(setSectionFilter(event.target.value))}>
+          <option value="all">All Sections</option>
+          {sectionOptions.map((section) => <option key={section} value={section}>{section}</option>)}
+        </select>
+        <select
+          className="filter-select"
+          value={severityFilter}
+          disabled={activeTab !== 'issues'}
+          title={activeTab !== 'issues' ? 'Only applies to the Issues tab' : undefined}
+          onChange={(event) => dispatch(setSeverityFilter(event.target.value))}
+        >
+          <option value="all">All Severity</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <select
+          className="filter-select"
+          value={issueTypeFilter}
+          disabled={activeTab !== 'issues'}
+          title={activeTab !== 'issues' ? 'Only applies to the Issues tab' : undefined}
+          onChange={(event) => dispatch(setIssueTypeFilter(event.target.value))}
+        >
+          <option value="all">All Issue Types</option>
+          <option value="Possible Missed TDS Deduction">Possible Missed TDS Deduction</option>
+          <option value="Short TDS Deducted — Amount Mismatch">Short TDS Deducted — Amount Mismatch</option>
+          <option value="Excess TDS Deducted — Amount Mismatch">Excess TDS Deducted — Amount Mismatch</option>
+          <option value="Wrong TDS Rate">Wrong TDS Rate</option>
+          <option value="TDS Deducted as per LDC — Mismatch">TDS Deducted as per LDC — Mismatch</option>
+        </select>
+        <select
+          className="filter-select"
+          value={statusFilter}
+          disabled={activeTab !== 'issues'}
+          title={activeTab !== 'issues' ? 'Only applies to the Issues tab' : undefined}
+          onChange={(event) => dispatch(setStatusFilter(event.target.value))}
+        >
+          <option value="all">All Status</option>
+          <option value="open">Open</option>
+          <option value="in_review">In Review</option>
+          <option value="resolved">Resolved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <select className="filter-select" value={docTypeFilter} onChange={(event) => setDocTypeFilter(event.target.value)}>
+          <option value="all">All Doc Types</option>
+          {docTypeOptions.map((docType) => <option key={docType} value={docType}>{docType}</option>)}
+        </select>
+        <button className="filter-reset-btn" type="button" onClick={handleSharedFilterReset}>
+          <RotateCcw size={12} />Reset
+        </button>
+      </div>
+    </div>
+  )
+
   return (
     <div>
       <div className="page-header">
@@ -348,9 +431,11 @@ export default function TDSCaseBuilder() {
         </div>
       </div>
 
+      <SapUploadPanel compact showResults={false} defaultCompanyCode="" followSelectedCompany={false} forceAllCompanyOption />
+
       {!hasUpload && (
         <div className="case-empty-source">
-          Upload a combined SAP extract from the Issues page to build the document ledger here.
+          Upload a combined SAP extract here to build the document ledger and issues.
         </div>
       )}
 
@@ -367,94 +452,32 @@ export default function TDSCaseBuilder() {
               <div className={`kpi-icon-box ${card.tone}`}><card.icon size={14} /></div>
             </div>
             <span className="kpi-value">{Number(card.value || 0).toLocaleString()}</span>
-            <span className="case-muted">Latest Issues upload</span>
+            <span className="case-muted">{card.description}</span>
           </button>
         ))}
       </div>
 
-      {hasUpload && (
-        <div className="case-advance-overview">
-          <button
-            type="button"
-            className={`case-overview-button ${quickFilter === 'advance-all' ? 'is-active' : ''}`}
-            onClick={() => applyQuickFilter('ledger', 'ledger-all')}
-          >
-            <span className="case-overview-label">Linked Groups</span>
-            <strong>{caseOverviewTotals.groups.toLocaleString()}</strong>
-          </button>
-          <button
-            type="button"
-            className={`case-overview-button ${quickFilter === 'advance-with-amount' ? 'is-active' : ''}`}
-            onClick={() => applyQuickFilter('advance', 'advance-with-amount')}
-          >
-            <span className="case-overview-label">Advance Amount</span>
-            <strong>{formatCurrency(caseOverviewTotals.advance)}</strong>
-          </button>
-          <button
-            type="button"
-            className={`case-overview-button ${quickFilter === 'advance-invoice' ? 'is-active' : ''}`}
-            onClick={() => applyQuickFilter('advance', 'advance-invoice')}
-          >
-            <span className="case-overview-label">Invoice Amount</span>
-            <strong>{formatCurrency(caseOverviewTotals.invoice)}</strong>
-          </button>
-          <button
-            type="button"
-            className={`case-overview-button ${quickFilter === 'advance-tds' ? 'is-active' : ''}`}
-            onClick={() => applyQuickFilter('advance', 'advance-tds')}
-          >
-            <span className="case-overview-label">TDS</span>
-            <strong>{formatCurrency(caseOverviewTotals.tds)}</strong>
-          </button>
-          <button
-            type="button"
-            className={`case-overview-button ${quickFilter === 'advance-issues' ? 'is-active' : ''}`}
-            onClick={() => applyQuickFilter('advanceIssues', 'advance-issues')}
-          >
-            <span className="case-overview-label">Advance Issues</span>
-            <strong>{caseOverviewTotals.issues.toLocaleString()}</strong>
-          </button>
-        </div>
-      )}
 
-      <div className="table-card">
-        <div className="table-card-header">
-          <div className="case-toolbar">
-            <div className="case-tabs" role="tablist" aria-label="Case builder results">
-              <button type="button" className={`case-tab ${activeTab === 'ledger' ? 'active' : ''}`} onClick={() => applyQuickFilter('ledger', 'ledger-all')}>
-                Document Ledger ({ledgerRows.length.toLocaleString()})
-              </button>
-              <button type="button" className={`case-tab ${activeTab === 'advance' ? 'active' : ''}`} onClick={() => applyQuickFilter('advance', 'advance-all')}>
-                Advance Review ({advanceLedgerRows.length.toLocaleString()})
-              </button>
-              <button type="button" className={`case-tab ${activeTab === 'advanceIssues' ? 'active' : ''}`} onClick={() => applyQuickFilter('advanceIssues', 'advance-issues')}>
-                Advance Issues ({advanceIssueRows.length.toLocaleString()})
-              </button>
-              <button type="button" className={`case-tab ${activeTab === 'issues' ? 'active' : ''}`} onClick={() => applyQuickFilter('issues', 'issues-all')}>
-                Rule Issues ({issueRows.length.toLocaleString()})
-              </button>
-            </div>
-            <label className="case-search">
-              <Search size={14} />
-              <input
-                type="search"
-                value={caseSearch}
-                onChange={(event) => setCaseSearch(event.target.value)}
-                placeholder="Search cases..."
-              />
-            </label>
+      {sharedFilters}
+
+      {activeTab === 'issues' ? (
+        <Issues embedded initialView="all" hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
+      ) : (
+        <>
+          {resultsTabsPanel}
+          <div className="table-card">
+          <DataTable
+            columns={ledgerColumns}
+            data={visibleRows}
+            pageSize={200}
+            expandedRowKey={canExpand ? expandedLedgerKey : null}
+            onRowClick={canExpand ? (row) => setExpandedLedgerKey((key) => key === row.id ? null : row.id) : undefined}
+            renderExpandedRow={canExpand ? renderLedgerLines : undefined}
+            emptyState={<div className="data-table-empty">No rows found for this view</div>}
+          />
           </div>
-        </div>
-        <DataTable
-          columns={columns}
-          data={visibleRows}
-          pageSize={10}
-          expandedRowKey={canExpand ? expandedLedgerKey : null}
-          onRowClick={canExpand ? (row) => setExpandedLedgerKey((key) => key === row.id ? null : row.id) : undefined}
-          renderExpandedRow={canExpand ? renderLedgerLines : undefined}
-          emptyState={<div className="data-table-empty">No rows found for this view</div>}
-        />
-      </div>
+        </>
+      )}
     </div>
   )
 }

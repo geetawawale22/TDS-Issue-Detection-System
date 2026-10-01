@@ -1,9 +1,10 @@
+import { useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, AlertOctagon, AlertTriangle, CheckCircle2,
   Clock, FileSearch, RefreshCw, Database, CalendarDays, ArrowUp, ArrowDown,
-  SlidersHorizontal, RotateCcw,
+  SlidersHorizontal, RotateCcw, Maximize2, X,
 } from 'lucide-react'
 import IssuesByTypeChart from '@/components/Charts/IssuesByTypeChart'
 import SectionComplianceChart from '@/components/Charts/SectionComplianceChart'
@@ -20,6 +21,7 @@ import '@/components/Common/Common.css'
 import './Dashboard.css'
 
 export default function Dashboard() {
+  const [expandedChart, setExpandedChart] = useState(null)
   const navigate = useNavigate()
   const dispatch = useDispatch()
   const { financialYear, lastSyncTime, dataSource } = useSelector((s) => s.app)
@@ -48,6 +50,54 @@ export default function Dashboard() {
       if (value) params.set(key, value)
     })
     navigate(`/issues?${params.toString()}`)
+  }
+
+  const chartDefinitions = {
+    issuesType: {
+      title: 'Issues by Type',
+      subtitle: isLive ? 'From latest SAP upload' : 'Distribution by issue type',
+      render: (props = {}) => <IssuesByTypeChart {...props} onBarClick={(row) => navigateToIssues({ type: row.type })} />,
+    },
+    sectionHealth: {
+      title: 'Section-wise Compliance Health',
+      subtitle: 'Issue count by TDS section',
+      render: (props = {}) => <SectionComplianceChart {...props} onSectionClick={(row) => navigateToIssues({ section: row.section })} />,
+    },
+    monthlyTrend: {
+      title: 'Monthly Trend',
+      subtitle: isLive ? 'Issues by posting month in upload' : 'Issues found vs. resolved',
+      render: (props = {}) => <MonthlyTrendChart {...props} onMonthClick={(row) => navigateToIssues({ month: row.monthKey })} />,
+    },
+    topVendors: {
+      title: 'Top Vendors with Issues',
+      subtitle: isLive ? 'Highest issue counts in this run' : 'Highest open issue counts',
+      render: (props = {}) => <TopVendorsChart {...props} onBarClick={(row) => navigateToIssues({ vendor: row.vendor || row.name })} />,
+    },
+  }
+  const expandedChartConfig = expandedChart ? chartDefinitions[expandedChart] : null
+
+  function renderChartCard(chartKey) {
+    const chart = chartDefinitions[chartKey]
+    return (
+      <div className="chart-card">
+        <div className="chart-card-header">
+          <div>
+            <p className="chart-title">{chart.title}</p>
+            <p className="chart-subtitle">{chart.subtitle}</p>
+          </div>
+          <button
+            className="dashboard-chart-expand-btn"
+            type="button"
+            title={`Expand ${chart.title}`}
+            aria-label={`Expand ${chart.title}`}
+            onClick={() => setExpandedChart(chartKey)}
+          >
+            <Maximize2 size={14} />
+          </button>
+        </div>
+        {chart.render()}
+      </div>
+    )
   }
 
   const kpis = [
@@ -258,52 +308,39 @@ export default function Dashboard() {
       </div>
 
       <div className="chart-grid-2col">
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div>
-              <p className="chart-title">Issues by Type</p>
-              <p className="chart-subtitle">
-                {isLive ? 'From latest SAP upload' : 'Distribution by issue type'}
-              </p>
-            </div>
-          </div>
-          <IssuesByTypeChart onBarClick={(row) => navigateToIssues({ type: row.type })} />
-        </div>
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div>
-              <p className="chart-title">Section-wise Compliance Health</p>
-              <p className="chart-subtitle">Issue count by TDS section</p>
-            </div>
-          </div>
-          <SectionComplianceChart onSectionClick={(row) => navigateToIssues({ section: row.section })} />
-        </div>
+        {renderChartCard('issuesType')}
+        {renderChartCard('sectionHealth')}
       </div>
 
       <div className="chart-grid-2col">
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div>
-              <p className="chart-title">Monthly Trend</p>
-              <p className="chart-subtitle">
-                {isLive ? 'Issues by posting month in upload' : 'Issues found vs. resolved'}
-              </p>
-            </div>
-          </div>
-          <MonthlyTrendChart onMonthClick={(row) => navigateToIssues({ month: row.monthKey })} />
-        </div>
-        <div className="chart-card">
-          <div className="chart-card-header">
-            <div>
-              <p className="chart-title">Top Vendors with Issues</p>
-              <p className="chart-subtitle">
-                {isLive ? 'Highest issue counts in this run' : 'Highest open issue counts'}
-              </p>
-            </div>
-          </div>
-          <TopVendorsChart onBarClick={(row) => navigateToIssues({ vendor: row.vendor || row.name })} />
-        </div>
+        {renderChartCard('monthlyTrend')}
+        {renderChartCard('topVendors')}
       </div>
+
+      {expandedChartConfig && (
+        <div className="dashboard-chart-modal-overlay open" onClick={() => setExpandedChart(null)}>
+          <div className="dashboard-chart-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="dashboard-chart-modal-header">
+              <div>
+                <p className="chart-title">{expandedChartConfig.title}</p>
+                <p className="chart-subtitle">{expandedChartConfig.subtitle}</p>
+              </div>
+              <button
+                className="dashboard-chart-expand-btn"
+                type="button"
+                title="Collapse chart"
+                aria-label="Collapse chart"
+                onClick={() => setExpandedChart(null)}
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <div className="dashboard-chart-modal-body">
+              {expandedChartConfig.render({ height: 430, expanded: true })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

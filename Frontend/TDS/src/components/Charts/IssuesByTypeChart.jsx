@@ -30,7 +30,7 @@ function shortIssueType(type) {
   return ISSUE_TYPE_LABELS[type] || String(type || 'Other').replace(/\s+—\s+/g, ' ').slice(0, 14)
 }
 
-export default function IssuesByTypeChart({ onBarClick }) {
+export default function IssuesByTypeChart({ onBarClick, height = 200 }) {
   const rawData = useSelector(selectIssuesByType)
   const data = rawData.map((row) => ({
     ...row,
@@ -39,7 +39,7 @@ export default function IssuesByTypeChart({ onBarClick }) {
   const max = Math.max(...data.map((d) => d.count), 1)
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
+    <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 2, right: 8, left: -20, bottom: 28 }}>
         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
         <XAxis

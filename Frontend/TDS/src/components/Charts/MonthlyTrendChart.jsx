@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { selectMonthlyTrend } from '@/redux/slices/issuesSlice'
 import './Charts.css'
 
-export default function MonthlyTrendChart({ onMonthClick }) {
+export default function MonthlyTrendChart({ onMonthClick, height = 200 }) {
   const data = useSelector(selectMonthlyTrend)
   const navigate = useNavigate()
   const [hoveredIndex, setHoveredIndex] = useState(null)
@@ -45,7 +45,7 @@ export default function MonthlyTrendChart({ onMonthClick }) {
   return (
     <div className="monthly-trend-chart">
       {yearLabel && <div className="monthly-trend-year">{yearLabel}</div>}
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveContainer width="100%" height={height}>
         <AreaChart
           data={data}
           margin={{ top: 2, right: 4, left: -20, bottom: 0 }}

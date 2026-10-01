@@ -19,6 +19,7 @@ import {
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
 import { issueTypeFilterOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
 import { formatCurrency, formatStatusLabel } from '@/utils/utils'
+import { sectionMatches } from '@/utils/sectionAliases'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
 import './Issues.css'
@@ -87,12 +88,14 @@ function issueRowKey(row) {
   ].map((value) => String(value ?? '').trim().toUpperCase()).join('|')
 }
 
-export default function Issues() {
+export default function Issues({ embedded = false, initialView = 'all', filtersFirst = false, beforeSummary = null, hideFilters = false, externalDocTypeFilter = null, onExternalDocTypeFilterChange = null } = {}) {
   const dispatch = useDispatch()
   const [searchParams] = useSearchParams()
   const [validationView, setValidationView] = useState('all')
   const [reviewValidationRow, setReviewValidationRow] = useState(null)
   const [docTypeFilter, setDocTypeFilter] = useState('all')
+  const activeDocTypeFilter = externalDocTypeFilter ?? docTypeFilter
+  const setActiveDocTypeFilter = onExternalDocTypeFilterChange ?? setDocTypeFilter
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
     issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta,
@@ -103,6 +106,14 @@ export default function Issues() {
   const vendorNames = useSelector(selectActiveVendors)
   const sections = useSelector(selectActiveSections)
   useEffect(() => {
+    if (embedded) {
+      setValidationView(['all', 'issue', 'passed', 'insufficient', 'skipped'].includes(initialView) ? initialView : 'all')
+      return
+    }
+
+    dispatch(resetFilters())
+    setActiveDocTypeFilter('all')
+
     const view = searchParams.get('view')
     const severity = searchParams.get('severity')
     const status = searchParams.get('status')
@@ -110,8 +121,6 @@ export default function Issues() {
     const section = searchParams.get('section')
     const vendor = searchParams.get('vendor')
 
-    dispatch(resetFilters())
-    setDocTypeFilter('all')
     if (['all', 'issue', 'passed', 'insufficient', 'skipped'].includes(view)) {
       setValidationView(view)
     } else {
@@ -122,7 +131,7 @@ export default function Issues() {
     if (issueType) dispatch(setIssueTypeFilter(issueType))
     if (section) dispatch(setSectionFilter(section))
     if (vendor) dispatch(setVendorFilter(vendor))
-  }, [dispatch, searchParams])
+  }, [dispatch, embedded, initialView, searchParams])
 
   // PAN is verified for every vendor in the loaded issue set at once, not
   // per-issue (see IssueDrawer, which just displays the result) — this
@@ -178,8 +187,8 @@ export default function Issues() {
       ) return false
     }
     if (vendorFilter    !== 'all' && issue.vendor    !== vendorFilter)    return false
-    if (sectionFilter   !== 'all' && issue.section   !== sectionFilter)   return false
-    if (docTypeFilter   !== 'all' && String(issue.docType ?? '').toUpperCase() !== docTypeFilter) return false
+    if (sectionFilter   !== 'all' && !sectionMatches(sectionFilter, [issue.section, issue.legacySection, issue.ruleSection, issue.newSection]))   return false
+    if (activeDocTypeFilter   !== 'all' && String(issue.docType ?? '').toUpperCase() !== activeDocTypeFilter) return false
     if (severityFilter  !== 'all' && issue.severity  !== severityFilter)  return false
     if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
     if (issueTypeFilter !== 'all') {
@@ -188,7 +197,7 @@ export default function Issues() {
       if (!rowTypes.some((type) => allowedTypes.includes(type))) return false
     }
     return true
-  }), [issues, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+  }), [issues, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
 
@@ -275,25 +284,65 @@ export default function Issues() {
     }
   }
 
-  // Derived from adjustedValidationRows (already Company/FY-scoped, plus the
-  // zero-base-amount reclassification above) rather than uploadMeta.stats
-  // directly, so these cards can't drift out of sync with the table
-  // underneath them once a Company/FY filter narrows what's shown. Skipped
-  // rows are the one exception: a row that failed to become a transaction at
-  // all never enters validationRows in the first place (so it was never
-  // attributed to a company or date either) — that count always reflects the
-  // whole upload, read straight from the backend stat.
+  const filteredValidationRowsForSummary = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    return displayValidationRows.filter((row) => {
+      if (q) {
+        const searchable = [
+          row.vendor,
+          row.docNo,
+          row.docType,
+          row.vendorId,
+          row.section,
+          row.vendorPan,
+        ].filter(Boolean).join(' ').toLowerCase()
+        if (!searchable.includes(q)) return false
+      }
+      if (vendorFilter !== 'all' && row.vendor !== vendorFilter) return false
+      if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [row.section, row.legacySection, row.ruleSection, row.newSection])) return false
+      if (activeDocTypeFilter !== 'all' && String(row.docType ?? '').toUpperCase() !== activeDocTypeFilter) return false
+      return true
+    })
+  }, [displayValidationRows, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter])
+
+  // Derived from the same filter bar inputs as the table, so the cards and
+  // visible rows stay aligned when Vendor/Section/Doc Type/Search changes.
   const summary = useMemo(() => {
-    if (!uploadMeta) return { totalRows: issues.length, passedRows: 0, issueRows: issues.length, insufficientDataRows: 0, skippedRows: 0 }
-    const skippedValidationRows = displayValidationRows.filter((r) => r.status === 'skipped').length
-    return {
-      totalRows: displayValidationRows.length,
-      passedRows: displayValidationRows.filter((r) => r.status === 'passed').length,
-      issueRows: displayValidationRows.filter((r) => r.status === 'issue').length,
-      insufficientDataRows: displayValidationRows.filter((r) => r.status === 'insufficient').length,
-      skippedRows: skippedValidationRows,
+    const filteredIssueGroups = new Map()
+    filtered.forEach((issue) => {
+      const key = issueRowKey(issue)
+      if (!filteredIssueGroups.has(key)) filteredIssueGroups.set(key, [])
+      filteredIssueGroups.get(key).push(issue)
+    })
+    const filteredIssueRows = filteredValidationRowsForSummary.filter((row) => (
+      row.status === 'issue' && filteredIssueGroups.has(issueRowKey(row))
+    ))
+    const hasSeverity = (row, severity) => (
+      filteredIssueGroups.get(issueRowKey(row)) || []
+    ).some((issue) => issue.severity === severity)
+
+    if (!uploadMeta) {
+      return {
+        totalRows: filtered.length,
+        passedRows: 0,
+        issueRows: filtered.length,
+        highRows: filtered.filter((issue) => issue.severity === 'high').length,
+        mediumRows: filtered.filter((issue) => issue.severity === 'medium').length,
+        insufficientDataRows: 0,
+        skippedRows: 0,
+      }
     }
-  }, [issues, uploadMeta, displayValidationRows])
+
+    return {
+      totalRows: filteredValidationRowsForSummary.length,
+      passedRows: filteredValidationRowsForSummary.filter((row) => row.status === 'passed').length,
+      issueRows: filteredIssueRows.length,
+      highRows: filteredIssueRows.filter((row) => hasSeverity(row, 'high')).length,
+      mediumRows: filteredIssueRows.filter((row) => hasSeverity(row, 'medium')).length,
+      insufficientDataRows: filteredValidationRowsForSummary.filter((row) => row.status === 'insufficient').length,
+      skippedRows: filteredValidationRowsForSummary.filter((row) => row.status === 'skipped').length,
+    }
+  }, [filtered, uploadMeta, filteredValidationRowsForSummary])
 
   const docTypes = useMemo(() => {
     const values = [
@@ -374,11 +423,11 @@ export default function Issues() {
   function handleExportKpi(kind) {
     const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
     const exportSpec = {
-      all: { rows: displayValidationRows, columns: VALIDATION_CSV_COLUMNS, suffix: 'all-transactions' },
-      passed: { rows: displayValidationRows.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
-      issue: { rows: allIssueValidationRows, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
-      insufficient: { rows: displayValidationRows.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
-      skipped: { rows: displayValidationRows.filter((r) => r.status === 'skipped'), columns: VALIDATION_CSV_COLUMNS, suffix: 'skipped' },
+      all: { rows: filteredValidationRowsForSummary, columns: VALIDATION_CSV_COLUMNS, suffix: 'all-transactions' },
+      passed: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
+      issue: { rows: issueValidationRows, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
+      insufficient: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
+      skipped: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'skipped'), columns: VALIDATION_CSV_COLUMNS, suffix: 'skipped' },
     }[kind]
     if (!exportSpec || exportSpec.rows.length === 0) {
       toast('No rows to export')
@@ -517,8 +566,8 @@ export default function Issues() {
           ) return false
         }
         if (vendorFilter  !== 'all' && row.vendor  !== vendorFilter)  return false
-        if (sectionFilter !== 'all' && row.section !== sectionFilter) return false
-        if (docTypeFilter !== 'all' && String(row.docType ?? '').toUpperCase() !== docTypeFilter) return false
+        if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [row.section, row.legacySection, row.ruleSection, row.newSection])) return false
+        if (activeDocTypeFilter !== 'all' && String(row.docType ?? '').toUpperCase() !== activeDocTypeFilter) return false
         if (validationView === 'issue') {
           if (severityFilter !== 'all' && matchingIssue?.severity !== severityFilter) return false
           if (statusFilter !== 'all' && matchingIssue?.status !== statusFilter) return false
@@ -536,15 +585,91 @@ export default function Issues() {
           issueTypeLabel: matchingIssue ? getDisplayIssueType(matchingIssue) : null,
         }
       })
-  }, [displayValidationRows, issues, issueValidationRows, validationView, searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+  }, [displayValidationRows, issues, issueValidationRows, validationView, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter])
 
   function handleResetFilters() {
-    setDocTypeFilter('all')
+    setActiveDocTypeFilter('all')
     dispatch(resetFilters())
   }
 
+  function handleSeverityCard(severity) {
+    setValidationView('issue')
+    dispatch(setSeverityFilter(severity))
+    dispatch(setIssueTypeFilter('all'))
+    dispatch(setStatusFilter('all'))
+  }
+
+  const filterBar = (
+    <>
+      <div className="filter-bar">
+        <div className="filter-bar-top">
+          <div className="filter-bar-label">
+            <SlidersHorizontal size={14} />Filters
+          </div>
+          <input
+            className="filter-input"
+            value={searchQuery}
+            onChange={(e) => dispatch(setSearchQuery(e.target.value))}
+            placeholder="Search vendor / doc / ID / section / PAN…"
+          />
+        </div>
+        <div className="filter-bar-controls">
+          <select className="filter-select" value={vendorFilter} onChange={(e) => dispatch(setVendorFilter(e.target.value))}>
+            <option value="all">All Vendors</option>
+            {vendorNames.slice(0, 40).map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+          <select className="filter-select" value={sectionFilter} onChange={(e) => dispatch(setSectionFilter(e.target.value))}>
+            <option value="all">All Sections</option>
+            {sections.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select
+            className="filter-select"
+            value={severityFilter}
+            disabled={validationView !== 'issue'}
+            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
+            onChange={(e) => dispatch(setSeverityFilter(e.target.value))}
+          >
+            {SEVERITY_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select
+            className="filter-select"
+            value={issueTypeFilter}
+            disabled={validationView !== 'issue'}
+            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
+            onChange={(e) => dispatch(setIssueTypeFilter(e.target.value))}
+          >
+            <option value="all">All Issue Types</option>
+            {ISSUE_TYPE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select
+            className="filter-select"
+            value={statusFilter}
+            disabled={validationView !== 'issue'}
+            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
+            onChange={(e) => dispatch(setStatusFilter(e.target.value))}
+          >
+            {STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select
+            className="filter-select"
+            value={activeDocTypeFilter}
+            onChange={(e) => setActiveDocTypeFilter(e.target.value)}
+          >
+            <option value="all">All Doc Types</option>
+            {docTypes.map((docType) => <option key={docType} value={docType}>{docType}</option>)}
+          </select>
+          <button className="filter-reset-btn" onClick={handleResetFilters}>
+            <RotateCcw size={12} />Reset
+          </button>
+        </div>
+      </div>
+    </>
+  )
+
+
   return (
-    <div>
+    <div className={embedded ? 'issues-embedded' : undefined}>
+      {!embedded && (
       <div className="page-header">
         <div>
           <div className="breadcrumb">
@@ -564,8 +689,12 @@ export default function Issues() {
           </button>
         </div>
       </div>
+      )}
 
-      <SapUploadPanel />
+      {!embedded && <SapUploadPanel />}
+
+      {!hideFilters && filtersFirst && filterBar}
+      {beforeSummary}
 
       <div className="issues-summary-grid issues-summary-grid--five">
         <div className={`issues-summary-card issues-summary-card--info ${validationView === 'all' ? 'issues-summary-card--active' : ''}`}>
@@ -626,6 +755,28 @@ export default function Issues() {
           )}
         </div>
         <button
+          className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue' && severityFilter === 'high' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => handleSeverityCard('high')}
+        >
+          <AlertOctagon size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.highRows.toLocaleString()}</div>
+            <div className="issues-summary-label">High</div>
+          </div>
+        </button>
+        <button
+          className={`issues-summary-card issues-summary-card--warning ${validationView === 'issue' && severityFilter === 'medium' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => handleSeverityCard('medium')}
+        >
+          <AlertTriangle size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.mediumRows.toLocaleString()}</div>
+            <div className="issues-summary-label">Medium</div>
+          </div>
+        </button>
+        <button
           className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
           type="button"
           onClick={() => setValidationView('skipped')}
@@ -657,69 +808,7 @@ export default function Issues() {
         </div>
       </div>
 
-      {/* Filter bar */}
-      <div className="filter-bar">
-        <div className="filter-bar-top">
-          <div className="filter-bar-label">
-            <SlidersHorizontal size={14} />Filters
-          </div>
-          <input
-            className="filter-input"
-            value={searchQuery}
-            onChange={(e) => dispatch(setSearchQuery(e.target.value))}
-            placeholder="Search vendor / doc / ID / section / PAN…"
-          />
-        </div>
-        <div className="filter-bar-controls">
-          <select className="filter-select" value={vendorFilter} onChange={(e) => dispatch(setVendorFilter(e.target.value))}>
-            <option value="all">All Vendors</option>
-            {vendorNames.slice(0, 40).map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-          <select className="filter-select" value={sectionFilter} onChange={(e) => dispatch(setSectionFilter(e.target.value))}>
-            <option value="all">All Sections</option>
-            {sections.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select
-            className="filter-select"
-            value={severityFilter}
-            disabled={validationView !== 'issue'}
-            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
-            onChange={(e) => dispatch(setSeverityFilter(e.target.value))}
-          >
-            {SEVERITY_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <select
-            className="filter-select"
-            value={issueTypeFilter}
-            disabled={validationView !== 'issue'}
-            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
-            onChange={(e) => dispatch(setIssueTypeFilter(e.target.value))}
-          >
-            <option value="all">All Issue Types</option>
-            {ISSUE_TYPE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <select
-            className="filter-select"
-            value={statusFilter}
-            disabled={validationView !== 'issue'}
-            title={validationView !== 'issue' ? 'Only applies to the Issues Found view' : undefined}
-            onChange={(e) => dispatch(setStatusFilter(e.target.value))}
-          >
-            {STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <select
-            className="filter-select"
-            value={docTypeFilter}
-            onChange={(e) => setDocTypeFilter(e.target.value)}
-          >
-            <option value="all">All Doc Types</option>
-            {docTypes.map((docType) => <option key={docType} value={docType}>{docType}</option>)}
-          </select>
-          <button className="filter-reset-btn" onClick={handleResetFilters}>
-            <RotateCcw size={12} />Reset
-          </button>
-        </div>
-      </div>
+      {!hideFilters && !filtersFirst && filterBar}
 
       <div className="table-card">
         <div className="issues-count-label">
@@ -730,7 +819,7 @@ export default function Issues() {
           key={`validation-table-${validationView}`}
           columns={transactionColumns}
           data={validationTableRows}
-          pageSize={50}
+          pageSize={200}
           emptyState={
             <div className="empty-state">
               <div className="empty-state-icon"><FileSearch size={20} /></div>

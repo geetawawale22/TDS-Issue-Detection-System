@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { NavLink } from 'react-router-dom'
 import {
-  LayoutGrid, AlertTriangle, Gauge, GitPullRequestArrow,
+  LayoutGrid, Gauge, GitPullRequestArrow,
   FileBarChart, Settings, ShieldCheck, ChevronsLeft,
   BadgePercent, GitBranch,
 } from 'lucide-react'
@@ -12,12 +12,11 @@ import './Sidebar.css'
 
 const navItems = [
   { label: 'Dashboard',            path: '/dashboard',             icon: LayoutGrid },
-  { label: 'Issues',               path: '/issues',                icon: AlertTriangle },
+  { label: 'TDS Analysis',         path: '/issues',                icon: GitBranch },
   { label: 'Threshold Monitoring', path: '/threshold-monitoring',  icon: Gauge },
   { label: 'Correction Center',    path: '/correction-center',     icon: GitPullRequestArrow },
   { label: 'Reports',              path: '/reports',               icon: FileBarChart },
   { label: 'LDC Compliance',        path: '/ldc-compliance',        icon: BadgePercent },
-  { label: 'TDS Analysis',          path: '/tds-case-builder',      icon: GitBranch },
   { label: 'Settings',             path: '/settings',              icon: Settings },
 ]
 
