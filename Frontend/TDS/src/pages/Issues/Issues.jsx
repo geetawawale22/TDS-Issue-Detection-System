@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
-  Activity, AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash,
+  Activity, AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash, PlusCircle, X,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
@@ -13,7 +13,7 @@ import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters,
+  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters, createManualCorrection, createMatchedSapCorrection,
   selectActiveIssues, selectActiveVendors, selectActiveSections, selectActiveValidationRows,
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
@@ -76,6 +76,175 @@ function SectionCell({ issue }) {
   )
 }
 
+
+function getExpectedTdsAmount(issue) {
+  const base = Number(issue?.baseAmount) || 0
+  const rate = Number(issue?.expectedRate)
+  if (!base || Number.isNaN(rate)) return Math.abs(Number(issue?.tdsAmount) || 0) + Math.abs(Number(issue?.taxImpact) || 0)
+  return Number((base * rate / 100).toFixed(2))
+}
+
+function buildCorrectionDefaults(issue) {
+  const actual = Math.abs(Number(issue?.tdsAmount) || 0)
+  const expected = getExpectedTdsAmount(issue)
+  const difference = Math.abs(Number(issue?.taxImpact) || (expected - actual) || 0)
+  return {
+    method: actual > expected ? 'FULL_REVERSAL' : 'DIFFERENCE_ONLY',
+    additionalAmount: difference.toFixed(2),
+    reversalAmount: actual.toFixed(2),
+    freshDeductionAmount: expected.toFixed(2),
+    remarks: '',
+  }
+}
+
+function CorrectionModal({ issue, form, onChange, onClose, onSave }) {
+  if (!issue) return null
+  const expected = getExpectedTdsAmount(issue)
+  const actual = Math.abs(Number(issue.tdsAmount) || 0)
+  const netImpact = form.method === 'FULL_REVERSAL'
+    ? (Number(form.freshDeductionAmount) || 0) - (Number(form.reversalAmount) || 0)
+    : Number(form.additionalAmount) || 0
+
+  return (
+    <div className="correction-modal-overlay" onClick={onClose}>
+      <div className="correction-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="correction-modal-header">
+          <div>
+            <div className="correction-modal-kicker">Manual Correction</div>
+            <h2>Create correction entry</h2>
+            <div className="font-mono correction-modal-doc">Original doc {issue.docNo}</div>
+          </div>
+          <button className="issue-drawer-close" type="button" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <div className="correction-modal-summary">
+          <div><span>Actual TDS</span><strong>{formatCurrency(actual)}</strong></div>
+          <div><span>Expected TDS</span><strong>{formatCurrency(expected)}</strong></div>
+          <div><span>Tax impact</span><strong>{formatCurrency(Math.abs(Number(issue.taxImpact) || expected - actual))}</strong></div>
+        </div>
+
+        <label className="correction-field">
+          <span>Correction method</span>
+          <select value={form.method} onChange={(event) => onChange({ ...form, method: event.target.value })}>
+            <option value="DIFFERENCE_ONLY">Difference only</option>
+            <option value="FULL_REVERSAL">Full reversal and fresh deduction</option>
+          </select>
+        </label>
+
+        {form.method === 'FULL_REVERSAL' ? (
+          <div className="correction-two-col">
+            <label className="correction-field">
+              <span>Reversal amount</span>
+              <input type="number" step="0.01" value={form.reversalAmount} onChange={(event) => onChange({ ...form, reversalAmount: event.target.value })} />
+            </label>
+            <label className="correction-field">
+              <span>Fresh deduction amount</span>
+              <input type="number" step="0.01" value={form.freshDeductionAmount} onChange={(event) => onChange({ ...form, freshDeductionAmount: event.target.value })} />
+            </label>
+          </div>
+        ) : (
+          <label className="correction-field">
+            <span>Additional deduction amount</span>
+            <input type="number" step="0.01" value={form.additionalAmount} onChange={(event) => onChange({ ...form, additionalAmount: event.target.value })} />
+          </label>
+        )}
+
+        <label className="correction-field">
+          <span>Remarks</span>
+          <textarea value={form.remarks} onChange={(event) => onChange({ ...form, remarks: event.target.value })} placeholder="Reason or SAP posting note" />
+        </label>
+
+        <div className="correction-preview">
+          <span>Net correction impact</span>
+          <strong className="font-mono">{formatCurrency(netImpact)}</strong>
+        </div>
+
+        <div className="correction-modal-actions">
+          <button className="btn btn-outline" type="button" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" type="button" onClick={onSave}><PlusCircle size={14} />Save correction</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, onSearch, onToggle, onMethodChange, onRemarksChange, onClose, onSave }) {
+  if (!issue) return null
+  const selectedCount = selectedIds.size
+  const selectedRows = rows.filter((row) => selectedIds.has(row.id))
+  const selectedTds = selectedRows.reduce((sum, row) => sum + Number(row.tdsAmount || 0), 0)
+
+  return (
+    <div className="correction-modal-overlay" onClick={onClose}>
+      <div className="correction-modal correction-modal--wide" onClick={(event) => event.stopPropagation()}>
+        <div className="correction-modal-header">
+          <div>
+            <div className="correction-modal-kicker">Match Existing SAP Rows</div>
+            <h2>Resolve issue from uploaded SAP entries</h2>
+            <div className="font-mono correction-modal-doc">Original doc {issue.docNo}</div>
+          </div>
+          <button className="issue-drawer-close" type="button" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <div className="match-toolbar">
+          <input
+            className="filter-input"
+            value={search}
+            onChange={(event) => onSearch(event.target.value)}
+            placeholder="Search SAP doc / vendor / PAN / section"
+          />
+          <select className="filter-select" value={method} onChange={(event) => onMethodChange(event.target.value)}>
+            <option value="DIFFERENCE_ONLY">Difference only</option>
+            <option value="FULL_REVERSAL">Full reversal and fresh deduction</option>
+          </select>
+        </div>
+
+        <div className="match-summary-strip">
+          <div><span>Selected rows</span><strong>{selectedCount}</strong></div>
+          <div><span>Selected TDS total</span><strong>{formatCurrency(selectedTds)}</strong></div>
+          <div><span>Issue tax impact</span><strong>{formatCurrency(Math.abs(Number(issue.taxImpact) || 0))}</strong></div>
+        </div>
+
+        <div className="match-row-list">
+          <div className="match-row match-row--head">
+            <span></span>
+            <span>Doc No.</span>
+            <span>Vendor</span>
+            <span>Section</span>
+            <span>Base</span>
+            <span>TDS</span>
+            <span>Date</span>
+          </div>
+          {rows.length === 0 ? (
+            <div className="match-empty">No uploaded rows match the search.</div>
+          ) : rows.map((row) => (
+            <label className="match-row" key={row.id}>
+              <input type="checkbox" checked={selectedIds.has(row.id)} onChange={() => onToggle(row.id)} />
+              <span className="font-mono">{row.docNo}</span>
+              <span>{row.vendor || '—'}</span>
+              <span className="font-mono">{row.section || '—'}</span>
+              <span className="font-mono">{formatCurrency(row.baseAmount)}</span>
+              <span className="font-mono">{formatCurrency(row.tdsAmount)}</span>
+              <span>{row.postingDate || row.date || '—'}</span>
+            </label>
+          ))}
+        </div>
+
+        <label className="correction-field">
+          <span>Remarks</span>
+          <textarea value={remarks} onChange={(event) => onRemarksChange(event.target.value)} placeholder="Why these SAP rows resolve the issue" />
+        </label>
+
+        <div className="correction-modal-actions">
+          <button className="btn btn-outline" type="button" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" type="button" disabled={selectedCount === 0} onClick={onSave}>Save matched group</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function issueRowKey(row) {
   return [
     row.docNo,
@@ -94,12 +263,20 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const [validationView, setValidationView] = useState('all')
   const [reviewValidationRow, setReviewValidationRow] = useState(null)
   const [docTypeFilter, setDocTypeFilter] = useState('all')
+  const [correctionIssue, setCorrectionIssue] = useState(null)
+  const [correctionForm, setCorrectionForm] = useState(buildCorrectionDefaults(null))
+  const [matchIssue, setMatchIssue] = useState(null)
+  const [matchMethod, setMatchMethod] = useState('DIFFERENCE_ONLY')
+  const [matchRemarks, setMatchRemarks] = useState('')
+  const [matchSearch, setMatchSearch] = useState('')
+  const [selectedMatchIds, setSelectedMatchIds] = useState(() => new Set())
   const activeDocTypeFilter = externalDocTypeFilter ?? docTypeFilter
   const setActiveDocTypeFilter = onExternalDocTypeFilterChange ?? setDocTypeFilter
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
-    issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta,
+    issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta, correctionGroups,
   } = useSelector((s) => s.issues)
+  const currentUser = useSelector((s) => s.auth.user)
 
   const issues = useSelector(selectActiveIssues)
   const activeValidationRows = useSelector(selectActiveValidationRows)
@@ -237,6 +414,82 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     }
   }, [reviewValidationRow, selectedIssue, ldcValidityByCertificate])
   const drawerIsOpen = Boolean(reviewValidationRow) || drawerOpen
+  const drawerCorrectionGroups = useMemo(() => {
+    if (!drawerIssue || reviewValidationRow) return []
+    return correctionGroups.filter((group) => (
+      group.issueId === drawerIssue.id
+      || String(group.originalDocumentNumber || '') === String(drawerIssue.docNo || '')
+    ))
+  }, [correctionGroups, drawerIssue, reviewValidationRow])
+
+  function handleOpenCorrection(issue) {
+    setCorrectionIssue(issue)
+    setCorrectionForm(buildCorrectionDefaults(issue))
+  }
+
+  function handleSaveCorrection() {
+    if (!correctionIssue) return
+    const payload = {
+      issueId: correctionIssue.id,
+      actor: currentUser,
+      ...correctionForm,
+    }
+    dispatch(createManualCorrection(payload))
+    toast.success('Correction group created')
+    setCorrectionIssue(null)
+  }
+
+  const matchCandidateRows = useMemo(() => {
+    if (!matchIssue) return []
+    const query = matchSearch.trim().toLowerCase()
+    return displayValidationRows
+      .filter((row) => String(row.docNo || '') !== String(matchIssue.docNo || ''))
+      .filter((row) => {
+        if (!query) return true
+        return [row.docNo, row.vendor, row.vendorId, row.vendorPan, row.section, row.docType]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(query)
+      })
+      .slice(0, 80)
+      .map((row, index) => ({
+        ...row,
+        id: row.id || `match-${index}-${row.docNo}`,
+      }))
+  }, [displayValidationRows, matchIssue, matchSearch])
+
+  function handleOpenSapMatch(issue) {
+    setMatchIssue(issue)
+    setMatchMethod('DIFFERENCE_ONLY')
+    setMatchRemarks('')
+    setMatchSearch(String(issue.vendorId || issue.vendor || issue.docNo || ''))
+    setSelectedMatchIds(new Set())
+  }
+
+  function handleToggleMatchRow(rowId) {
+    setSelectedMatchIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(rowId)) next.delete(rowId)
+      else next.add(rowId)
+      return next
+    })
+  }
+
+  function handleSaveSapMatch() {
+    if (!matchIssue || selectedMatchIds.size === 0) return
+    const rows = matchCandidateRows.filter((row) => selectedMatchIds.has(row.id))
+    dispatch(createMatchedSapCorrection({
+      issueId: matchIssue.id,
+      actor: currentUser,
+      method: matchMethod,
+      remarks: matchRemarks,
+      rows,
+    }))
+    toast.success('SAP rows matched to correction group')
+    setMatchIssue(null)
+    setSelectedMatchIds(new Set())
+  }
 
   function buildValidationReviewIssue(row) {
     const isInsufficient = row.status === 'insufficient'
@@ -401,6 +654,8 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           plainEnglish: primaryIssue.plainEnglish,
           recommendedAction: primaryIssue.recommendedAction,
           status: 'issue',
+          issueStatus: primaryIssue.status,
+          correctionGroupId: primaryIssue.correctionGroupId,
         }
       })
       .filter(Boolean)
@@ -450,7 +705,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     { key: 'docNo',   header: 'Doc No.',  render: (r) => (
       <div>
         <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span>
-        {r.status === 'resolved' ? (
+        {(r.issueStatus || r.status) === 'resolved' ? (
           <div className="corrected-badge"><CheckCheck size={11} />Corrected</div>
         ) : r.status !== 'open' && (
           <div style={{ marginTop: 3 }}>
@@ -490,7 +745,12 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     { key: 'vendorPan', header: 'PAN', render: (r) => (
       <span className="font-mono" style={{ fontSize: 11.5 }}>{r.vendorPan || r.vendorId || '—'}</span>
     )},
-    { key: 'docNo', header: 'Doc No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span> },
+    { key: 'docNo', header: 'Doc No.', render: (r) => (
+      <div>
+        <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docNo}</span>
+        {r.issueStatus === 'resolved' && <div className="corrected-badge"><CheckCheck size={11} />Corrected</div>}
+      </div>
+    )},
     { key: 'docType', header: 'Doc Type', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.docType || '—'}</span> },
     // Temporarily hidden from the Issues UI. Keep this column definition for future restore.
     // { key: 'poNo', header: 'PO No.', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.poNo || r.poNumber || '-'}</span> },
@@ -834,10 +1094,36 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       <IssueDrawer
         issue={drawerIssue}
         open={drawerIsOpen}
+        correctionGroups={drawerCorrectionGroups}
+        onCreateCorrection={reviewValidationRow ? null : handleOpenCorrection}
+        onMatchSapRows={reviewValidationRow ? null : handleOpenSapMatch}
         onClose={() => {
           setReviewValidationRow(null)
           dispatch(closeDrawer())
         }}
+      />
+
+      <CorrectionModal
+        issue={correctionIssue}
+        form={correctionForm}
+        onChange={setCorrectionForm}
+        onClose={() => setCorrectionIssue(null)}
+        onSave={handleSaveCorrection}
+      />
+
+      <MatchSapRowsModal
+        issue={matchIssue}
+        rows={matchCandidateRows}
+        selectedIds={selectedMatchIds}
+        method={matchMethod}
+        remarks={matchRemarks}
+        search={matchSearch}
+        onSearch={setMatchSearch}
+        onToggle={handleToggleMatchRow}
+        onMethodChange={setMatchMethod}
+        onRemarksChange={setMatchRemarks}
+        onClose={() => setMatchIssue(null)}
+        onSave={handleSaveSapMatch}
       />
     </div>
   )

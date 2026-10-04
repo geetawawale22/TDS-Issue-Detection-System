@@ -17,7 +17,83 @@ import { getFinancialYear } from '@/utils/utils'
 
 const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
 const LDC_UTILIZATION_STORAGE_KEY = 'tds_ldc_utilization_results'
-const LAST_UPLOAD_SCHEMA_VERSION = 4
+const CORRECTION_REGISTER_STORAGE_KEY = 'tds_correction_register'
+const LAST_UPLOAD_SCHEMA_VERSION = 5
+
+
+function correctionActor(user) {
+  if (!user) return { name: 'Unknown user', email: '', role: '' }
+  return {
+    name: user.name || user.full_name || user.email || 'Unknown user',
+    email: user.email || '',
+    role: user.role || '',
+  }
+}
+
+function nextCorrectionGroupId(existingGroups = []) {
+  const max = existingGroups.reduce((highest, group) => {
+    const match = String(group.groupId || '').match(/^CG-(\d+)$/i)
+    return match ? Math.max(highest, Number(match[1])) : highest
+  }, 0)
+  return `CG-${String(max + 1).padStart(4, '0')}`
+}
+
+
+function readCorrectionGroups() {
+  if (typeof window === 'undefined') return []
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CORRECTION_REGISTER_STORAGE_KEY) || 'null')
+    return Array.isArray(parsed?.correctionGroups) ? parsed.correctionGroups : []
+  } catch {
+    return []
+  }
+}
+
+function saveCorrectionGroups(correctionGroups = []) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(CORRECTION_REGISTER_STORAGE_KEY, JSON.stringify({ correctionGroups }))
+  } catch {
+    // The correction register is convenience persistence until a backend table exists.
+  }
+}
+
+function applyCorrectionRegisterToIssues(issues = [], correctionGroups = []) {
+  const groupsByOriginalDoc = new Map()
+  const groupsByCorrectionDoc = new Map()
+  for (const group of correctionGroups) {
+    const originalDocNo = String(group.originalDocumentNumber || '')
+    if (originalDocNo) groupsByOriginalDoc.set(originalDocNo, group)
+    for (const entry of group.entries || []) {
+      const correctionDocNo = String(entry.correctionDocumentNumber || entry.docNo || '')
+      if (correctionDocNo) groupsByCorrectionDoc.set(correctionDocNo, group)
+    }
+  }
+  return issues.map((issue) => {
+    const docNo = String(issue.docNo || '')
+    const originalGroup = groupsByOriginalDoc.get(docNo)
+    if (originalGroup) {
+      return {
+        ...issue,
+        status: 'resolved',
+        correctionGroupId: originalGroup.groupId,
+        correctionMethod: originalGroup.method,
+        correctionStatus: originalGroup.status,
+      }
+    }
+
+    const correctionGroup = groupsByCorrectionDoc.get(docNo)
+    if (!correctionGroup) return issue
+    return {
+      ...issue,
+      status: 'resolved',
+      correctionGroupId: correctionGroup.groupId,
+      correctionMethod: correctionGroup.method,
+      correctionStatus: correctionGroup.status,
+      isMatchedSapCorrection: true,
+    }
+  })
+}
 
 function readLastUpload() {
   if (typeof window === 'undefined') return null
@@ -39,6 +115,7 @@ function saveLastUpload(state) {
     window.localStorage.setItem(LDC_UTILIZATION_STORAGE_KEY, JSON.stringify({
       ldcUtilization: state.uploadMeta?.ldcUtilization || [],
     }))
+    saveCorrectionGroups(state.correctionGroups || [])
   } catch {
     // LDC utilization is a small convenience cache; upload analysis remains the source of truth.
   }
@@ -46,6 +123,7 @@ function saveLastUpload(state) {
     schemaVersion: LAST_UPLOAD_SCHEMA_VERSION,
     uploadedIssues: state.uploadedIssues,
     uploadMeta: state.uploadMeta,
+    correctionGroups: state.correctionGroups,
   }
   try {
     window.localStorage.setItem(LAST_UPLOAD_STORAGE_KEY, JSON.stringify(payload))
@@ -60,6 +138,7 @@ function clearLastUpload() {
   window.localStorage.removeItem(LDC_UTILIZATION_STORAGE_KEY)
 }
 
+
 function readLastLdcUtilization() {
   if (typeof window === 'undefined') return []
   try {
@@ -71,6 +150,7 @@ function readLastLdcUtilization() {
 }
 
 const lastUpload = readLastUpload()
+const storedCorrectionGroups = readCorrectionGroups()
 const initialState = {
   searchQuery:     '',
   vendorFilter:    'all',
@@ -87,8 +167,9 @@ const initialState = {
   drawerOpen:      false,
 
   dataSource: lastUpload ? 'upload' : 'empty',
-  uploadedIssues: lastUpload?.uploadedIssues || [],
+  uploadedIssues: applyCorrectionRegisterToIssues(lastUpload?.uploadedIssues || [], storedCorrectionGroups.length ? storedCorrectionGroups : lastUpload?.correctionGroups || []),
   uploadMeta: lastUpload?.uploadMeta || null,
+  correctionGroups: storedCorrectionGroups.length ? storedCorrectionGroups : lastUpload?.correctionGroups || [],
   uploadStatus: 'idle',
   uploadProgress: 0,
   uploadError: null,
@@ -136,7 +217,7 @@ const issuesSlice = createSlice({
     uploadSucceeded: (state, action) => {
       const payload = action.payload
       state.dataSource = 'upload'
-      state.uploadedIssues = payload.issues || []
+      state.uploadedIssues = applyCorrectionRegisterToIssues(payload.issues || [], state.correctionGroups || [])
       state.uploadMeta = {
         uploadId: payload.uploadId,
         fileName: payload.fileName,
@@ -171,6 +252,159 @@ const issuesSlice = createSlice({
       state.dashboardSectionFilter = 'all'
       saveLastUpload(state)
     },
+    createManualCorrection: (state, action) => {
+      const {
+        issueId,
+        method,
+        remarks,
+        additionalAmount,
+        reversalAmount,
+        freshDeductionAmount,
+        actor,
+      } = action.payload || {}
+      const issue = state.uploadedIssues.find((row) => row.id === issueId)
+      if (!issue) return
+
+      const groupId = nextCorrectionGroupId(state.correctionGroups)
+      const originalDocNo = String(issue.docNo || 'UNKNOWN')
+      const cleanDocNo = originalDocNo.replace(/[^a-z0-9-]/gi, '')
+      const createdAt = new Date().toISOString()
+      const createdBy = correctionActor(actor)
+      const appliedTdsAmount = Math.abs(Number(issue.tdsAmount) || 0)
+      const expectedTdsAmount = issue.expectedRate == null || issue.baseAmount == null
+        ? Math.abs(Number(issue.tdsAmount) || 0) + Math.abs(Number(issue.taxImpact) || 0)
+        : Number((Number(issue.baseAmount) * Number(issue.expectedRate) / 100).toFixed(2))
+      const baseEntry = {
+        originalDocumentNumber: originalDocNo,
+        vendor: issue.vendor,
+        vendorId: issue.vendorId,
+        vendorPan: issue.vendorPan,
+        section: issue.section,
+        baseAmount: Number(issue.baseAmount) || 0,
+        appliedRate: issue.appliedRate,
+        appliedTdsAmount,
+        expectedRate: issue.expectedRate,
+        expectedTdsAmount,
+        taxImpact: Math.abs(Number(issue.taxImpact) || expectedTdsAmount - appliedTdsAmount),
+        postingDate: issue.postingDate || issue.date,
+        createdAt,
+      }
+
+      const entries = method === 'FULL_REVERSAL'
+        ? [
+          {
+            ...baseEntry,
+            correctionDocumentNumber: `CORR-${cleanDocNo}-R`,
+            role: 'REVERSAL',
+            amount: -Math.abs(Number(reversalAmount) || appliedTdsAmount || 0),
+            displayAmount: Math.abs(Number(reversalAmount) || appliedTdsAmount || 0),
+          },
+          {
+            ...baseEntry,
+            correctionDocumentNumber: `CORR-${cleanDocNo}-F`,
+            role: 'FRESH_DEDUCTION',
+            amount: Math.abs(Number(freshDeductionAmount) || expectedTdsAmount || 0),
+            displayAmount: Math.abs(Number(freshDeductionAmount) || expectedTdsAmount || 0),
+          },
+        ]
+        : [
+          {
+            ...baseEntry,
+            correctionDocumentNumber: `CORR-${cleanDocNo}-01`,
+            role: 'ADDITIONAL_DEDUCTION',
+            amount: Math.abs(Number(additionalAmount) || 0),
+            displayAmount: Math.abs(Number(additionalAmount) || 0),
+          },
+        ]
+
+      state.correctionGroups.push({
+        groupId,
+        issueId,
+        originalDocumentNumber: originalDocNo,
+        method,
+        appliedRate: issue.appliedRate,
+        appliedTdsAmount,
+        expectedRate: issue.expectedRate,
+        expectedTdsAmount,
+        taxImpact: Math.abs(Number(issue.taxImpact) || expectedTdsAmount - appliedTdsAmount),
+        status: 'draft',
+        createdBy,
+        actionBy: createdBy,
+        actionLabel: 'Created draft correction',
+        remarks: String(remarks || '').trim(),
+        createdAt,
+        entries,
+      })
+
+      issue.status = 'resolved'
+      issue.correctionGroupId = groupId
+      issue.correctionMethod = method
+      issue.correctionStatus = 'draft'
+      saveCorrectionGroups(state.correctionGroups)
+      saveLastUpload(state)
+    },
+    createMatchedSapCorrection: (state, action) => {
+      const {
+        issueId,
+        method,
+        remarks,
+        rows,
+        actor,
+      } = action.payload || {}
+      const issue = state.uploadedIssues.find((row) => row.id === issueId)
+      if (!issue || !Array.isArray(rows) || rows.length === 0) return
+
+      const groupId = nextCorrectionGroupId(state.correctionGroups)
+      const originalDocNo = String(issue.docNo || 'UNKNOWN')
+      const createdAt = new Date().toISOString()
+      const matchedBy = correctionActor(actor)
+      const entries = rows.map((row, index) => ({
+        correctionDocumentNumber: String(row.docNo || row.documentNumber || `SAP-${index + 1}`),
+        docNo: String(row.docNo || row.documentNumber || `SAP-${index + 1}`),
+        role: row.matchRole || (method === 'FULL_REVERSAL' && index === 0 ? 'REVERSAL' : method === 'FULL_REVERSAL' ? 'FRESH_DEDUCTION' : 'ADDITIONAL_DEDUCTION'),
+        amount: Number(row.tdsAmount ?? row.amount ?? 0),
+        displayAmount: Math.abs(Number(row.tdsAmount ?? row.amount ?? 0)),
+        originalDocumentNumber: originalDocNo,
+        vendor: row.vendor || issue.vendor,
+        vendorId: row.vendorId || issue.vendorId,
+        vendorPan: row.vendorPan || issue.vendorPan,
+        section: row.section || issue.section,
+        baseAmount: Number(row.baseAmount ?? issue.baseAmount ?? 0),
+        appliedRate: row.appliedRate ?? issue.appliedRate,
+        appliedTdsAmount: Math.abs(Number(row.tdsAmount ?? 0)),
+        expectedRate: issue.expectedRate,
+        expectedTdsAmount: issue.expectedRate == null || issue.baseAmount == null
+          ? Math.abs(Number(issue.tdsAmount) || 0) + Math.abs(Number(issue.taxImpact) || 0)
+          : Number((Number(issue.baseAmount) * Number(issue.expectedRate) / 100).toFixed(2)),
+        postingDate: row.postingDate || row.date || issue.postingDate || issue.date,
+        docType: row.docType,
+        source: 'SAP_MATCHED_ROW',
+        createdAt,
+      }))
+
+      state.correctionGroups.push({
+        groupId,
+        issueId,
+        originalDocumentNumber: originalDocNo,
+        method,
+        source: 'SAP_MATCHED_ROWS',
+        status: 'matched_in_sap',
+        createdBy: matchedBy,
+        matchedBy,
+        actionBy: matchedBy,
+        actionLabel: 'Matched SAP rows',
+        remarks: String(remarks || '').trim(),
+        createdAt,
+        entries,
+      })
+
+      issue.status = 'resolved'
+      issue.correctionGroupId = groupId
+      issue.correctionMethod = method
+      issue.correctionStatus = 'matched_in_sap'
+      saveCorrectionGroups(state.correctionGroups)
+      saveLastUpload(state)
+    },
     uploadFailed: (state, action) => {
       state.uploadStatus = 'error'
       state.uploadError = action.payload || 'Upload failed'
@@ -197,6 +431,7 @@ export const {
   setDashboardSectionFilter,
   openDrawer, closeDrawer, resetFilters, resetDashboardFilters,
   uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
+  createManualCorrection, createMatchedSapCorrection,
 } = issuesSlice.actions
 
 export function selectIsLive(state) {
@@ -368,6 +603,10 @@ export function selectLdcUtilization(state) {
 
 export function selectGlCorrections(state) {
   return deriveGlCorrections(selectActiveIssues(state))
+}
+
+export function selectCorrectionGroups(state) {
+  return state.issues.correctionGroups || []
 }
 
 export default issuesSlice.reducer

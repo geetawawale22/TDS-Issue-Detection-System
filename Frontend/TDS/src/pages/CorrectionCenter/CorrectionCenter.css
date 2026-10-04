@@ -56,3 +56,85 @@
 
 .audit-subtable-row--correction { background: var(--color-success-bg); }
 .audit-subtable-row--correction .audit-entry-type { color: #059669; }
+
+
+.correction-register-card {
+  margin-bottom: 16px;
+}
+
+.table-card-title svg {
+  color: var(--color-primary);
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+
+.manual-method-pill,
+.manual-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-success-border);
+  background: var(--color-success-bg);
+  color: #047857;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.manual-status-pill {
+  border-color: var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+
+.manual-net-amount {
+  color: var(--color-success);
+  font-weight: 700;
+}
+
+.manual-correction-detail {
+  padding: 10px 16px 14px;
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.manual-correction-remarks {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+
+.manual-rate-amount {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  font-size: 11.5px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.manual-rate-amount span {
+  color: var(--color-text-muted);
+}
+
+.manual-rate-amount strong {
+  font-size: 12px;
+}
+
+.manual-rate-amount--danger strong {
+  color: var(--color-danger);
+}
+
+.manual-rate-amount--success strong {
+  color: var(--color-success);
+}

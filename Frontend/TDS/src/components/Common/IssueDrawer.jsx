@@ -1,10 +1,10 @@
-import { X, CheckCheck, FileText, Lightbulb } from 'lucide-react'
+import { X, CheckCheck, FileText, Lightbulb, ClipboardList, PlusCircle } from 'lucide-react'
 import StatusBadge, { severityToTone, issueStatusToTone } from './StatusBadge'
 import { getDisplayIssueType, getRecommendedAction } from '@/data/issueTypes'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import './Common.css'
 
-export default function IssueDrawer({ issue, open, onClose }) {
+export default function IssueDrawer({ issue, open, onClose, correctionGroups = [], onCreateCorrection, onMatchSapRows }) {
   return (
     <div className={`issue-drawer-overlay ${open ? 'open' : ''}`} onClick={onClose}>
       <div
@@ -114,9 +114,59 @@ export default function IssueDrawer({ issue, open, onClose }) {
                 <div className="issue-drawer-section-title"><Lightbulb size={13} />Recommended Action</div>
                 <div className="issue-drawer-desc" style={{ borderColor: 'var(--color-success-border)', background: 'var(--color-success-bg)' }}>
                   {issue.status === 'resolved' ? (
-                    <em>No action needed — already corrected via GL reversal.</em>
+                    <em>No action needed — correction is recorded in the manual correction register.</em>
                   ) : getRecommendedAction(issue)}
                 </div>
+
+                {issue.status !== 'resolved' && (onCreateCorrection || onMatchSapRows) && (
+                  <div className="issue-correction-actions">
+                    {onCreateCorrection && (
+                      <button className="issue-correction-primary" type="button" onClick={() => onCreateCorrection(issue)}>
+                        <PlusCircle size={14} />
+                        Create Draft Correction
+                      </button>
+                    )}
+                    {onMatchSapRows && (
+                      <button className="issue-correction-secondary" type="button" onClick={() => onMatchSapRows(issue)}>
+                        <ClipboardList size={14} />
+                        Match SAP Rows
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {correctionGroups.length > 0 && (
+                  <div className="issue-correction-panel">
+                    <div className="issue-drawer-section-title"><ClipboardList size={13} />Correction Register</div>
+                    {correctionGroups.map((group) => (
+                      <div className="issue-correction-group" key={group.groupId}>
+                        <div className="issue-correction-group-head">
+                          <span className="font-mono">{group.groupId}</span>
+                          <StatusBadge
+                            label={group.method === 'FULL_REVERSAL' ? 'Full Reversal' : 'Difference Only'}
+                            tone={group.method === 'FULL_REVERSAL' ? 'warning' : 'success'}
+                          />
+                        </div>
+                        <div className="issue-correction-entry-list">
+                          {group.entries.map((entry) => (
+                            <div className="issue-correction-entry" key={entry.correctionDocumentNumber}>
+                              <div>
+                                <div className="font-mono issue-correction-doc">{entry.correctionDocumentNumber}</div>
+                                <div className="issue-correction-role">{formatStatusLabel(entry.role)}</div>
+                              </div>
+                              <strong className="font-mono">{formatCurrency(entry.amount)}</strong>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="issue-correction-remarks">
+                          <strong>{group.actionBy?.name || group.matchedBy?.name || group.createdBy?.name || 'Unknown user'}</strong>
+                          {group.actionLabel ? ` · ${group.actionLabel}` : ''}
+                          {group.remarks ? ` · ${group.remarks}` : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </>
