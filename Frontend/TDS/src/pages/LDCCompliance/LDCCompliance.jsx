@@ -979,7 +979,7 @@ export default function LDCCompliance() {
           <DataTable
             columns={quickFilter === 'issues' ? issueColumns : columns}
             data={filteredRows}
-            pageSize={8}
+            pageSize={200}
             stateKey="ldc-certificate-validation"
             emptyState={
               isCertificateDataPending && quickFilter !== 'issues'
