@@ -1,8 +1,32 @@
-# MySQL Setup Instructions for TDS Application
+# Database Setup Instructions for TDS Application
 
-Use this guide when the laptop has **MySQL** installed instead of PostgreSQL.
+This project now supports both **PostgreSQL** and **MySQL** through `DATABASE_URL`.
 
-These steps do not require changing the project code permanently. They only require setting the correct `DATABASE_URL` and installing the MySQL Python driver.
+- Developer laptop can continue using PostgreSQL.
+- Client laptop can use MySQL.
+- No code change is needed between laptops; only `backend/.env` changes.
+
+---
+
+## 0. Choose Database in `.env`
+
+### PostgreSQL example
+
+Use this on the developer laptop if PostgreSQL is already working:
+
+```env
+DATABASE_URL=postgresql://<user>:<password>@localhost:5432/<dbname>
+```
+
+### MySQL example
+
+Use this on the client laptop:
+
+```env
+DATABASE_URL=mysql+pymysql://tds_user:tds_password@localhost:3306/tds_app?charset=utf8mb4
+```
+
+Then follow the MySQL setup below only on laptops that use MySQL.
 
 ---
 
@@ -188,7 +212,7 @@ From `backend` folder:
 pip install -r requirements.txt
 ```
 
-Install MySQL driver:
+The project requirements include both PostgreSQL and MySQL drivers. If PyMySQL is still missing, install it manually:
 
 ```bash
 pip install PyMySQL
@@ -395,8 +419,6 @@ http://localhost:5173
 
 ## Important Note
 
-The current project was originally configured for PostgreSQL.
-
-Running on MySQL should mostly work because the app uses SQLAlchemy, but migrations may need small changes if any migration contains PostgreSQL-specific syntax.
+The same codebase can run with PostgreSQL or MySQL. The selected database is controlled by `backend/.env` through `DATABASE_URL`.
 
 If `alembic upgrade head` fails, share the full error with the developer.

@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '4d140f3671b9'
@@ -31,7 +30,7 @@ def downgrade() -> None:
     op.create_table('user_company_access',
     sa.Column('user_id', sa.INTEGER(), autoincrement=False, nullable=False),
     sa.Column('company_code', sa.VARCHAR(length=10), autoincrement=False, nullable=False),
-    sa.Column('granted_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), autoincrement=False, nullable=True),
+    sa.Column('granted_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), autoincrement=False, nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('user_company_access_user_id_fkey')),
     sa.PrimaryKeyConstraint('user_id', 'company_code', name=op.f('user_company_access_pkey'))
     )
