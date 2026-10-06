@@ -15,7 +15,7 @@ import {
   resetDashboardFilters, selectActiveSections, selectActiveVendorCodeOptions,
   selectDashboardKpis, selectIsLive, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardSectionFilter,
-  setDashboardVendorCodeFilter,
+  setDashboardIssueTypeFilter, setDashboardVendorCodeFilter, setDashboardVendorNameFilter,
 } from '@/redux/slices/issuesSlice'
 import '@/components/Common/Common.css'
 import './Dashboard.css'
@@ -35,14 +35,18 @@ export default function Dashboard() {
     dashboardDateToFilter,
     dashboardMonthFilter,
     dashboardVendorCodeFilter,
+    dashboardVendorNameFilter,
     dashboardSectionFilter,
+    dashboardIssueTypeFilter,
   } = useSelector((s) => s.issues)
   const hasDashboardFilters = Boolean(
     dashboardDateFromFilter
     || dashboardDateToFilter
     || dashboardMonthFilter
     || dashboardVendorCodeFilter !== 'all'
+    || dashboardVendorNameFilter !== 'all'
     || dashboardSectionFilter !== 'all'
+    || dashboardIssueTypeFilter !== 'all'
   )
   const navigateToIssues = (filters = {}) => {
     const params = new URLSearchParams({ view: 'issue' })
@@ -56,22 +60,22 @@ export default function Dashboard() {
     issuesType: {
       title: 'Issues by Type',
       subtitle: isLive ? 'From latest SAP upload' : 'Distribution by issue type',
-      render: (props = {}) => <IssuesByTypeChart {...props} onBarClick={(row) => navigateToIssues({ type: row.type })} />,
+      render: (props = {}) => <IssuesByTypeChart {...props} onBarClick={(row) => dispatch(setDashboardIssueTypeFilter(row.type || 'all'))} />,
     },
     sectionHealth: {
       title: 'Section-wise Compliance Health',
       subtitle: 'Issue count by TDS section',
-      render: (props = {}) => <SectionComplianceChart {...props} onSectionClick={(row) => navigateToIssues({ section: row.section })} />,
+      render: (props = {}) => <SectionComplianceChart {...props} onSectionClick={(row) => dispatch(setDashboardSectionFilter(row.section || 'all'))} />,
     },
     monthlyTrend: {
       title: 'Monthly Trend',
       subtitle: isLive ? 'Issues by posting month in upload' : 'Issues found vs. resolved',
-      render: (props = {}) => <MonthlyTrendChart {...props} onMonthClick={(row) => navigateToIssues({ month: row.monthKey })} />,
+      render: (props = {}) => <MonthlyTrendChart {...props} onMonthClick={(row) => dispatch(setDashboardMonthFilter(row.monthKey || ''))} />,
     },
     topVendors: {
       title: 'Top Vendors with Issues',
       subtitle: isLive ? 'Highest issue counts in this run' : 'Highest open issue counts',
-      render: (props = {}) => <TopVendorsChart {...props} onBarClick={(row) => navigateToIssues({ vendor: row.vendor || row.name })} />,
+      render: (props = {}) => <TopVendorsChart {...props} onBarClick={(row) => dispatch(setDashboardVendorNameFilter(row.vendor || 'all'))} />,
     },
   }
   const expandedChartConfig = expandedChart ? chartDefinitions[expandedChart] : null

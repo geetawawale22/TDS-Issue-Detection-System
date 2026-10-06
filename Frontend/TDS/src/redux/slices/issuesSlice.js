@@ -162,7 +162,9 @@ const initialState = {
   dashboardDateToFilter:     '',
   dashboardMonthFilter:      '',
   dashboardVendorCodeFilter: 'all',
+  dashboardVendorNameFilter: 'all',
   dashboardSectionFilter:    'all',
+  dashboardIssueTypeFilter:  'all',
   selectedIssueId: null,
   drawerOpen:      false,
 
@@ -189,7 +191,9 @@ const issuesSlice = createSlice({
     setDashboardDateToFilter:     (state, action) => { state.dashboardDateToFilter     = action.payload },
     setDashboardMonthFilter:      (state, action) => { state.dashboardMonthFilter      = action.payload },
     setDashboardVendorCodeFilter: (state, action) => { state.dashboardVendorCodeFilter = action.payload },
+    setDashboardVendorNameFilter: (state, action) => { state.dashboardVendorNameFilter = action.payload },
     setDashboardSectionFilter:    (state, action) => { state.dashboardSectionFilter    = action.payload },
+    setDashboardIssueTypeFilter:  (state, action) => { state.dashboardIssueTypeFilter  = action.payload },
     openDrawer:       (state, action) => { state.selectedIssueId = action.payload; state.drawerOpen = true },
     closeDrawer:      (state)         => { state.drawerOpen      = false },
     resetFilters:     (state)         => {
@@ -202,7 +206,9 @@ const issuesSlice = createSlice({
       state.dashboardDateToFilter = ''
       state.dashboardMonthFilter = ''
       state.dashboardVendorCodeFilter = 'all'
+      state.dashboardVendorNameFilter = 'all'
       state.dashboardSectionFilter = 'all'
+      state.dashboardIssueTypeFilter = 'all'
     },
 
     uploadStarted: (state) => {
@@ -249,7 +255,9 @@ const issuesSlice = createSlice({
       state.dashboardDateToFilter = ''
       state.dashboardMonthFilter = ''
       state.dashboardVendorCodeFilter = 'all'
+      state.dashboardVendorNameFilter = 'all'
       state.dashboardSectionFilter = 'all'
+      state.dashboardIssueTypeFilter = 'all'
       saveLastUpload(state)
     },
     createManualCorrection: (state, action) => {
@@ -428,7 +436,7 @@ export const {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
   setStatusFilter, setIssueTypeFilter, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardVendorCodeFilter,
-  setDashboardSectionFilter,
+  setDashboardVendorNameFilter, setDashboardSectionFilter, setDashboardIssueTypeFilter,
   openDrawer, closeDrawer, resetFilters, resetDashboardFilters,
   uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
   createManualCorrection, createMatchedSapCorrection,
@@ -517,7 +525,9 @@ function hasDashboardFilters(state) {
     || state.issues.dashboardDateToFilter
     || state.issues.dashboardMonthFilter
     || state.issues.dashboardVendorCodeFilter !== 'all'
+    || state.issues.dashboardVendorNameFilter !== 'all'
     || state.issues.dashboardSectionFilter !== 'all'
+    || state.issues.dashboardIssueTypeFilter !== 'all'
   )
 }
 
@@ -527,7 +537,9 @@ export function selectDashboardIssues(state) {
     dashboardDateToFilter,
     dashboardMonthFilter,
     dashboardVendorCodeFilter,
+    dashboardVendorNameFilter,
     dashboardSectionFilter,
+    dashboardIssueTypeFilter,
   } = state.issues
 
   return selectActiveIssues(state).filter((issue) => {
@@ -536,7 +548,12 @@ export function selectDashboardIssues(state) {
     if (dashboardDateToFilter && (!dateKey || dateKey > dashboardDateToFilter)) return false
     if (dashboardMonthFilter && dateKey.slice(0, 7) !== dashboardMonthFilter) return false
     if (dashboardVendorCodeFilter !== 'all' && issue.vendorId !== dashboardVendorCodeFilter) return false
+    if (dashboardVendorNameFilter !== 'all' && issue.vendor !== dashboardVendorNameFilter) return false
     if (dashboardSectionFilter !== 'all' && issue.section !== dashboardSectionFilter) return false
+    if (dashboardIssueTypeFilter !== 'all') {
+      const rowTypes = [issue.issueTypeLabel, issue.category, issue.issueType].filter(Boolean)
+      if (!rowTypes.includes(dashboardIssueTypeFilter)) return false
+    }
     return true
   })
 }
