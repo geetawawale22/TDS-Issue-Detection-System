@@ -246,12 +246,14 @@ function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, 
 }
 
 function issueRowKey(row) {
+  // Do not include section here. Wrong-section issues intentionally display the
+  // expected/rule section, while the validation row may display the applied
+  // section, so section-sensitive keys hide those issue rows from the table.
   return [
     row.docNo,
     row.vendorId,
     row.vendorPan,
     row.docType,
-    row.section,
     row.baseAmount,
     row.tdsAmount,
   ].map((value) => String(value ?? '').trim().toUpperCase()).join('|')

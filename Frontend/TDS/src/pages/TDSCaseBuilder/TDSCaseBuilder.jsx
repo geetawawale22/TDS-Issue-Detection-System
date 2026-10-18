@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { AlertTriangle, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, ChevronDown, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import Issues from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
@@ -8,12 +8,37 @@ import StatusBadge from '@/components/Common/StatusBadge'
 import { resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter, setStatusFilter, setVendorFilter } from '@/redux/slices/issuesSlice'
 import { formatCurrency } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
+import { issueTypeFilterOptions } from '@/data/issueTypes'
 import '@/components/Common/Common.css'
 import './TDSCaseBuilder.css'
 
 const CASE_BUILDER_VIEW_STORAGE_KEY = 'tds_case_builder_view'
 const DEFAULT_CASE_BUILDER_VIEW = { activeTab: 'ledger', quickFilter: 'ledger-all' }
 const VALID_TABS = new Set(['ledger', 'issues'])
+const TDS_ANALYSIS_ISSUE_TYPE_LABELS = new Set([
+  'Wrong Section Applied',
+  'TDS Rate Mismatch',
+  'Amount Mismatch (Short/Excess)',
+  '194J Rate Mismatch (Not 2% or 10%)',
+  'TDS Exceeds Full Invoice Amount',
+  'Possible Missed TDS Deduction',
+  'Missed TDS (Advance)',
+  'Missed TDS (Provision)',
+  'Missed TDS (Threshold Crossed)',
+  'Threshold Crossed — Short Deducted',
+  'PAN Missing (206AA)',
+  'Non-Filer Higher Rate (206AB)',
+  'Form 197 Rate Mismatch',
+  'LDC Not Yet Valid',
+  'LDC Expired',
+  'Premature 194Q Deduction',
+  'Wrongful TDS (Form 15G/15H)',
+  'Unnecessary TDS (Transporter)',
+  'Wrong Section (Non-Resident)',
+  'Wrong Section (Resident Misclassified)',
+])
+const TDS_ANALYSIS_ISSUE_TYPE_OPTIONS = issueTypeFilterOptions()
+  .filter(([, label]) => TDS_ANALYSIS_ISSUE_TYPE_LABELS.has(label))
 
 function presentValue(value) {
   const text = String(value ?? '').trim()
@@ -98,6 +123,60 @@ function formatGroupType(row) {
   return String(row.groupType || 'DOCUMENT').replace(/^OPEN_/, 'Open ').replace(/_/g, ' ')
 }
 
+
+function IssueTypeDropdown({ value, disabled, onChange }) {
+  const [open, setOpen] = useState(false)
+  const selectedLabel = value === 'all'
+    ? 'All Issue Types'
+    : TDS_ANALYSIS_ISSUE_TYPE_OPTIONS.find(([optionValue]) => optionValue === value)?.[1] || value
+
+  useEffect(() => {
+    if (disabled) setOpen(false)
+  }, [disabled])
+
+  return (
+    <div className="case-filter-menu">
+      <button
+        className="filter-select case-filter-menu-button"
+        type="button"
+        disabled={disabled}
+        title={disabled ? 'Only applies to the Issues tab' : undefined}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((next) => !next)}
+      >
+        <span>{selectedLabel}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open && !disabled && (
+        <div className="case-filter-menu-list" role="listbox">
+          <button
+            className={`case-filter-menu-option ${value === 'all' ? 'is-active' : ''}`}
+            type="button"
+            role="option"
+            aria-selected={value === 'all'}
+            onClick={() => { onChange('all'); setOpen(false) }}
+          >
+            All Issue Types
+          </button>
+          {TDS_ANALYSIS_ISSUE_TYPE_OPTIONS.map(([optionValue, label]) => (
+            <button
+              className={`case-filter-menu-option ${value === optionValue ? 'is-active' : ''}`}
+              type="button"
+              key={optionValue}
+              role="option"
+              aria-selected={value === optionValue}
+              onClick={() => { onChange(optionValue); setOpen(false) }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function TDSCaseBuilder() {
   const dispatch = useDispatch()
   const savedView = useMemo(readSavedCaseBuilderView, [])
@@ -149,6 +228,7 @@ export default function TDSCaseBuilder() {
       quickFilter,
     }))
   }, [activeTab, quickFilter])
+
   const summaryCards = useMemo(() => [
     { label: 'Rows Read', value: stats.rowsRead ?? 0, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Total rows read from upload' },
     { label: 'Document Groups', value: stats.ledgerCases ?? 0, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference' },
@@ -380,20 +460,11 @@ export default function TDSCaseBuilder() {
           <option value="medium">Medium</option>
           <option value="low">Low</option>
         </select>
-        <select
-          className="filter-select"
+        <IssueTypeDropdown
           value={issueTypeFilter}
           disabled={activeTab !== 'issues'}
-          title={activeTab !== 'issues' ? 'Only applies to the Issues tab' : undefined}
-          onChange={(event) => dispatch(setIssueTypeFilter(event.target.value))}
-        >
-          <option value="all">All Issue Types</option>
-          <option value="Possible Missed TDS Deduction">Possible Missed TDS Deduction</option>
-          <option value="Short TDS Deducted — Amount Mismatch">Short TDS Deducted — Amount Mismatch</option>
-          <option value="Excess TDS Deducted — Amount Mismatch">Excess TDS Deducted — Amount Mismatch</option>
-          <option value="Wrong TDS Rate">Wrong TDS Rate</option>
-          <option value="TDS Deducted as per LDC — Mismatch">TDS Deducted as per LDC — Mismatch</option>
-        </select>
+          onChange={(nextValue) => dispatch(setIssueTypeFilter(nextValue))}
+        />
         <select
           className="filter-select"
           value={statusFilter}

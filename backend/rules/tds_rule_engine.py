@@ -24,7 +24,6 @@ with open(CONFIG_PATH, "r") as f:
     TDS_CONFIG = yaml.safe_load(f)
 
 SECTIONS = TDS_CONFIG["sections"]
-GL_NOT_APPLICABLE = TDS_CONFIG["gl_tds_not_applicable"]
 CROSS_RULES = TDS_CONFIG["cross_section_rules"]
 MISSING_DEDUCTION_COVERAGE_THRESHOLD = TDS_CONFIG.get("missing_deduction_check", {}).get(
     "gl_coverage_medium_threshold", 0.8
@@ -39,7 +38,7 @@ PAYMENT_TYPE_TEXT_PATTERNS = (
     ("purchase", (r"\bpurc(?:hase)?\b.*\bgood", r"\bgoods?\b")),
     ("commission", (r"\bcomm(?:ission)?\b",)),
     ("brokerage", (r"\bbrokerage\b",)),
-    ("contract", (r"\bcontract(?:or)?\b", r"\bind\s*/\s*huf\b.*\b1(?:\.0)?\s*%")),
+    ("contract", (r"\bcontract(?:or)?\b", r"\bcont\.?\s*(?:cos|co|cost|contract)", r"\bind\s*/\s*huf\b.*\b1(?:\.0)?\s*%")),
     ("professional", (r"\bprofessional\b",)),
     ("technical", (r"\btechnical\b",)),
     ("rent", (r"\brent\b",)),
@@ -209,9 +208,15 @@ def decode_tds_section_string(raw_text: str) -> tuple:
         if clause == "2(i)" and re.search(r"\b(plt|plant|mach|eqpt|equip)", raw_text, re.IGNORECASE):
             old_section = "194I"
 
-    # Some SAP descriptions include the familiar section number rather than a
-    # Section 393 table clause (notably interest rows). Prefer that explicit
-    # identifier when the table reference is absent or unrecognised.
+    # Some SAP descriptions carry an accounting nature plus an edited legacy
+    # section token. The nature wins for expected-section derivation: e.g.
+    # "Cont. Cos - 2%-194J" is still contractor cost and should expect 194C.
+    if old_section is None:
+        inferred_payment_type = infer_payment_type_from_tds_text(raw_text)
+        old_section = PAYMENT_TYPE_TO_SECTION.get(inferred_payment_type or "")
+
+    # Some SAP descriptions include only the familiar section number rather
+    # than a Section 393 table clause. Use it only when no nature was inferred.
     if old_section is None:
         legacy_match = _LEGACY_SECTION_REGEX.search(raw_text)
         if legacy_match:
@@ -240,31 +245,22 @@ def infer_payment_type_from_tds_text(raw_text: str) -> Optional[str]:
 
 
 # ============================================================
-# CHECK 1 — TDS Not Applicable (GL-based exclusions)
+# CHECK 1 — TDS Not Applicable
 # ============================================================
 
-def _is_gl_excluded(gl_account: Optional[str]) -> Optional[str]:
-    """
-    Checks if this GL account is in our known 'TDS not applicable' list.
-    Returns the exclusion reason if excluded, None otherwise.
-    """
-    if not gl_account:
-        return None
-    for group_name, group_data in GL_NOT_APPLICABLE.items():
-        accounts = group_data.get("accounts", [])
-        if gl_account in accounts:
-            return group_data.get("reason", "GL account excluded from TDS")
+def _is_gl_excluded(gl_account: Optional[str], gl_description: Optional[str] = None) -> Optional[str]:
+    """GL account numbers are not used for TDS applicability decisions."""
     return None
 
 
 def check_tds_not_applicable(txn: Transaction) -> Optional[TDSIssue]:
     """
     Category: TDS Not Applicable
-    Returns an issue-free confirmation if this transaction correctly
-    has no TDS applied, and it's genuinely excluded. Returns None if
-    this check doesn't apply (i.e. TDS-relevant transaction).
+    GL-account based exclusions are disabled until a confirmed GL master is
+    available. This check remains as a hook for future non-GL applicability
+    signals and currently returns None for ordinary transactions.
     """
-    gl_reason = _is_gl_excluded(txn.gl_account)
+    gl_reason = txn.gl_rule_reason if txn.gl_tds_applicability == "not_applicable" else _is_gl_excluded(txn.gl_account, txn.gl_description)
 
     if gl_reason:
         if txn.tds_deducted_amount and txn.tds_deducted_amount > 0:
@@ -383,19 +379,38 @@ def _is_pan_operative(pan: str) -> Optional[bool]:
 
 
 
+def _section_key(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return value.strip().upper().split("/")[0].strip() or None
+
+
+def _expected_section(txn: Transaction) -> Optional[str]:
+    """GL-derived section wins; SAP applicable/deducted section are fallbacks."""
+    return (
+        _section_key(txn.expected_tds_section)
+        or _section_key(txn.tds_applicable_section)
+        or _section_key(txn.tds_deducted_section)
+        or _section_key(txn.tds_legacy_section)
+    )
+
+
+def _actual_section(txn: Transaction) -> Optional[str]:
+    return _section_key(txn.tds_deducted_section) or _section_key(txn.tds_legacy_section)
+
+
 def _get_statutory_rate(txn: Transaction) -> Optional[float]:
     """
     Determines the normal statutory TDS rate before Form 197/LDC relief.
-    Priority: use Mahindra's own "Applicable Rate" if provided,
-    otherwise calculate from our own tds_sections.yaml config.
+    Priority: use Mahindra's own applicable rate if provided, then the
+    GL-derived expected section, then SAP's deducted/applicable section.
     """
     if txn.tds_applicable_rate is not None:
         return txn.tds_applicable_rate
 
-    if not txn.tds_deducted_section:
+    section_key = _expected_section(txn)
+    if not section_key:
         return None
-
-    section_key = txn.tds_deducted_section.strip().upper()
     section_config = SECTIONS.get(section_key)
     if not section_config:
         return None
@@ -653,6 +668,48 @@ def check_wrong_section_by_hsn(txn: Transaction) -> Optional[TDSIssue]:
     return None
 
 
+def check_wrong_section_by_expected_section(txn: Transaction) -> Optional[TDSIssue]:
+    """Validate explicit SAP section code against decoded/applicable section."""
+    expected_section = _section_key(txn.tds_applicable_section)
+    actual_section = _actual_section(txn)
+    if not expected_section or not actual_section or actual_section == expected_section:
+        return None
+
+    return TDSIssue(
+        category="Wrong Section Applied",
+        message=(
+            f"Expected section {expected_section} based on SAP section description "
+            f"'{txn.tds_raw_section or '—'}', but {actual_section} was applied."
+        ),
+        severity="high",
+        expected_section=expected_section,
+    )
+
+
+def check_wrong_section_by_gl(txn: Transaction) -> Optional[TDSIssue]:
+    """Validate SAP's applied section against the GL-derived expected section."""
+    expected_section = _section_key(txn.expected_tds_section)
+    if not expected_section or txn.gl_tds_applicability == "not_applicable":
+        return None
+
+    actual_section = _actual_section(txn)
+    if not actual_section:
+        return None
+    if actual_section == expected_section:
+        return None
+
+    return TDSIssue(
+        category="Wrong Section Applied",
+        message=(
+            f"GL {txn.gl_account or '—'} ({txn.gl_description or 'no description'}) "
+            f"maps to section {expected_section}, but {actual_section} was applied. "
+            f"{txn.gl_rule_reason or 'Review GL-to-TDS mapping.'}"
+        ),
+        severity="high",
+        expected_section=expected_section,
+    )
+
+
 def check_wrong_section_by_payment_type(txn: Transaction) -> Optional[TDSIssue]:
     """General section validation from explicit or inferred payment type."""
     if not txn.transaction_kind:
@@ -663,7 +720,7 @@ def check_wrong_section_by_payment_type(txn: Transaction) -> Optional[TDSIssue]:
     if not expected_section:
         return None
 
-    actual_section = (txn.tds_deducted_section or txn.tds_legacy_section or "").strip().upper()
+    actual_section = _actual_section(txn)
     if actual_section == expected_section:
         return None
 
@@ -983,6 +1040,7 @@ def check_missing_tds_section(txn: Transaction) -> Optional[TDSIssue]:
         or (txn.tds_legacy_section or "").strip()
         or (txn.tds_new_section or "").strip()
         or (txn.tds_applicable_section or "").strip()
+        or (txn.expected_tds_section or "").strip()
     )
     if not has_tds_amount or has_section:
         return None
@@ -1050,6 +1108,16 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
 
     # 5. Section/nature checks must pass before a lower-rate certificate
     # can be applied. An LDC does not correct a wrong statutory section.
+    wrong_expected_section_issue = check_wrong_section_by_expected_section(txn)
+    if wrong_expected_section_issue is not None:
+        issues.append(wrong_expected_section_issue)
+        return issues
+
+    wrong_gl_section_issue = check_wrong_section_by_gl(txn)
+    if wrong_gl_section_issue is not None:
+        issues.append(wrong_gl_section_issue)
+        return issues
+
     wrong_payment_section_issue = check_wrong_section_by_payment_type(txn)
     if wrong_payment_section_issue is not None:
         issues.append(wrong_payment_section_issue)
@@ -1300,10 +1368,11 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
 
     groups: dict[tuple, list[Transaction]] = defaultdict(list)
     for txn in transactions:
-        if not txn.vendor_pan or not txn.tds_deducted_section or not txn.posting_date:
+        section = _expected_section(txn)
+        if not txn.vendor_pan or not section or not txn.posting_date:
             continue
         fy = _get_financial_year(txn.posting_date)
-        key = (txn.vendor_pan.upper(), txn.tds_deducted_section.strip().upper(), fy)
+        key = (txn.vendor_pan.upper(), section, fy)
         groups[key].append(txn)
 
     for (pan, section, fy), group_txns in groups.items():
@@ -1413,9 +1482,8 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
     TDS behavior, before it can judge whether a blank-TDS row on that
     same GL is suspicious.
 
-    We do not have a reliable, complete GL exclusion list yet
-    (config/gl_accounts.yaml is empty; the description-text list in
-    tds_sections.yaml doesn't match on gl_account — see check_tds_not_applicable).
+    We do not have a reliable, complete GL exclusion list yet, so account
+    numbers are not used to exclude or classify transactions.
     Until Mahindra provides one, we use each GL account's own observed
     behavior within THIS batch as the reference point: if most
     transactions on a GL do have TDS deducted, a blank one on that same
@@ -1441,10 +1509,10 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
         key = (txn.company_code, txn.gl_account)
         stats = gl_stats[key]
         stats["total"] += 1
-        if txn.tds_deducted_section and txn.tds_deducted_rate:
+        if (txn.tds_deducted_section or txn.expected_tds_section) and txn.tds_deducted_rate:
             stats["with_tds"] += 1
             if stats["sample_section"] is None:  # keep one real example for the message
-                stats["sample_section"] = txn.tds_deducted_section
+                stats["sample_section"] = txn.expected_tds_section or txn.tds_deducted_section
                 stats["sample_rate"] = txn.tds_deducted_rate
 
     # ---- Step 2: evaluate each blank-TDS transaction against its GL's stats ----
@@ -1456,9 +1524,6 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
 
         if not txn.gl_account:
             continue  # can't cross-reference without a GL account
-
-        if _is_gl_excluded(txn.gl_account):
-            continue  # genuinely excluded — check_tds_not_applicable already confirms this correctly
 
         key = (txn.company_code, txn.gl_account)
         stats = gl_stats[key]

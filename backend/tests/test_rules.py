@@ -249,6 +249,161 @@ def test_tds_section_text_infers_purchase_and_flags_wrong_legacy_section():
     assert "requires section 194Q" in issues[0].message
 
 
+
+
+def test_explicit_section_code_mismatch_with_descriptive_section_is_wrong_section():
+    transaction = build_transactions_from_sap_export([{
+        "Document_No": "TEST-CODE-194J-DESC-194C",
+        "Document_Type": "RE",
+        "Posting_Date": "2025-07-21",
+        "Document_Date": "2025-06-12",
+        "Vendor_Code": "DIA00483AA",
+        "Vendor_Name": "ADDIRAJ MANPOWER SERVICES",
+        "PAN": "AAFCA8122K",
+        "Bill_Amount": 10491.28,
+        "Basic_Amount": 10491.28,
+        "TDS_Section_Code": "194J",
+        "TDS_Section": "Cont. Cos - 2%-New Sec-393(1)6(i)",
+        "TDS_Rate": 2,
+        "TDS_Amount": 210,
+    }])[0]
+
+    assert transaction.tds_deducted_section == "194J"
+    assert transaction.tds_applicable_section == "194C"
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong Section Applied"
+    assert issues[0].expected_section == "194C"
+    assert "but 194J was applied" in issues[0].message
+
+
+def test_compact_tds_section_with_separate_description_routes_as_wrong_section():
+    transaction = build_transactions_from_sap_export([{
+        "Document_No": "TEST-COMPACT-194J-DESC-194C",
+        "Document_Type": "RE",
+        "Posting_Date": "2025-07-21",
+        "Document_Date": "2025-06-12",
+        "Vendor_Code": "DIA00483AA",
+        "Vendor_Name": "ADDIRAJ MANPOWER SERVICES",
+        "PAN": "AAFCA8122K",
+        "Bill_Amount": 10491.28,
+        "Basic_Amount": 10491.28,
+        "TDS_Section": "194J",
+        "TDS_Description": "Cont. Cos - 2%-New Sec-393(1)6(i)",
+        "TDS_Rate": 2,
+        "TDS_Amount": 210,
+    }])[0]
+
+    assert transaction.tds_deducted_section == "194J"
+    assert transaction.tds_applicable_section == "194C"
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong Section Applied"
+    assert issues[0].expected_section == "194C"
+
+
+def test_cont_cost_description_with_194j_token_still_expects_194c():
+    transaction = build_transactions_from_sap_export([{
+        "Document_No": "TEST-CONT-COS-194J",
+        "Document_Type": "RE",
+        "Posting_Date": "2025-07-21",
+        "Document_Date": "2025-06-12",
+        "Vendor_Code": "DIA00483AA",
+        "Vendor_Name": "ADDIRAJ MANPOWER SERVICES",
+        "PAN": "AAFCA8122K",
+        "Bill_Amount": 10491.28,
+        "Basic_Amount": 10491.28,
+        "TDS_Section": "194J",
+        "TDS_Description": "Cont. Cos - 2%-194J",
+        "TDS_Rate": 2,
+        "TDS_Amount": 210,
+    }])[0]
+
+    assert transaction.tds_deducted_section == "194J"
+    assert transaction.tds_applicable_section == "194C"
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong Section Applied"
+    assert issues[0].expected_section == "194C"
+
+def test_tds_description_flags_wrong_section_before_rate_checks_for_shared_gl():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_No": "TEST-SHARED-GL-WRONG-SECTION",
+        "Document_Type": "RE",
+        "Posting_Date": "2025-07-21",
+        "Vendor_Code": "DIA00483AA",
+        "Vendor_Name": "ADDIRAJ MANPOWER SERVICES",
+        "PAN": "AAFCA8122K",
+        "GL": "16060005",
+        "GL_Description": "Shared withholding GL",
+        "Bill_Amount": 10491.28,
+        "Basic_Amount": 10491.28,
+        "TDS_Section": "194J",
+        "TDS_Description": "Cont. Cos - 2%-194J",
+        "TDS_Rate": 2,
+        "TDS_Amount": 210,
+    }])[0]
+
+    assert transaction.expected_tds_section is None
+    assert transaction.tds_applicable_section == "194C"
+
+    issues = run_all_checks(transaction)
+
+    assert len(issues) == 1
+    assert issues[0].category == "Wrong Section Applied"
+    assert issues[0].expected_section == "194C"
+    assert "but 194J was applied" in issues[0].message
+
+
+def test_gl_account_number_alone_does_not_supply_expected_section():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_No": "TEST-GL-NO-SECTION-MAP",
+        "Document_Type": "KR",
+        "Posting_Date": "2026-04-05",
+        "Vendor_Code": "V-GL",
+        "PAN": "ABCHP1234K",
+        "GL": "16290008",
+        "GL_Description": "GR/IR-Indirect Good",
+        "Bill_Amount": 100000,
+        "Basic_Amount": 100000,
+        "TDS_Section": "194C",
+        "TDS_Rate": 1,
+        "TDS_Amount": 1000,
+    }])[0]
+
+    assert transaction.expected_tds_section is None
+    assert _get_applicable_rate(transaction) == 1.0
+    assert run_all_checks(transaction) == []
+
+
+def test_gl_account_number_does_not_drive_not_applicable_override():
+    transaction = build_transactions_from_sap_rows([{
+        "Company_Code": "1001",
+        "Document_No": "TEST-GL-NOT-APPLICABLE-NO-ACCOUNT-RULE",
+        "Document_Type": "KR",
+        "Posting_Date": "2026-04-05",
+        "Vendor_Code": "V-GL",
+        "PAN": "ABCHP1234K",
+        "GL": "25610001",
+        "GL_Description": "Insurance premium payment",
+        "Bill_Amount": 100000,
+        "Basic_Amount": 100000,
+        "TDS_Section": "194C",
+        "TDS_Rate": 1,
+        "TDS_Amount": 1000,
+    }])[0]
+
+    assert transaction.gl_tds_applicability is None
+    assert run_all_checks(transaction) == []
+
 def test_threshold_shortfall_is_not_duplicated_when_row_level_issue_explains_it():
     transactions = []
     for idx in range(3):

@@ -1,0 +1,8 @@
+# GL/TDS configuration placeholder.
+# Do not map GL account numbers here until the business provides a confirmed
+# GL master with reliable one-to-one applicability.
+# Current rule engine derives expected TDS section from transaction-level
+# TDS description / payment nature, not from GL account number.
+
+accounts: {}
+not_applicable: {}

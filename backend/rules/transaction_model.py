@@ -35,6 +35,10 @@ class Transaction(BaseModel):
     gl_account: Optional[str] = None
     gl_description: Optional[str] = None
     hsn_sac_code: Optional[str] = None            # not yet confirmed by Mahindra
+    expected_tds_section: Optional[str] = None     # derived from GL mapping when available
+    gl_tds_applicability: Optional[str] = None     # applicable / conditional / not_applicable / verify
+    gl_rule_reason: Optional[str] = None
+    gl_rule_source: Optional[str] = None
 
     # --- Amounts ---
     bill_amount: float

@@ -5,6 +5,7 @@ from typing import Any, List, Optional
 import pandas as pd
 
 from rules.transaction_model import Transaction
+from rules.gl_account_rules import apply_gl_rule
 
 
 # Mahindra export headers → internal keys.
@@ -36,8 +37,16 @@ COLUMN_ALIASES = {
     "doc_number": ("Document_No", "Document_Number", "Accounting_Document_Number", "doc_number"),
     "line_item_number": ("Line_Item", "Line_Item_Number", "BUZEI"),
     "fiscal_year": ("Fiscal_Year", "GJAHR"),
-    "tds_section_code": ("TDS_Section_Code",),
-    "tds_section": ("TDS_Section", "TDSSection", "tds_section", "tds_description", "TDS_Description"),
+    "tds_section_code": (
+        "TDS_Section_Code", "TDSSectionCode", "TDS_SectionCode", "TDS Section Code",
+        "official_withholding_tax_key", "official_withholding_tax_ke",
+        "Official_Withholding_Tax_Key", "Official Withholding Tax Key",
+    ),
+    "tds_section": ("TDS_Section", "TDSSection", "tds_section"),
+    "tds_section_description": (
+        "TDS_Description", "tds_description", "TDS_Section_Description",
+        "TDSSectionDescription", "TDS Description", "Section_Description",
+    ),
     "withholding_tax_type": (
         "Withholding_Tax_Type",
         "withholding_tax_type",
@@ -67,7 +76,7 @@ COLUMN_ALIASES = {
         "WHT_Code",
         "WHTCode",
     ),
-    "tds_rate": ("TDS_Rate", "TDSRate", "tds_rate"),
+    "tds_rate": ("TDS_Rate", "TDSRate", "tds_rate", "tds_rat", "WTax_Rate", "wtax_rate", "wtax_rat"),
     "tds_amount": ("TDS_Amount", "TDSAmount", "TDS_Deducted_Amount", "Withholding_Tax_Amount"),
     "hsn_sac_code": ("HSN_SAC_Code",),
     "debit_credit": ("deb_cred", "Debit_Credit", "Debit_Credit_Indicator"),
@@ -158,14 +167,29 @@ def _get(row: dict, field: str) -> Any:
     return None
 
 
+def get_tds_section_code_raw(row: dict) -> str:
+    """Return the compact/applied section code column, if present."""
+    explicit_code = _get(row, "tds_section_code")
+    if explicit_code is not None:
+        return str(explicit_code or "")
+
+    section_value = str(_get(row, "tds_section") or "").strip()
+    return section_value if _normalise_explicit_tds_section_code(section_value) else ""
+
+
+def get_tds_section_description_raw(row: dict) -> str:
+    """Return the rich descriptive section text used to infer expected section."""
+    description = _get(row, "tds_section_description")
+    if description is not None:
+        return str(description or "")
+
+    section_value = str(_get(row, "tds_section") or "").strip()
+    return "" if _normalise_explicit_tds_section_code(section_value) else section_value
+
+
 def get_tds_section_raw(row: dict) -> str:
-    """
-    Reads a row's TDS section value using the same alias resolution as
-    the translators (handles TDS_Section, TDSSection, tds_section, ...).
-    Exposed for callers like the upload endpoint that need to inspect
-    this value BEFORE deciding which translator function to use.
-    """
-    return str(_get(row, "tds_section") or "")
+    """Return descriptive section text when available, else the compact code."""
+    return get_tds_section_description_raw(row) or get_tds_section_code_raw(row)
 
 
 def looks_like_descriptive_tds_section(raw_text: str) -> bool:
@@ -258,6 +282,24 @@ def _parse_rate_percent(value) -> Optional[float]:
         return None
 
 
+def _normalise_explicit_tds_section_code(value) -> Optional[str]:
+    """Return an explicit legacy section code such as 194C/194J when present.
+
+    Some SAP extracts carry both a compact applied-section code and a richer
+    descriptive section text. If a user edits only the compact code, keep that
+    as the applied section and preserve the decoded descriptive section as the
+    expected section for mismatch validation.
+    """
+    section = str(value or "").strip().upper()
+    if not section or section in ("NAN", "NONE"):
+        return None
+    if section in ADVANCE_SECTION_ALIASES:
+        return ADVANCE_SECTION_ALIASES[section]
+    if re.fullmatch(r"19\d[A-Z]{0,3}", section):
+        return section
+    return None
+
+
 def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
     """
     Converts raw SAP-style rows into a clean list of Transaction objects.
@@ -273,21 +315,39 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
     """
     transactions: List[Transaction] = []
 
+    from rules.tds_rule_engine import (
+        decode_tds_section_string,
+        extract_new_section_reference,
+        infer_payment_type_from_tds_text,
+    )
+
     for row in raw_rows:
-        raw_section_value = str(_get(row, "tds_section") or "").strip()
+        raw_section_code = get_tds_section_code_raw(row)
+        raw_section_description = get_tds_section_description_raw(row)
+        raw_section_value = raw_section_code or str(_get(row, "tds_section") or "").strip()
         withholding_tax_type = str(_get(row, "withholding_tax_type") or "").strip().upper()
         withholding_tax_code = str(_get(row, "withholding_tax_code") or "").strip().upper()
         if not raw_section_value and withholding_tax_type and withholding_tax_code:
             raw_section_value = f"{withholding_tax_type}/{withholding_tax_code}"
+
+        descriptive_text = raw_section_description or (raw_section_value if looks_like_descriptive_tds_section(raw_section_value) else "")
+        expected_section, parsed_rate = decode_tds_section_string(descriptive_text)
+        explicit_section = _normalise_explicit_tds_section_code(raw_section_code or raw_section_value)
+        applied_section = explicit_section or expected_section or raw_section_value
+
         doc_type = str(_get(row, "doc_type") or "")
         section_value, is_advance_payment = _normalise_section_and_advance(
-            raw_section_value,
+            applied_section,
             doc_type,
             str(_get(row, "special_gl_indicator") or ""),
             str(_get(row, "special_gl_transaction_type") or ""),
         )
         rate_value = _parse_rate_percent(_get(row, "tds_rate"))
+        if rate_value is None:
+            rate_value = parsed_rate
         transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
+        if transaction_kind is None:
+            transaction_kind = infer_payment_type_from_tds_text(descriptive_text)
 
         pan = _normalise_pan(_get(row, "pan"))
 
@@ -325,13 +385,18 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
             invoice_reference_line_item=str(_get(row, "invoice_reference_line_item") or "").strip() or None,
             is_advance_payment=is_advance_payment,
 
-            tds_raw_section=section_value,
-            tds_applicable_section=str(_get(row, "tds_applicable_section") or "").strip() or None,
+            tds_raw_section=descriptive_text or section_value,
+            tds_applicable_section=(
+                expected_section
+                if explicit_section and expected_section and explicit_section != expected_section
+                else str(_get(row, "tds_applicable_section") or "").strip() or None
+            ),
             tds_applicable_rate=_safe_float(_get(row, "tds_applicable_rate")),
             tds_applicable_amount=_safe_float(_get(row, "tds_applicable_amount")),
 
             tds_deducted_section=section_value,
             tds_legacy_section=section_value,
+            tds_new_section=extract_new_section_reference(descriptive_text),
             tds_deducted_rate=rate_value,
             tds_deducted_amount=_safe_float(_get(row, "tds_amount")),
             withholding_tax_type=withholding_tax_type or None,
@@ -346,6 +411,7 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
 
             advance_document_reference=str(_get(row, "advance_document_reference") or "").strip() or None,
         )
+        apply_gl_rule(txn)
         transactions.append(txn)
 
     return transactions
@@ -371,12 +437,14 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
     for row in raw_rows:
         rate = _safe_float(_get(row, "tds_rate"))
 
-        raw_section_text = get_tds_section_raw(row)
+        raw_section_text = get_tds_section_description_raw(row) or get_tds_section_raw(row)
         withholding_tax_type = str(_get(row, "withholding_tax_type") or "").strip().upper()
         withholding_tax_code = str(_get(row, "withholding_tax_code") or "").strip().upper()
         if not raw_section_text and withholding_tax_type and withholding_tax_code:
             raw_section_text = f"{withholding_tax_type}/{withholding_tax_code}"
         old_section, parsed_rate = decode_tds_section_string(raw_section_text)
+        explicit_section = _normalise_explicit_tds_section_code(get_tds_section_code_raw(row))
+        applied_section = explicit_section or old_section
         new_section = extract_new_section_reference(raw_section_text)
         transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
         if transaction_kind is None:
@@ -395,7 +463,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
         vendor_category = _derive_vendor_category(pan)
         doc_type = str(_get(row, "doc_type") or "")
         _, is_advance_payment = _normalise_section_and_advance(
-            old_section,
+            applied_section,
             doc_type,
             str(_get(row, "special_gl_indicator") or ""),
             str(_get(row, "special_gl_transaction_type") or ""),
@@ -435,8 +503,9 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             is_advance_payment=is_advance_payment,
 
             tds_raw_section=raw_section_text,
-            tds_deducted_section=old_section,
-            tds_legacy_section=old_section,
+            tds_applicable_section=old_section if explicit_section and old_section and explicit_section != old_section else None,
+            tds_deducted_section=applied_section,
+            tds_legacy_section=applied_section,
             tds_new_section=new_section,
             tds_deducted_rate=final_rate,
             tds_deducted_amount=tds_amount,
@@ -445,6 +514,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             withholding_tax_code=withholding_tax_code or None,
             withholding_tax_base_amount=_safe_float(_get(row, "withholding_tax_base_amount")),
         )
+        apply_gl_rule(txn)
         transactions.append(txn)
 
     return transactions

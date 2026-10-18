@@ -300,6 +300,7 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
         txn_withholding_key = _withholding_key(txn.withholding_tax_type, txn.withholding_tax_code)
         txn_sections = {
             _normalise_section(expected_section),
+            _normalise_section(txn.expected_tds_section),
             _normalise_section(txn.tds_applicable_section),
             _normalise_section(txn.tds_deducted_section),
             _normalise_section(txn.tds_legacy_section),
@@ -1012,10 +1013,11 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     effective_section = (
         txn.tds_new_section
         if txn.posting_date >= NEW_ACT_EFFECTIVE_DATE and txn.tds_new_section
-        else txn.tds_legacy_section
+        else rule_issue.expected_section
+        or txn.expected_tds_section
+        or txn.tds_legacy_section
         or txn.tds_deducted_section
         or txn.tds_new_section
-        or rule_issue.expected_section
         or "—"
     )
     return {
@@ -1031,8 +1033,12 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "section": effective_section,
         "newSection": txn.tds_new_section,
         "legacySection": txn.tds_legacy_section or txn.tds_deducted_section,
-        "ruleSection": txn.tds_deducted_section,
-        "source": "GL" if txn.gl_account else "SAP",
+        "ruleSection": rule_issue.expected_section or txn.expected_tds_section or txn.tds_deducted_section,
+        "actualSection": txn.tds_deducted_section or txn.tds_legacy_section,
+        "glAccount": txn.gl_account,
+        "glDescription": txn.gl_description,
+        "glRuleReason": txn.gl_rule_reason,
+        "source": "GL" if txn.expected_tds_section or txn.gl_tds_applicability else "SAP",
         "transactionAmount": base_amount,
         "baseAmount": base_amount,
         "baseAmountAvailable": _get_tds_base_amount(txn) is not None,
