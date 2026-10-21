@@ -72,6 +72,46 @@
 @media (max-width: 900px) { .issues-summary-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 480px) { .issues-summary-grid { grid-template-columns: 1fr; } }
 
+/* Summary cards: a top row of 3 (Transactions, TDS Deducted, TDS Not
+   Deducted) and a second row of 6. Column counts divide each row evenly.
+   Breakpoints are viewport-based, so they also cover Windows display
+   scaling (e.g. 1920px @125% = 1536px viewport). */
+.issues-summary-grid.issues-summary-grid--top { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 479px) { .issues-summary-grid.issues-summary-grid--top { grid-template-columns: 1fr; } }
+
+.issues-summary-grid.issues-summary-grid--five { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1199px) { .issues-summary-grid.issues-summary-grid--five { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 767px)  { .issues-summary-grid.issues-summary-grid--five { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 479px)  { .issues-summary-grid.issues-summary-grid--five { grid-template-columns: 1fr; } }
+
+/* Four-card validation row (Passed / Issues Found / TDS Not Applicable / Insufficient Data) */
+.issues-summary-grid.issues-summary-grid--five.issues-summary-grid--four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1023px) { .issues-summary-grid.issues-summary-grid--five.issues-summary-grid--four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 479px)  { .issues-summary-grid.issues-summary-grid--five.issues-summary-grid--four { grid-template-columns: 1fr; } }
+
+.issues-summary-grid--top .issues-summary-card,
+.issues-summary-grid--top .issues-summary-card-clickarea > div,
+.issues-summary-grid--top .issues-summary-card > div,
+.issues-summary-grid--five .issues-summary-card,
+.issues-summary-grid--five .issues-summary-card-clickarea > div,
+.issues-summary-grid--five .issues-summary-card > div { min-width: 0; }
+
+.issues-summary-grid--top .issues-summary-label,
+.issues-summary-grid--five .issues-summary-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Centre the icon + number + label in every summary card. */
+.issues-summary-grid--top .issues-summary-card,
+.issues-summary-grid--five .issues-summary-card,
+.issues-summary-grid--top .issues-summary-card-clickarea,
+.issues-summary-grid--five .issues-summary-card-clickarea {
+  justify-content: center;
+  text-align: center;
+}
+
 .issues-summary-card {
   display: flex;
   align-items: center;
@@ -527,4 +567,17 @@
   .match-row {
     grid-template-columns: 24px minmax(110px, 1fr) minmax(140px, 1fr) 70px 90px 90px 90px;
   }
+}
+
+/* TDS Note: reason why no TDS was deducted (or why that is wrong). */
+.issues-tds-note {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 280px;
+  min-width: 180px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: normal;
 }

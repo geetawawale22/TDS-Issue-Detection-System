@@ -1531,7 +1531,7 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
             continue  # no corroborating evidence this GL is ever TDS-relevant — stay silent
 
         coverage = stats["with_tds"] / stats["total"]
-        basic_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+        basic_amount = abs(float(txn.basic_amount if txn.basic_amount else txn.bill_amount or 0.0))
         severity = "medium" if coverage >= MISSING_DEDUCTION_COVERAGE_THRESHOLD else "low"
 
         results.append((txn, TDSIssue(

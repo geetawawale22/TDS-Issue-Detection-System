@@ -26,6 +26,7 @@ export const VALIDATION_CSV_COLUMNS = [
   { label: 'Section', value: (r) => r.section },
   { label: 'Base Amount', value: (r) => formatCurrency(r.baseAmount) },
   { label: 'TDS Amount', value: (r) => formatCurrency(r.tdsAmount) },
+  { label: 'TDS Note', value: (r) => r.tdsNote },
   { label: 'Validation Result', value: (r) => r.reason },
   { label: 'Date', value: (r) => formatDate(r.date) },
 ]

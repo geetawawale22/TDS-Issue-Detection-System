@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Activity, AlertOctagon, AlertTriangle, CheckCircle2,
   Clock, FileSearch, RefreshCw, Database, CalendarDays, ArrowUp, ArrowDown,
-  SlidersHorizontal, RotateCcw, Maximize2, X,
+  SlidersHorizontal, RotateCcw, Maximize2, X, BadgeCheck, BadgeX,
 } from 'lucide-react'
 import IssuesByTypeChart from '@/components/Charts/IssuesByTypeChart'
 import SectionComplianceChart from '@/components/Charts/SectionComplianceChart'
@@ -16,6 +16,7 @@ import {
   selectDashboardKpis, selectIsLive, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardSectionFilter,
   setDashboardIssueTypeFilter, setDashboardVendorCodeFilter, setDashboardVendorNameFilter,
+  setDashboardTdsDeductionFilter, selectDashboardTdsDeductionCounts,
 } from '@/redux/slices/issuesSlice'
 import '@/components/Common/Common.css'
 import './Dashboard.css'
@@ -30,6 +31,7 @@ export default function Dashboard() {
   const isLive = useSelector(selectIsLive)
   const sections = useSelector(selectActiveSections)
   const vendorCodeOptions = useSelector(selectActiveVendorCodeOptions)
+  const tdsDeductionCounts = useSelector(selectDashboardTdsDeductionCounts)
   const {
     dashboardDateFromFilter,
     dashboardDateToFilter,
@@ -38,6 +40,7 @@ export default function Dashboard() {
     dashboardVendorNameFilter,
     dashboardSectionFilter,
     dashboardIssueTypeFilter,
+    dashboardTdsDeductionFilter,
   } = useSelector((s) => s.issues)
   const hasDashboardFilters = Boolean(
     dashboardDateFromFilter
@@ -47,6 +50,7 @@ export default function Dashboard() {
     || dashboardVendorNameFilter !== 'all'
     || dashboardSectionFilter !== 'all'
     || dashboardIssueTypeFilter !== 'all'
+    || dashboardTdsDeductionFilter !== 'all'
   )
   const navigateToIssues = (filters = {}) => {
     const params = new URLSearchParams({ view: 'issue' })
@@ -161,6 +165,25 @@ export default function Dashboard() {
     },
   ]
 
+  const tdsDeductionCards = [
+    {
+      label: 'TDS Deducted',
+      value: tdsDeductionCounts.deducted,
+      filter: 'deducted',
+      icon: BadgeCheck,
+      tone: 'success',
+      description: 'Rows with TDS amount',
+    },
+    {
+      label: 'TDS Not Deducted',
+      value: tdsDeductionCounts.notDeducted,
+      filter: 'not_deducted',
+      icon: BadgeX,
+      tone: 'danger',
+      description: 'Rows with no TDS amount',
+    },
+  ]
+
   return (
     <div>
       <div className="page-header">
@@ -271,6 +294,18 @@ export default function Dashboard() {
               ))}
             </select>
           </label>
+          <label className="dashboard-filter-control">
+            <span>TDS Deduction</span>
+            <select
+              className="filter-select"
+              value={dashboardTdsDeductionFilter}
+              onChange={(e) => dispatch(setDashboardTdsDeductionFilter(e.target.value))}
+            >
+              <option value="all">All Rows</option>
+              <option value="deducted">TDS Deducted</option>
+              <option value="not_deducted">TDS Not Deducted</option>
+            </select>
+          </label>
           <button
             className="filter-reset-btn dashboard-filter-reset"
             type="button"
@@ -307,6 +342,30 @@ export default function Dashboard() {
             {isLive && k.change == null && (
               <span className="kpi-trend" style={{ color: 'var(--color-text-muted)' }}>From SAP run</span>
             )}
+          </button>
+        ))}
+      </div>
+
+      <div className="dashboard-tds-grid">
+        {tdsDeductionCards.map((card) => (
+          <button
+            key={card.filter}
+            className={`kpi-card kpi-card-clickable ${dashboardTdsDeductionFilter === card.filter ? 'is-active' : ''}`}
+            type="button"
+            onClick={() => dispatch(setDashboardTdsDeductionFilter(
+              dashboardTdsDeductionFilter === card.filter ? 'all' : card.filter,
+            ))}
+            aria-pressed={dashboardTdsDeductionFilter === card.filter}
+            aria-label={`Filter dashboard by ${card.label}`}
+          >
+            <div className="kpi-icon-row">
+              <span className="kpi-label">{card.label}</span>
+              <div className={`kpi-icon-box ${card.tone}`}>
+                <card.icon size={14} />
+              </div>
+            </div>
+            <span className="kpi-value">{Number(card.value).toLocaleString('en-IN')}</span>
+            <span className="kpi-trend" style={{ color: 'var(--color-text-muted)' }}>{card.description}</span>
           </button>
         ))}
       </div>
