@@ -83,6 +83,7 @@ export function capitalize(str) {
 
 export function formatStatusLabel(value) {
   if (value === 'insufficient') return 'Insufficient Data'
+  if (value === 'skipped') return 'TDS Not Applicable'
   return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 

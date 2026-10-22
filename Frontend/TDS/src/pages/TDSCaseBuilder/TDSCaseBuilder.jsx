@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { AlertTriangle, ChevronDown, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
 import Issues from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
-import StatusBadge from '@/components/Common/StatusBadge'
+import StatusBadge, { severityToTone } from '@/components/Common/StatusBadge'
 import { resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter, setStatusFilter, setVendorFilter } from '@/redux/slices/issuesSlice'
 import { formatCurrency } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
-import { issueTypeFilterOptions } from '@/data/issueTypes'
+import { getDisplayIssueType, issueTypeFilterOptions } from '@/data/issueTypes'
+import { downloadCsv, ISSUE_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
 import './TDSCaseBuilder.css'
 
 const CASE_BUILDER_VIEW_STORAGE_KEY = 'tds_case_builder_view'
 const DEFAULT_CASE_BUILDER_VIEW = { activeTab: 'ledger', quickFilter: 'ledger-all' }
-const VALID_TABS = new Set(['ledger', 'issues'])
+const VALID_TABS = new Set(['ledger', 'issues', 'gl'])
 const TDS_ANALYSIS_ISSUE_TYPE_LABELS = new Set([
   'Wrong Section Applied',
   'TDS Rate Mismatch',
@@ -123,6 +124,76 @@ function formatGroupType(row) {
   return String(row.groupType || 'DOCUMENT').replace(/^OPEN_/, 'Open ').replace(/_/g, ' ')
 }
 
+function isEventTdsDeducted(event) {
+  return Math.abs(Number(event.tdsAmount || 0)) > 0
+}
+
+// Flattens every transaction line from the document ledger and regroups the
+// lines by company code + GL account number.
+// "Old section / new section", e.g. "194C / 393(1)6(i)".
+function sectionPairLabel(legacySection, newSection) {
+  const oldSection = presentValue(legacySection)
+  const nextSection = presentValue(newSection)
+  if (oldSection && nextSection && oldSection !== nextSection) return `${oldSection} / ${nextSection}`
+  return oldSection || nextSection || 'No Section'
+}
+
+function eventSectionLabel(event) {
+  // Older cached uploads have no legacy/new split on events; fall back to tdsSection.
+  if (event.legacySection === undefined && event.newSection === undefined) {
+    return presentValue(event.tdsSection) || 'No Section'
+  }
+  return sectionPairLabel(event.legacySection, event.newSection)
+}
+
+function glGroupKey(companyCode, glAccount, sectionLabel) {
+  return `${presentValue(companyCode) || '—'}||${presentValue(glAccount) || 'No GL'}||${sectionLabel}`
+}
+
+function buildGlLedgerRows(ledgerRows, issuesByGlKey = new Map()) {
+  const groups = new Map()
+  ledgerRows.forEach((ledgerRow) => {
+    (ledgerRow.events || []).forEach((event) => {
+      const companyCode = presentValue(ledgerRow.companyCode) || '—'
+      const glAccount = presentValue(event.glAccount) || 'No GL'
+      const section = eventSectionLabel(event)
+      const key = glGroupKey(companyCode, glAccount, section)
+      if (!groups.has(key)) {
+        groups.set(key, { id: `GL-${key}`, glKey: key, companyCode, glAccount, section, events: [] })
+      }
+      groups.get(key).events.push({
+        ...event,
+        id: `${key}-${groups.get(key).events.length}`,
+        vendor: ledgerRow.vendor,
+        vendorId: ledgerRow.vendorId,
+        pan: ledgerRow.pan,
+      })
+    })
+  })
+
+  return [...groups.values()]
+    .map((group) => {
+      const deductedRows = group.events.filter(isEventTdsDeducted).length
+      return {
+        ...group,
+        rowCount: group.events.length,
+        vendorCount: new Set(group.events.map((event) => presentValue(event.vendorId) || presentValue(event.vendor)).filter(Boolean)).size,
+        documentAmount: group.events.reduce((total, event) => total + Number(event.amount || 0), 0),
+        baseAmount: group.events.reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0),
+        tdsAmount: group.events.reduce((total, event) => total + Math.abs(Number(event.tdsAmount || 0)), 0),
+        deductedRows,
+        notDeductedRows: group.events.length - deductedRows,
+        issues: issuesByGlKey.get(group.glKey) || [],
+        issueRows: (issuesByGlKey.get(group.glKey) || []).length,
+      }
+    })
+    .sort((a, b) => (
+      a.companyCode.localeCompare(b.companyCode)
+      || a.glAccount.localeCompare(b.glAccount)
+      || (a.section === 'No Section') - (b.section === 'No Section')
+      || a.section.localeCompare(b.section)
+    ))
+}
 
 function IssueTypeDropdown({ value, disabled, onChange }) {
   const [open, setOpen] = useState(false)
@@ -185,6 +256,7 @@ export default function TDSCaseBuilder() {
   const [caseSearch, setCaseSearch] = useState('')
   const [docTypeFilter, setDocTypeFilter] = useState('all')
   const [expandedLedgerKey, setExpandedLedgerKey] = useState(null)
+  const [glModal, setGlModal] = useState(null)
   const uploadMeta = useSelector((state) => state.issues.uploadMeta)
   const uploadedIssues = useSelector((state) => state.issues.uploadedIssues)
   const { searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter } = useSelector((state) => state.issues)
@@ -316,11 +388,162 @@ export default function TDSCaseBuilder() {
   }, [activeRows, searchQuery, vendorFilter, sectionFilter, docTypeFilter])
   const canExpand = activeTab === 'ledger'
 
+  // GL tab: vendor/section/doc type filters apply per transaction line before
+  // grouping, so group totals reflect only the matching lines.
+  const glRows = useMemo(() => {
+    const filteredLedgerRows = ledgerRows
+      .filter((row) => vendorFilter === 'all' || row.vendor === vendorFilter)
+      .map((row) => ({
+        ...row,
+        events: (row.events || []).filter((event) => {
+          if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [event.tdsSection].map(presentValue).filter(Boolean))) return false
+          if (docTypeFilter !== 'all' && String(event.docType || '').trim().toUpperCase() !== docTypeFilter) return false
+          return true
+        }),
+      }))
+    const issuesByGlKey = new Map()
+    issueRows.forEach((issue) => {
+      if (vendorFilter !== 'all' && issue.vendor !== vendorFilter) return
+      if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [issue.section, issue.legacySection, issue.ruleSection, issue.newSection].map(presentValue).filter(Boolean))) return
+      if (docTypeFilter !== 'all' && String(issue.docType || '').trim().toUpperCase() !== docTypeFilter) return
+      const key = glGroupKey(issue.companyCode, issue.glAccount, sectionPairLabel(issue.legacySection, issue.newSection))
+      if (!issuesByGlKey.has(key)) issuesByGlKey.set(key, [])
+      issuesByGlKey.get(key).push(issue)
+    })
+    const query = searchQuery.trim().toLowerCase()
+    return buildGlLedgerRows(filteredLedgerRows, issuesByGlKey).filter((group) => {
+      if (!query) return true
+      const searchable = [
+        group.companyCode,
+        group.glAccount,
+        group.section,
+        ...group.events.map((event) => [
+          event.docNo,
+          event.docType,
+          event.vendor,
+          event.vendorId,
+          event.pan,
+          event.tdsSection,
+          event.eventType,
+          event.referenceDoc,
+          ...(event.issues || []),
+        ].join(' ')),
+      ].filter(Boolean).join(' ').toLowerCase()
+      return searchable.includes(query)
+    })
+  }, [ledgerRows, issueRows, vendorFilter, sectionFilter, docTypeFilter, searchQuery])
+
+  const glColumns = [
+    { key: 'companyCode', header: 'Company', render: (row) => <span className="font-mono">{row.companyCode}</span> },
+    { key: 'glAccount', header: 'GL Account', render: (row) => (
+      <div>
+        <div className="font-mono case-strong">{row.glAccount}</div>
+        <div className="case-muted">{row.rowCount} rows</div>
+      </div>
+    )},
+    { key: 'vendorCount', header: 'Vendors', render: (row) => <span className="font-mono">{row.vendorCount}</span> },
+    { key: 'section', header: 'Section (Old / New)', render: (row) => (
+      <span className={`font-mono ${row.section === 'No Section' ? 'case-muted' : ''}`}>{row.section}</span>
+    )},
+    { key: 'documentAmount', header: 'Document Amount', render: (row) => <span className="font-mono">{formatCurrency(row.documentAmount)}</span> },
+    { key: 'baseAmount', header: 'Base Amount', render: (row) => <span className="font-mono">{formatCurrency(row.baseAmount)}</span> },
+    { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
+    { key: 'deductedRows', header: 'TDS Deducted / Not', render: (row) => (
+      <span className="font-mono">{row.deductedRows.toLocaleString()} / {row.notDeductedRows.toLocaleString()}</span>
+    )},
+    { key: 'issueRows', header: 'Issue Rows', render: (row) => (
+      <div className="case-gl-issue-cell">
+        <button
+          type="button"
+          className="case-gl-issue-link font-mono"
+          disabled={!row.issueRows}
+          title={row.issueRows ? `View ${row.issueRows} issues on GL ${row.glAccount}, section ${row.section}` : 'No issues on this GL section'}
+          onClick={(event) => { event.stopPropagation(); setGlModal({ type: 'issues', key: row.glKey }) }}
+        >
+          {row.issueRows.toLocaleString()}
+        </button>
+        {row.issueRows > 0 && (
+          <button
+            type="button"
+            className="case-gl-download-btn"
+            title={`Download ${row.issueRows} issues on GL ${row.glAccount} (CSV)`}
+            aria-label={`Download issues for GL ${row.glAccount}`}
+            onClick={(event) => { event.stopPropagation(); downloadGlIssues(row) }}
+          >
+            <Download size={13} />
+          </button>
+        )}
+      </div>
+    )},
+  ]
+
+  const glTransactionColumns = [
+    { key: 'docType', header: 'Type', render: (event) => <span className="font-mono">{event.docType}</span> },
+    { key: 'docNo', header: 'Doc No.', render: (event) => <span className="font-mono">{event.docNo}</span> },
+    { key: 'vendor', header: 'Vendor', render: (event) => (
+      <div>
+        <div className="case-strong">{event.vendor}</div>
+        <div className="font-mono case-muted">{event.vendorId || '—'}</div>
+      </div>
+    )},
+    { key: 'postingDate', header: 'Posting Date', render: (event) => <span className="font-mono">{event.postingDate}</span> },
+    { key: 'eventType', header: 'Event', render: (event) => event.eventType },
+    { key: 'debitCredit', header: 'D/C', render: (event) => <span className="font-mono">{event.debitCredit}</span> },
+    { key: 'amount', header: 'Document Amount', render: (event) => <span className="font-mono">{formatCurrency(event.amount)}</span> },
+    { key: 'baseAmount', header: 'Base Amount', render: (event) => <span className="font-mono">{formatCurrency(event.baseAmount)}</span> },
+    { key: 'tdsSection', header: 'Section', render: (event) => <span className="font-mono">{event.tdsSection}</span> },
+    { key: 'tdsRate', header: 'Rate', sortValue: (event) => appliedRateForEvent(event), render: (event) => <span className="font-mono">{formatRate(appliedRateForEvent(event))}</span> },
+    { key: 'tdsAmount', header: 'TDS', render: (event) => <span className="font-mono">{formatCurrency(event.tdsAmount)}</span> },
+    { key: 'tdsNote', header: 'TDS Note', render: (event) => <span className="case-tds-note case-gl-modal-note" title={event.tdsNote || ''}>{event.tdsNote || '—'}</span> },
+  ]
+
+  const glIssueColumns = [
+    { key: 'docNo', header: 'Doc No.', render: (issue) => <span className="font-mono">{issue.docNo}</span> },
+    { key: 'docType', header: 'Type', render: (issue) => <span className="font-mono">{issue.docType}</span> },
+    { key: 'vendor', header: 'Vendor', render: (issue) => (
+      <div>
+        <div className="case-strong">{issue.vendor}</div>
+        <div className="font-mono case-muted">{issue.vendorId || '—'}</div>
+      </div>
+    )},
+    { key: 'section', header: 'Section', render: (issue) => <span className="font-mono">{issue.section}</span> },
+    { key: 'baseAmount', header: 'Base Amount', render: (issue) => <span className="font-mono">{formatCurrency(issue.baseAmount)}</span> },
+    { key: 'tdsAmount', header: 'TDS', render: (issue) => <span className="font-mono">{formatCurrency(issue.tdsAmount)}</span> },
+    { key: 'category', header: 'Issue Type', sortValue: (issue) => getDisplayIssueType(issue), render: (issue) => getDisplayIssueType(issue) },
+    { key: 'severity', header: 'Severity', render: (issue) => <StatusBadge label={issue.severity} tone={severityToTone(issue.severity)} /> },
+    { key: 'description', header: 'Details', render: (issue) => <span className="case-tds-note case-gl-modal-note" title={issue.description || ''}>{issue.description || '—'}</span> },
+  ]
+
+  function downloadGlIssues(row) {
+    const fileBase = (uploadMeta?.fileName || 'tds-analysis').replace(/\.[^.]+$/, '')
+    downloadCsv(
+      `${fileBase}-GL-${row.glAccount}-${row.section.replace(/[^A-Za-z0-9]+/g, '_')}-${row.companyCode}-issues.csv`,
+      [
+        { label: 'Company', value: () => row.companyCode },
+        { label: 'GL Account', value: () => row.glAccount },
+        { label: 'GL Section (Old / New)', value: () => row.section },
+        ...ISSUE_CSV_COLUMNS,
+      ],
+      row.issues,
+    )
+  }
+
+  const activeGlModalRow = glModal ? glRows.find((row) => row.glKey === glModal.key) : null
+
+  useEffect(() => {
+    if (!glModal) return undefined
+    const onKeyDown = (event) => { if (event.key === 'Escape') setGlModal(null) }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [glModal])
+
+
   function applyQuickFilter(tab, filter) {
     setActiveTab(tab)
     setQuickFilter(filter)
     setCaseSearch('')
     setExpandedLedgerKey(null)
+    setGlModal(null)
   }
 
   function handleSharedFilterReset() {
@@ -347,6 +570,7 @@ export default function TDSCaseBuilder() {
         <span className="font-mono">{event.tdsSection}</span>
         <span className="font-mono">{formatRate(appliedRateForEvent(event))}</span>
         <span className="font-mono">{formatCurrency(event.tdsAmount)}</span>
+        <span className="case-tds-note" title={event.tdsNote || ''}>{event.tdsNote || '—'}</span>
         <span className="font-mono">{event.referenceDoc}</span>
       </div>
     ))
@@ -382,6 +606,7 @@ export default function TDSCaseBuilder() {
           <span>Section</span>
           <span>Rate</span>
           <span>TDS</span>
+          <span>TDS Note</span>
           <span>Reference</span>
         </div>
         {linkedEvents.length ? renderRows(linkedEvents) : (
@@ -404,6 +629,7 @@ export default function TDSCaseBuilder() {
               <span>Section</span>
               <span>Rate</span>
               <span>TDS</span>
+              <span>TDS Note</span>
               <span>Reference</span>
             </div>
             {renderRows(clearingEvents)}
@@ -421,6 +647,9 @@ export default function TDSCaseBuilder() {
         </button>
         <button type="button" className={`case-tab ${activeTab === 'issues' ? 'active' : ''}`} onClick={() => applyQuickFilter('issues', 'issues-all')}>
           Issues ({issueRows.length.toLocaleString()})
+        </button>
+        <button type="button" className={`case-tab ${activeTab === 'gl' ? 'active' : ''}`} onClick={() => applyQuickFilter('gl', 'gl-all')}>
+          GL Ledger ({glRows.length.toLocaleString()})
         </button>
       </div>
     </div>
@@ -533,6 +762,76 @@ export default function TDSCaseBuilder() {
 
       {activeTab === 'issues' ? (
         <Issues embedded initialView="all" hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
+      ) : activeTab === 'gl' ? (
+        <>
+          {resultsTabsPanel}
+          <div className="table-card">
+          <DataTable
+            columns={glColumns}
+            data={glRows}
+            pageSize={200}
+            onRowClick={(row) => setGlModal({ type: 'transactions', key: row.glKey })}
+            emptyState={<div className="data-table-empty">No GL accounts found for this view</div>}
+          />
+          </div>
+          {activeGlModalRow && (
+            <div className="case-gl-modal-overlay" onClick={() => setGlModal(null)}>
+              <div className="case-gl-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+                <div className="case-gl-modal-header">
+                  <div>
+                    <div className="case-gl-modal-title">
+                      {glModal.type === 'issues' ? 'Issues on' : 'Transactions on'} GL <span className="font-mono">{activeGlModalRow.glAccount}</span>
+                      {' · '}Section <span className="font-mono">{activeGlModalRow.section}</span>
+                    </div>
+                    <div className="case-muted">
+                      Company <span className="font-mono">{activeGlModalRow.companyCode}</span>
+                      {' · '}{activeGlModalRow.rowCount.toLocaleString()} rows
+                      {' · '}TDS deducted {activeGlModalRow.deductedRows.toLocaleString()} / not {activeGlModalRow.notDeductedRows.toLocaleString()}
+                      {' · '}{activeGlModalRow.issueRows.toLocaleString()} issues
+                    </div>
+                  </div>
+                  <div className="case-gl-modal-actions">
+                    <div className="case-tabs" role="tablist">
+                      <button type="button" className={`case-tab ${glModal.type === 'transactions' ? 'active' : ''}`} onClick={() => setGlModal({ ...glModal, type: 'transactions' })}>
+                        Transactions ({activeGlModalRow.rowCount.toLocaleString()})
+                      </button>
+                      <button type="button" className={`case-tab ${glModal.type === 'issues' ? 'active' : ''}`} onClick={() => setGlModal({ ...glModal, type: 'issues' })}>
+                        Issues ({activeGlModalRow.issueRows.toLocaleString()})
+                      </button>
+                    </div>
+                    {glModal.type === 'issues' && activeGlModalRow.issueRows > 0 && (
+                      <button type="button" className="btn btn-outline" onClick={() => downloadGlIssues(activeGlModalRow)}>
+                        <Download size={14} />Download
+                      </button>
+                    )}
+                    <button type="button" className="case-gl-modal-close" aria-label="Close" onClick={() => setGlModal(null)}>
+                      <X size={16} />
+                    </button>
+                  </div>
+                </div>
+                <div className="case-gl-modal-body">
+                  {glModal.type === 'issues' ? (
+                    <DataTable
+                      key={`gl-issues-${activeGlModalRow.glKey}`}
+                      columns={glIssueColumns}
+                      data={activeGlModalRow.issues}
+                      pageSize={100}
+                      emptyState={<div className="data-table-empty">No issues on this GL</div>}
+                    />
+                  ) : (
+                    <DataTable
+                      key={`gl-transactions-${activeGlModalRow.glKey}`}
+                      columns={glTransactionColumns}
+                      data={activeGlModalRow.events}
+                      pageSize={100}
+                      emptyState={<div className="data-table-empty">No transactions on this GL</div>}
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       ) : (
         <>
           {resultsTabsPanel}

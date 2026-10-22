@@ -95,6 +95,22 @@
   outline-offset: 2px;
 }
 
+.dashboard-tds-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.dashboard-tds-grid .kpi-card-clickable.is-active {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+}
+
+@media (max-width: 480px) {
+  .dashboard-tds-grid { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 768px) {
   .dashboard-banner-meta { display: none; }
 }

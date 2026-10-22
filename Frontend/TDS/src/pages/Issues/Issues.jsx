@@ -5,6 +5,7 @@ import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
   Activity, AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash, PlusCircle, X,
+  BadgeCheck, BadgeX,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
@@ -39,7 +40,13 @@ const VIEW_LABELS = {
   issue: 'Issues Found',
   passed: 'Passed',
   insufficient: 'Insufficient Data',
-  skipped: 'Skipped',
+  skipped: 'TDS Not Applicable',
+  tds_deducted: 'TDS Deducted',
+  tds_not_deducted: 'TDS Not Deducted',
+}
+
+function isRowTdsDeducted(row) {
+  return Math.abs(Number(row?.tdsAmount || 0)) > 0
 }
 
 function inferRateFromAmount(baseAmount, tdsAmount) {
@@ -386,7 +393,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   // "passed".
   const adjustedValidationRows = useMemo(() => (
     activeValidationRows.map((row) => (
-      row.status !== 'skipped' && Number(row.baseAmount) === 0
+      row.status !== 'skipped' && row.status !== 'issue' && Number(row.baseAmount) === 0
         ? {
           ...row,
           status: 'insufficient',
@@ -508,7 +515,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     const appliedRate = inferredRate != null && expectedRate != null && Math.abs(inferredRate - expectedRate) <= 0.05
       ? inferredRate
       : statedRate ?? inferredRate
-    const issueLabel = isSkipped ? 'Skipped' : isInsufficient ? 'Insufficient Data' : 'Passed Validation'
+    const issueLabel = isSkipped ? 'TDS Not Applicable' : isInsufficient ? 'Insufficient Data' : 'Passed Validation'
     const ldcValidity = ldcValidityByCertificate.get(row.ldcCertificate)
 
     return {
@@ -523,13 +530,13 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       status: 'open',
       plainEnglish: row.reason || (
         isSkipped
-          ? 'This row was reviewed and skipped from TDS validation.'
+          ? 'TDS is not applicable to this row, so it was excluded from TDS validation.'
           : isInsufficient
           ? 'This row does not have enough usable data to complete the TDS validation.'
           : 'Validated with no issue found.'
       ),
       recommendedAction: isSkipped
-        ? 'No TDS issue is raised for this row. Keep it skipped unless the source row should actually carry TDS section/rate details.'
+        ? 'No TDS issue is raised for this row. Keep it as TDS Not Applicable unless the source row should actually carry TDS section/rate details.'
         : isInsufficient
         ? 'Review the source row and complete the missing or unusable transaction data, then analyse the file again.'
         : 'No correction required — this row passed the current validation rules.',
@@ -572,17 +579,12 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     const filteredIssueRows = filteredValidationRowsForSummary.filter((row) => (
       row.status === 'issue' && filteredIssueGroups.has(issueRowKey(row))
     ))
-    const hasSeverity = (row, severity) => (
-      filteredIssueGroups.get(issueRowKey(row)) || []
-    ).some((issue) => issue.severity === severity)
 
     if (!uploadMeta) {
       return {
         totalRows: filtered.length,
         passedRows: 0,
         issueRows: filtered.length,
-        highRows: filtered.filter((issue) => issue.severity === 'high').length,
-        mediumRows: filtered.filter((issue) => issue.severity === 'medium').length,
         insufficientDataRows: 0,
         skippedRows: 0,
       }
@@ -592,12 +594,17 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       totalRows: filteredValidationRowsForSummary.length,
       passedRows: filteredValidationRowsForSummary.filter((row) => row.status === 'passed').length,
       issueRows: filteredIssueRows.length,
-      highRows: filteredIssueRows.filter((row) => hasSeverity(row, 'high')).length,
-      mediumRows: filteredIssueRows.filter((row) => hasSeverity(row, 'medium')).length,
       insufficientDataRows: filteredValidationRowsForSummary.filter((row) => row.status === 'insufficient').length,
       skippedRows: filteredValidationRowsForSummary.filter((row) => row.status === 'skipped').length,
     }
   }, [filtered, uploadMeta, filteredValidationRowsForSummary])
+
+  // Count-only cards: rows with a non-zero TDS amount vs. rows without one,
+  // from the same filtered row set as the other summary cards.
+  const tdsDeductionSummary = useMemo(() => {
+    const deducted = filteredValidationRowsForSummary.filter(isRowTdsDeducted).length
+    return { deducted, notDeducted: filteredValidationRowsForSummary.length - deducted }
+  }, [filteredValidationRowsForSummary])
 
   const docTypes = useMemo(() => {
     const values = [
@@ -759,6 +766,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
     { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
+    { key: 'tdsNote', header: 'TDS Note', render: (r) => (
+      r.tdsNote
+        ? <span className="issues-tds-note" title={r.tdsNote}>{r.tdsNote}</span>
+        : <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+    )},
     { key: 'status', header: validationView === 'issue' ? 'Issue Type' : 'Validation Result', sortValue: (r) => (
       r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)
     ), render: (r) => {
@@ -815,7 +827,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     return displayValidationRows
       .filter((row) => {
         const matchingIssue = issueByRow.get(issueRowKey(row))
-        if (validationView !== 'all' && row.status !== validationView) return false
+        if (validationView === 'tds_deducted') {
+          if (!isRowTdsDeducted(row)) return false
+        } else if (validationView === 'tds_not_deducted') {
+          if (isRowTdsDeducted(row)) return false
+        } else if (validationView !== 'all' && row.status !== validationView) return false
         if (searchQuery) {
           const q = searchQuery.toLowerCase()
           if (
@@ -852,13 +868,6 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   function handleResetFilters() {
     setActiveDocTypeFilter('all')
     dispatch(resetFilters())
-  }
-
-  function handleSeverityCard(severity) {
-    setValidationView('issue')
-    dispatch(setSeverityFilter(severity))
-    dispatch(setIssueTypeFilter('all'))
-    dispatch(setStatusFilter('all'))
   }
 
   const filterBar = (
@@ -958,7 +967,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       {!hideFilters && filtersFirst && filterBar}
       {beforeSummary}
 
-      <div className="issues-summary-grid issues-summary-grid--five">
+      <div className="issues-summary-grid issues-summary-grid--top">
         <div className={`issues-summary-card issues-summary-card--info ${validationView === 'all' ? 'issues-summary-card--active' : ''}`}>
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('all')}>
             <Activity size={16} />
@@ -978,6 +987,31 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             </button>
           )}
         </div>
+        <button
+          className={`issues-summary-card issues-summary-card--success ${validationView === 'tds_deducted' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('tds_deducted')}
+        >
+          <BadgeCheck size={16} />
+          <div>
+            <div className="issues-summary-value">{tdsDeductionSummary.deducted.toLocaleString()}</div>
+            <div className="issues-summary-label">TDS Deducted</div>
+          </div>
+        </button>
+        <button
+          className={`issues-summary-card issues-summary-card--danger ${validationView === 'tds_not_deducted' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('tds_not_deducted')}
+        >
+          <BadgeX size={16} />
+          <div>
+            <div className="issues-summary-value">{tdsDeductionSummary.notDeducted.toLocaleString()}</div>
+            <div className="issues-summary-label">TDS Not Deducted</div>
+          </div>
+        </button>
+      </div>
+
+      <div className="issues-summary-grid issues-summary-grid--five issues-summary-grid--four">
         <div className={`issues-summary-card issues-summary-card--success ${validationView === 'passed' ? 'issues-summary-card--active' : ''}`}>
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed')}>
             <CheckCircle2 size={16} />
@@ -1017,28 +1051,6 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           )}
         </div>
         <button
-          className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue' && severityFilter === 'high' ? 'issues-summary-card--active' : ''}`}
-          type="button"
-          onClick={() => handleSeverityCard('high')}
-        >
-          <AlertOctagon size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.highRows.toLocaleString()}</div>
-            <div className="issues-summary-label">High</div>
-          </div>
-        </button>
-        <button
-          className={`issues-summary-card issues-summary-card--warning ${validationView === 'issue' && severityFilter === 'medium' ? 'issues-summary-card--active' : ''}`}
-          type="button"
-          onClick={() => handleSeverityCard('medium')}
-        >
-          <AlertTriangle size={16} />
-          <div>
-            <div className="issues-summary-value">{summary.mediumRows.toLocaleString()}</div>
-            <div className="issues-summary-label">Medium</div>
-          </div>
-        </button>
-        <button
           className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
           type="button"
           onClick={() => setValidationView('skipped')}
@@ -1046,7 +1058,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           <CircleSlash size={16} />
           <div>
             <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
-            <div className="issues-summary-label">Skipped</div>
+            <div className="issues-summary-label">TDS Not Applicable</div>
           </div>
         </button>
         <div className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}>

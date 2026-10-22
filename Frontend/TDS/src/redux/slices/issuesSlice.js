@@ -165,6 +165,7 @@ const initialState = {
   dashboardVendorNameFilter: 'all',
   dashboardSectionFilter:    'all',
   dashboardIssueTypeFilter:  'all',
+  dashboardTdsDeductionFilter: 'all',
   selectedIssueId: null,
   drawerOpen:      false,
 
@@ -194,6 +195,7 @@ const issuesSlice = createSlice({
     setDashboardVendorNameFilter: (state, action) => { state.dashboardVendorNameFilter = action.payload },
     setDashboardSectionFilter:    (state, action) => { state.dashboardSectionFilter    = action.payload },
     setDashboardIssueTypeFilter:  (state, action) => { state.dashboardIssueTypeFilter  = action.payload },
+    setDashboardTdsDeductionFilter: (state, action) => { state.dashboardTdsDeductionFilter = action.payload },
     openDrawer:       (state, action) => { state.selectedIssueId = action.payload; state.drawerOpen = true },
     closeDrawer:      (state)         => { state.drawerOpen      = false },
     resetFilters:     (state)         => {
@@ -209,6 +211,7 @@ const issuesSlice = createSlice({
       state.dashboardVendorNameFilter = 'all'
       state.dashboardSectionFilter = 'all'
       state.dashboardIssueTypeFilter = 'all'
+      state.dashboardTdsDeductionFilter = 'all'
     },
 
     uploadStarted: (state) => {
@@ -258,6 +261,7 @@ const issuesSlice = createSlice({
       state.dashboardVendorNameFilter = 'all'
       state.dashboardSectionFilter = 'all'
       state.dashboardIssueTypeFilter = 'all'
+      state.dashboardTdsDeductionFilter = 'all'
       saveLastUpload(state)
     },
     createManualCorrection: (state, action) => {
@@ -437,6 +441,7 @@ export const {
   setStatusFilter, setIssueTypeFilter, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardVendorCodeFilter,
   setDashboardVendorNameFilter, setDashboardSectionFilter, setDashboardIssueTypeFilter,
+  setDashboardTdsDeductionFilter,
   openDrawer, closeDrawer, resetFilters, resetDashboardFilters,
   uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
   createManualCorrection, createMatchedSapCorrection,
@@ -528,7 +533,18 @@ function hasDashboardFilters(state) {
     || state.issues.dashboardVendorNameFilter !== 'all'
     || state.issues.dashboardSectionFilter !== 'all'
     || state.issues.dashboardIssueTypeFilter !== 'all'
+    || state.issues.dashboardTdsDeductionFilter !== 'all'
   )
+}
+
+function isTdsDeducted(row) {
+  return Math.abs(Number(row?.tdsAmount || 0)) > 0
+}
+
+function matchesTdsDeductionFilter(row, filter) {
+  if (filter === 'deducted') return isTdsDeducted(row)
+  if (filter === 'not_deducted') return !isTdsDeducted(row)
+  return true
 }
 
 export function selectDashboardIssues(state) {
@@ -540,9 +556,11 @@ export function selectDashboardIssues(state) {
     dashboardVendorNameFilter,
     dashboardSectionFilter,
     dashboardIssueTypeFilter,
+    dashboardTdsDeductionFilter,
   } = state.issues
 
   return selectActiveIssues(state).filter((issue) => {
+    if (!matchesTdsDeductionFilter(issue, dashboardTdsDeductionFilter)) return false
     const dateKey = issueDateKey(issue)
     if (dashboardDateFromFilter && (!dateKey || dateKey < dashboardDateFromFilter)) return false
     if (dashboardDateToFilter && (!dateKey || dateKey > dashboardDateToFilter)) return false
@@ -556,6 +574,36 @@ export function selectDashboardIssues(state) {
     }
     return true
   })
+}
+
+/**
+ * Deducted / not-deducted row counts from the upload's validation rows,
+ * scoped by company and the dashboard date/vendor/section filters. The TDS
+ * deduction filter itself is not applied so both counts stay visible.
+ */
+export function selectDashboardTdsDeductionCounts(state) {
+  const {
+    dashboardDateFromFilter,
+    dashboardDateToFilter,
+    dashboardMonthFilter,
+    dashboardVendorCodeFilter,
+    dashboardVendorNameFilter,
+    dashboardSectionFilter,
+  } = state.issues
+
+  const rows = selectActiveValidationRows(state).filter((row) => {
+    const dateKey = issueDateKey(row)
+    if (dashboardDateFromFilter && (!dateKey || dateKey < dashboardDateFromFilter)) return false
+    if (dashboardDateToFilter && (!dateKey || dateKey > dashboardDateToFilter)) return false
+    if (dashboardMonthFilter && dateKey.slice(0, 7) !== dashboardMonthFilter) return false
+    if (dashboardVendorCodeFilter !== 'all' && row.vendorId !== dashboardVendorCodeFilter) return false
+    if (dashboardVendorNameFilter !== 'all' && row.vendor !== dashboardVendorNameFilter) return false
+    if (dashboardSectionFilter !== 'all' && row.section !== dashboardSectionFilter) return false
+    return true
+  })
+
+  const deducted = rows.filter(isTdsDeducted).length
+  return { deducted, notDeducted: rows.length - deducted }
 }
 
 export function selectDashboardKpis(state) {
