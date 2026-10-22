@@ -62,7 +62,11 @@ export default function SapUploadPanel({
   }
   const [includeInfo, setIncludeInfo] = useState(false)
   const [dragOver, setDragOver] = useState(false)
-  const [selectedFile, setSelectedFile] = useState(null)
+  const [selectedFiles, setSelectedFiles] = useState([])
+  const hasFiles = selectedFiles.length > 0
+  const selectedLabel = selectedFiles.length === 1
+    ? selectedFiles[0].name
+    : `${selectedFiles.length} files selected`
   // Collapsed by default so the issues table is visible without scrolling past
   // the upload form on every visit — only auto-open when there's something
   // upload-related the user actually needs to see.
@@ -70,22 +74,32 @@ export default function SapUploadPanel({
 
   const busy = uploadStatus === 'uploading' || uploadStatus === 'processing'
 
-  const pickFile = useCallback((file) => {
-    if (!file) return
-    const name = file.name.toLowerCase()
-    if (!(/\.(csv|xlsx|xls|xlsm)$/.test(name))) {
-      toast.error('Please upload a CSV or Excel (.xlsx) file')
-      return
-    }
-    setSelectedFile(file)
+  // Adds to the current selection (so files can be picked from different
+  // folders in several goes); a file with the same name + size replaces itself.
+  const pickFiles = useCallback((fileList) => {
+    const files = Array.from(fileList || [])
+    if (!files.length) return
+    const valid = files.filter((f) => /\.(csv|xlsx|xls|xlsm)$/.test(f.name.toLowerCase()))
+    if (valid.length < files.length) toast.error('Only CSV or Excel (.xlsx) files can be uploaded')
+    if (!valid.length) return
+    setSelectedFiles((prev) => {
+      const key = (f) => `${f.name}:${f.size}`
+      const incoming = new Set(valid.map(key))
+      return [...prev.filter((f) => !incoming.has(key(f))), ...valid]
+    })
+    // Reset so picking the same file again still fires onChange.
+    if (inputRef.current) inputRef.current.value = ''
   }, [])
+
+  function removeFile(target) {
+    setSelectedFiles((prev) => prev.filter((f) => f !== target))
+  }
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
     setDragOver(false)
-    const file = e.dataTransfer.files?.[0]
-    pickFile(file)
-  }, [pickFile])
+    pickFiles(e.dataTransfer.files)
+  }, [pickFiles])
 
   async function handleDownloadTemplate(e) {
     e?.preventDefault?.()
@@ -99,13 +113,13 @@ export default function SapUploadPanel({
   }
 
   async function handleRun() {
-    if (!selectedFile) {
-      toast.error('Choose a SAP CSV or Excel file first')
+    if (!hasFiles) {
+      toast.error('Choose at least one SAP CSV or Excel file first')
       return
     }
     dispatch(uploadStarted())
     try {
-      const result = await issuesService.uploadSapFile(selectedFile, {
+      const result = await issuesService.uploadSapFile(selectedFiles, {
         companyCode,
         includeInformational: includeInfo,
         onProgress: (pct) => dispatch(uploadProgress(pct)),
@@ -135,7 +149,7 @@ export default function SapUploadPanel({
     dispatch(setDataSourceLabel('No SAP upload loaded'))
     dispatch(setLastSyncTime('Not synced'))
     dispatch(setSyncStatus('idle'))
-    setSelectedFile(null)
+    setSelectedFiles([])
     if (inputRef.current) inputRef.current.value = ''
     toast('Upload cleared')
   }
@@ -167,13 +181,27 @@ export default function SapUploadPanel({
           ref={inputRef}
           type="file"
           accept={ACCEPTED}
+          multiple
           hidden
           disabled={busy}
-          onChange={(e) => pickFile(e.target.files?.[0])}
+          onChange={(e) => pickFiles(e.target.files)}
         />
-        <div className="sap-compact-status" title={selectedFile?.name || uploadMeta?.fileName || ''}>
+        <div
+          className="sap-compact-status"
+          title={hasFiles ? selectedFiles.map((f) => f.name).join('\n') : (uploadMeta?.fileName || '')}
+        >
           <FileSpreadsheet size={14} />
-          <span>{selectedFile?.name || uploadMeta?.fileName || 'No file selected'}</span>
+          <span>{hasFiles ? selectedLabel : (uploadMeta?.fileName || 'No file selected')}</span>
+          {hasFiles && !busy && (
+            <button
+              type="button"
+              className="sap-file-clear sap-compact-clear"
+              onClick={() => setSelectedFiles([])}
+              aria-label="Clear selected files"
+            >
+              <X size={12} />
+            </button>
+          )}
         </div>
         <div className="sap-compact-actions">
           <select
@@ -192,8 +220,8 @@ export default function SapUploadPanel({
           </button>
           <button
             type="button"
-            className={`btn ${selectedFile && !busy ? 'btn-primary' : 'btn-outline'} btn-sm`}
-            disabled={busy || !selectedFile}
+            className={`btn ${hasFiles && !busy ? 'btn-primary' : 'btn-outline'} btn-sm`}
+            disabled={busy || !hasFiles}
             onClick={handleRun}
           >
             {busy ? <Loader2 size={13} className="spin" /> : <FileUp size={13} />}
@@ -238,15 +266,15 @@ export default function SapUploadPanel({
       <>
       <div className="sap-upload-body">
         <div
-          className={`sap-dropzone ${dragOver ? 'is-dragover' : ''} ${selectedFile ? 'has-file' : ''} ${busy ? 'is-busy' : ''}`}
+          className={`sap-dropzone ${dragOver ? 'is-dragover' : ''} ${hasFiles ? 'has-file' : ''} ${busy ? 'is-busy' : ''}`}
           onDragOver={(e) => { e.preventDefault(); if (!busy) setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={busy ? undefined : handleDrop}
-          onClick={() => !busy && !selectedFile && inputRef.current?.click()}
+          onClick={() => !busy && !hasFiles && inputRef.current?.click()}
           role="button"
           tabIndex={busy ? -1 : 0}
           onKeyDown={(e) => {
-            if (busy || selectedFile) return
+            if (busy || hasFiles) return
             if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click()
           }}
         >
@@ -254,41 +282,45 @@ export default function SapUploadPanel({
             ref={inputRef}
             type="file"
             accept={ACCEPTED}
+            multiple
             hidden
             disabled={busy}
-            onChange={(e) => pickFile(e.target.files?.[0])}
+            onChange={(e) => pickFiles(e.target.files)}
           />
-          {selectedFile ? (
-            <div className="sap-file-chip">
-              <span className="sap-file-icon"><FileSpreadsheet size={18} /></span>
-              <div className="sap-file-meta">
-                <div className="sap-file-name" title={selectedFile.name}>{selectedFile.name}</div>
-                <div className="sap-file-size">{formatBytes(selectedFile.size)} · ready to analyse</div>
-              </div>
+          {hasFiles ? (
+            <div className="sap-file-list">
+              {selectedFiles.map((f) => (
+                <div className="sap-file-chip" key={`${f.name}:${f.size}`}>
+                  <span className="sap-file-icon"><FileSpreadsheet size={18} /></span>
+                  <div className="sap-file-meta">
+                    <div className="sap-file-name" title={f.name}>{f.name}</div>
+                    <div className="sap-file-size">{formatBytes(f.size)} · ready to analyse</div>
+                  </div>
+                  {!busy && (
+                    <button
+                      type="button"
+                      className="sap-file-clear"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeFile(f)
+                      }}
+                      aria-label={`Remove ${f.name}`}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
               {!busy && (
                 <button
                   type="button"
-                  className="sap-file-clear"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setSelectedFile(null)
-                    if (inputRef.current) inputRef.current.value = ''
-                  }}
-                  aria-label="Remove file"
-                >
-                  <X size={14} />
-                </button>
-              )}
-              {!busy && (
-                <button
-                  type="button"
-                  className="btn btn-outline btn-sm"
+                  className="btn btn-outline btn-sm sap-file-add"
                   onClick={(e) => {
                     e.stopPropagation()
                     inputRef.current?.click()
                   }}
                 >
-                  Change
+                  Add more files
                 </button>
               )}
             </div>
@@ -296,8 +328,8 @@ export default function SapUploadPanel({
             <div className="sap-dropzone-empty">
               <span className="sap-dropzone-icon"><FileUp size={18} /></span>
               <div className="sap-dropzone-copy">
-                <strong>Drop file here, or browse</strong>
-                <span>CSV or Excel · up to 25 MB</span>
+                <strong>Drop files here, or browse</strong>
+                <span>One or more CSV / Excel files · up to 25 MB each</span>
               </div>
             </div>
           )}
@@ -336,8 +368,8 @@ export default function SapUploadPanel({
             )}
             <button
               type="button"
-              className={`btn ${selectedFile && !busy ? 'btn-primary' : 'btn-outline'}`}
-              disabled={busy || !selectedFile}
+              className={`btn ${hasFiles && !busy ? 'btn-primary' : 'btn-outline'}`}
+              disabled={busy || !hasFiles}
               onClick={handleRun}
             >
               {busy ? (
@@ -348,7 +380,7 @@ export default function SapUploadPanel({
               ) : (
                 <>
                   <Upload size={14} />
-                  Analyse file
+                  {selectedFiles.length > 1 ? `Analyse ${selectedFiles.length} files` : 'Analyse file'}
                 </>
               )}
             </button>
@@ -373,7 +405,7 @@ export default function SapUploadPanel({
           <p className="sap-progress-label">
             {uploadStatus === 'processing'
               ? 'Evaluating TDS rules across transactions…'
-              : `Uploading file… ${progress}%`}
+              : `Uploading files… ${progress}%`}
           </p>
         </div>
       )}

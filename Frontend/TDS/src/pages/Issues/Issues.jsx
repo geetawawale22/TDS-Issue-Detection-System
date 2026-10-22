@@ -19,7 +19,7 @@ import {
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
 import { issueTypeFilterOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
-import { formatCurrency, formatStatusLabel } from '@/utils/utils'
+import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
@@ -233,7 +233,7 @@ function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, 
               <span className="font-mono">{row.section || '—'}</span>
               <span className="font-mono">{formatCurrency(row.baseAmount)}</span>
               <span className="font-mono">{formatCurrency(row.tdsAmount)}</span>
-              <span>{row.postingDate || row.date || '—'}</span>
+              <span>{formatDate(row.postingDate || row.date)}</span>
             </label>
           ))}
         </div>

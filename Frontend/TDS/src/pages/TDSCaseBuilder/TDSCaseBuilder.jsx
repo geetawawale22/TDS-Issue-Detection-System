@@ -6,7 +6,7 @@ import DataTable from '@/components/Common/DataTable'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import StatusBadge, { severityToTone } from '@/components/Common/StatusBadge'
 import { resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter, setStatusFilter, setVendorFilter } from '@/redux/slices/issuesSlice'
-import { formatCurrency } from '@/utils/utils'
+import { formatCurrency, formatDate } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { getDisplayIssueType, issueTypeFilterOptions } from '@/data/issueTypes'
 import { downloadCsv, ISSUE_CSV_COLUMNS } from '@/utils/csvExport'
@@ -174,6 +174,18 @@ function buildGlLedgerRows(ledgerRows, issuesByGlKey = new Map()) {
   return [...groups.values()]
     .map((group) => {
       const deductedRows = group.events.filter(isEventTdsDeducted).length
+      // Unique SAP-reported rates only (no TDS ÷ base derivation), matched at
+      // two decimals so 1 / 1.0 / 1.00 collapse into one value.
+      const rates = [...new Set(group.events
+        .map((event) => (event.sapRate == null || event.sapRate === '' ? NaN : Number(event.sapRate)))
+        .filter((rate) => !Number.isNaN(rate) && rate !== 0)
+        .map((rate) => Math.round(rate * 100) / 100))]
+        .sort((x, y) => x - y)
+      const ldcRates = [...new Set(group.events
+        .filter((event) => event.ldcRate != null && event.ldcRate !== '' && !Number.isNaN(Number(event.ldcRate)))
+        .map((event) => Math.round(Number(event.ldcRate) * 100) / 100))]
+        .sort((x, y) => x - y)
+      const ldcCertificates = [...new Set(group.events.map((event) => presentValue(event.ldcCertificate) && event.ldcRate != null ? event.ldcCertificate : null).filter(Boolean))]
       return {
         ...group,
         rowCount: group.events.length,
@@ -183,6 +195,9 @@ function buildGlLedgerRows(ledgerRows, issuesByGlKey = new Map()) {
         tdsAmount: group.events.reduce((total, event) => total + Math.abs(Number(event.tdsAmount || 0)), 0),
         deductedRows,
         notDeductedRows: group.events.length - deductedRows,
+        rates,
+        ldcRates,
+        ldcCertificates,
         issues: issuesByGlKey.get(group.glKey) || [],
         issueRows: (issuesByGlKey.get(group.glKey) || []).length,
       }
@@ -448,6 +463,18 @@ export default function TDSCaseBuilder() {
     { key: 'documentAmount', header: 'Document Amount', render: (row) => <span className="font-mono">{formatCurrency(row.documentAmount)}</span> },
     { key: 'baseAmount', header: 'Base Amount', render: (row) => <span className="font-mono">{formatCurrency(row.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
+    { key: 'rate', header: 'Rate', sortValue: (row) => row.rates[0] ?? -1, render: (row) => (
+      <div>
+        <span className="font-mono" title={row.rates.length ? 'Unique TDS rates reported by SAP' : 'No SAP TDS rate on this GL section'}>
+          {row.rates.length ? row.rates.map(formatRate).join(', ') : '—'}
+        </span>
+        {row.ldcRates.length > 0 && (
+          <div className="case-ldc-rate font-mono" title={`LDC certificate${row.ldcCertificates.length === 1 ? '' : 's'}: ${row.ldcCertificates.join(', ')}`}>
+            LDC {row.ldcRates.map(formatRate).join(', ')}
+          </div>
+        )}
+      </div>
+    )},
     { key: 'deductedRows', header: 'TDS Deducted / Not', render: (row) => (
       <span className="font-mono">{row.deductedRows.toLocaleString()} / {row.notDeductedRows.toLocaleString()}</span>
     )},
@@ -462,7 +489,7 @@ export default function TDSCaseBuilder() {
         >
           {row.issueRows.toLocaleString()}
         </button>
-        {row.issueRows > 0 && (
+        {row.issueRows > 0 ? (
           <button
             type="button"
             className="case-gl-download-btn"
@@ -472,6 +499,8 @@ export default function TDSCaseBuilder() {
           >
             <Download size={13} />
           </button>
+        ) : (
+          <span className="case-gl-download-placeholder" aria-hidden="true" />
         )}
       </div>
     )},
@@ -486,13 +515,22 @@ export default function TDSCaseBuilder() {
         <div className="font-mono case-muted">{event.vendorId || '—'}</div>
       </div>
     )},
-    { key: 'postingDate', header: 'Posting Date', render: (event) => <span className="font-mono">{event.postingDate}</span> },
+    { key: 'postingDate', header: 'Posting Date', sortValue: (event) => event.postingDate, render: (event) => <span className="font-mono">{formatDate(event.postingDate)}</span> },
     { key: 'eventType', header: 'Event', render: (event) => event.eventType },
     { key: 'debitCredit', header: 'D/C', render: (event) => <span className="font-mono">{event.debitCredit}</span> },
     { key: 'amount', header: 'Document Amount', render: (event) => <span className="font-mono">{formatCurrency(event.amount)}</span> },
     { key: 'baseAmount', header: 'Base Amount', render: (event) => <span className="font-mono">{formatCurrency(event.baseAmount)}</span> },
     { key: 'tdsSection', header: 'Section', render: (event) => <span className="font-mono">{event.tdsSection}</span> },
-    { key: 'tdsRate', header: 'Rate', sortValue: (event) => appliedRateForEvent(event), render: (event) => <span className="font-mono">{formatRate(appliedRateForEvent(event))}</span> },
+    { key: 'tdsRate', header: 'Rate', sortValue: (event) => appliedRateForEvent(event), render: (event) => (
+      <div>
+        <span className="font-mono">{formatRate(appliedRateForEvent(event))}</span>
+        {event.ldcRate != null && event.ldcRate !== '' && (
+          <div className="case-ldc-rate font-mono" title={event.ldcCertificate ? `LDC certificate ${event.ldcCertificate}` : 'LDC rate'}>
+            LDC {formatRate(event.ldcRate)}
+          </div>
+        )}
+      </div>
+    ) },
     { key: 'tdsAmount', header: 'TDS', render: (event) => <span className="font-mono">{formatCurrency(event.tdsAmount)}</span> },
     { key: 'tdsNote', header: 'TDS Note', render: (event) => <span className="case-tds-note case-gl-modal-note" title={event.tdsNote || ''}>{event.tdsNote || '—'}</span> },
   ]
