@@ -861,6 +861,10 @@ def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, An
             "legacySection": txn.tds_legacy_section or txn.tds_deducted_section,
             "newSection": txn.tds_new_section,
             "tdsRate": applied_rate,
+            # Rate exactly as SAP reported it (rate column / TDS description), never derived.
+            "sapRate": txn.tds_deducted_rate,
+            "ldcRate": _ldc_rate_for_posting(txn),
+            "ldcCertificate": txn.ldc_exemption_number,
             "tdsAmount": tds_amount,
             "tdsNote": (tds_notes or {}).get(id(txn)),
             "referenceDoc": txn.invoice_reference_document or txn.advance_document_reference or "—",
@@ -970,6 +974,23 @@ def _dedupe_transactions(transactions) -> tuple[list[Any], list[Any]]:
         deduped.append(txn)
 
     return deduped, duplicates
+
+
+def _ldc_rate_for_posting(txn) -> float | None:
+    """LDC-approved TDS rate when a certificate covers this row's posting date, else None.
+
+    LDC master certificates store their approved rate in ldc_exemption_percent
+    (see _attach_ldc_certificate); an explicit ldc_approved_rate wins if present.
+    """
+    if not txn.ldc_exemption_number:
+        return None
+    if txn.posting_date and (
+        (txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from)
+        or (txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to)
+    ):
+        return None
+    rate = txn.ldc_approved_rate if txn.ldc_approved_rate is not None else txn.ldc_exemption_percent
+    return float(rate) if rate is not None else None
 
 
 def _effective_applied_rate(base_amount: float | None, tds_amount: float | None) -> float | None:
@@ -1417,27 +1438,49 @@ def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, st
 
 @router.post("/upload")
 async def upload_sap_file(
-    file: UploadFile = File(...),
+    files: list[UploadFile] | None = File(None),
+    file: UploadFile | None = File(None),
     company_code: str = Form(""),
     include_informational: bool = Form(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Analyse one SAP CSV/XLSX extract and return issues for the frontend."""
-    filename = file.filename or "upload"
-    suffix = Path(filename).suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=415, detail="Upload a CSV, XLSX, XLSM, or XLS file.")
+    """Analyse one or more SAP CSV/XLSX extracts and return issues for the frontend.
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=422, detail="The uploaded file is empty.")
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="The uploaded file exceeds the 25 MB limit.")
+    Multiple files are stacked into a single extract before analysis, so
+    documents split across files (e.g. invoices in one, payments in another)
+    still group into the same ledger. ``file`` is kept for older clients.
+    """
+    uploads = [*(files or []), *([file] if file else [])]
+    if not uploads:
+        raise HTTPException(status_code=422, detail="Choose at least one file to upload.")
 
-    frame = _read_upload(filename, content)
-    if frame.empty:
-        raise HTTPException(status_code=422, detail="The uploaded file has no transaction rows.")
+    frames: list[pd.DataFrame] = []
+    filenames: list[str] = []
+    for upload in uploads:
+        name = upload.filename or "upload"
+        if Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(status_code=415, detail=f"{name}: upload a CSV, XLSX, XLSM, or XLS file.")
+
+        content = await upload.read()
+        if not content:
+            raise HTTPException(status_code=422, detail=f"{name}: the uploaded file is empty.")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"{name}: the uploaded file exceeds the 25 MB limit.")
+
+        part = _read_upload(name, content)
+        # Strip headers per file so "Amount " and "Amount" line up on concat.
+        part.columns = [str(column).strip() for column in part.columns]
+        if not part.empty:
+            frames.append(part)
+        filenames.append(name)
+
+    if not frames:
+        raise HTTPException(status_code=422, detail="The uploaded file(s) have no transaction rows.")
+    # Outer-join on columns so files with slightly different layouts still
+    # combine; columns missing from one file become blank for its rows.
+    frame = pd.concat(frames, ignore_index=True, sort=False) if len(frames) > 1 else frames[0]
+    filename = filenames[0] if len(filenames) == 1 else f"{len(filenames)} files ({', '.join(filenames)})"
 
     records = _normalise_records(frame)
     allowed_codes = set(get_user_company_codes(current_user, db))
@@ -1628,6 +1671,7 @@ async def upload_sap_file(
     return {
         "uploadId": str(uuid4()),
         "fileName": filename,
+        "fileNames": filenames,
         "companyCode": requested_code or None,
         "issues": issues,
         "stats": stats,

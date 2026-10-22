@@ -467,10 +467,33 @@
 }
 
 /* ---- GL Ledger pop-ups ---- */
+/* Count on the left, download pinned to the right edge so the buttons
+   line up in one vertical column regardless of the count's width. */
 .case-gl-issue-cell {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 84px;
+}
+
+.case-gl-download-btn,
+.case-gl-download-placeholder {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.case-ldc-rate {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #2563EB;
+  white-space: nowrap;
+}
+
+.case-gl-download-placeholder {
+  width: 26px;
+  height: 26px;
 }
 
 .case-gl-issue-link {

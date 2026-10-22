@@ -2,12 +2,12 @@ import api from './api'
 
 const issuesService = {
   /**
-   * Upload a SAP CSV/XLSX extract. Runs backend rule engine and returns
-   * UI-shaped issues + stats for the Issues page demo.
+   * Upload one or more SAP CSV/XLSX extracts. The backend stacks them into a
+   * single extract, runs the rule engine and returns UI-shaped issues + stats.
    */
-  async uploadSapFile(file, { companyCode = '', includeInformational = true, onProgress } = {}) {
+  async uploadSapFile(files, { companyCode = '', includeInformational = true, onProgress } = {}) {
     const formData = new FormData()
-    formData.append('file', file)
+    for (const file of (Array.isArray(files) ? files : [files])) formData.append('files', file)
     if (companyCode) formData.append('company_code', companyCode)
     formData.append('include_informational', includeInformational ? 'true' : 'false')
 
