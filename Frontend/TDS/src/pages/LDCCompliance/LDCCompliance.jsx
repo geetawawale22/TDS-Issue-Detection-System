@@ -454,6 +454,7 @@ function validationStatusForIssues(issues = []) {
 
 export default function LDCCompliance() {
   const liveLdcUtilization = useSelector(selectLdcUtilization)
+  const selectedCompanyCode = useSelector((state) => state.app.selectedCompanyCode)
   const [rows, setRows] = useState(() => ldcPageCache.rows ?? [])
   const [fileName, setFileName] = useState(() => ldcPageCache.fileName)
   const [search, setSearch] = useState(() => ldcPageCache.search)
@@ -614,10 +615,17 @@ export default function LDCCompliance() {
     }
   }
 
+  const allowedRows = useMemo(
+    () => rows.filter((row) => isAllowedLdcCompanyCode(row.companyCode)
+      && (!selectedCompanyCode || row.companyCode === selectedCompanyCode)),
+    [rows, selectedCompanyCode],
+  )
+
   const stats = useMemo(() => {
-    const allowedRows = rows.filter((row) => isAllowedLdcCompanyCode(row.companyCode))
     const allowedIssueCount = [
-      ...uploadIssues.filter((row) => isAllowedLdcCompanyCode(row.companyCode) && (row.issues ?? []).length),
+      ...uploadIssues.filter((row) => isAllowedLdcCompanyCode(row.companyCode)
+        && (!selectedCompanyCode || row.companyCode === selectedCompanyCode)
+        && (row.issues ?? []).length),
       ...allowedRows.filter((row) => (row.issues ?? []).length),
     ].reduce((seen, row) => {
       const key = row.id || `${row.rowNumber || ''}|${row.certificateNumber || ''}|${row.pan || ''}|${row.companyCode || ''}`
@@ -639,7 +647,7 @@ export default function LDCCompliance() {
       ldcPageCache.stats = nextStats
     }
     return nextStats
-  }, [rows, uploadResult, uploadIssues])
+  }, [rows, allowedRows, uploadResult, uploadIssues, selectedCompanyCode])
 
   const hasCertificateRows = rows.some((row) => !row.isIssueRow)
   const isCertificateDataPending = isLoadingCertificates && !hasCertificateRows
@@ -648,22 +656,19 @@ export default function LDCCompliance() {
     isCertificateDataPending && !ldcPageCache.stats ? '...' : value
   )
 
-  const allowedRows = useMemo(
-    () => rows.filter((row) => isAllowedLdcCompanyCode(row.companyCode)),
-    [rows],
-  )
-
   const allowedIssueRows = useMemo(() => {
     const byKey = new Map()
     const addRow = (row) => {
-      if (!isAllowedLdcCompanyCode(row.companyCode) || !(row.issues ?? []).length) return
+      if (!isAllowedLdcCompanyCode(row.companyCode)
+        || (selectedCompanyCode && row.companyCode !== selectedCompanyCode)
+        || !(row.issues ?? []).length) return
       const key = row.id || `${row.rowNumber || ''}|${row.certificateNumber || ''}|${row.pan || ''}|${row.companyCode || ''}`
       if (!byKey.has(key)) byKey.set(key, row)
     }
     uploadIssues.forEach(addRow)
     allowedRows.forEach(addRow)
     return [...byKey.values()]
-  }, [allowedRows, uploadIssues])
+  }, [allowedRows, uploadIssues, selectedCompanyCode])
 
   const filteredRows = useMemo(() => {
     const needle = search.toLowerCase()
@@ -695,8 +700,8 @@ export default function LDCCompliance() {
   const currentCertificateByKey = useMemo(() => {
     const byKey = new Map()
     const byCertificate = new Map()
-    rows
-      .filter((row) => !row.isIssueRow && row.certificateNumber && isAllowedLdcCompanyCode(row.companyCode))
+    allowedRows
+      .filter((row) => !row.isIssueRow && row.certificateNumber)
       .forEach((row) => {
         const cert = String(row.certificateNumber || '').trim()
         const pan = String(row.pan || '').trim().toUpperCase()
@@ -707,13 +712,14 @@ export default function LDCCompliance() {
         }
       })
     return { byKey, byCertificate }
-  }, [rows])
+  }, [allowedRows])
 
   const currentLdcUtilization = useMemo(() => {
     const hasCurrentCertificates = currentCertificateByKey.byCertificate.size > 0
     if (!hasCurrentCertificates) {
       return liveLdcUtilization
-        .filter((row) => isAllowedLdcCompanyCode(row.companyCode))
+        .filter((row) => isAllowedLdcCompanyCode(row.companyCode)
+          && (!selectedCompanyCode || row.companyCode === selectedCompanyCode))
         .map((row) => ({
           ...row,
           certificateStatus: certificateStatus(row.validFrom, row.validTo),
@@ -721,7 +727,8 @@ export default function LDCCompliance() {
     }
 
     return liveLdcUtilization
-      .filter((row) => isAllowedLdcCompanyCode(row.companyCode))
+      .filter((row) => isAllowedLdcCompanyCode(row.companyCode)
+        && (!selectedCompanyCode || row.companyCode === selectedCompanyCode))
       .map((row) => {
         const cert = String(row.certificateNumber || '').trim()
         const pan = String(row.pan || '').trim().toUpperCase()

@@ -474,8 +474,10 @@ def _build_ldc_utilization(transactions) -> list[dict[str, Any]]:
                 "monthKey": month_key,
                 "month": month_label,
                 "used": 0.0,
+                "transactions": 0,
             })
             month_row["used"] += amount
+            month_row["transactions"] += 1
 
     rows = []
     for row in by_certificate.values():
@@ -1151,7 +1153,9 @@ def _threshold_vendor_summaries(transactions) -> list[dict[str, Any]]:
     for txn in transactions:
         section = _threshold_section_for_transaction(txn)
         pan = txn.vendor_pan or "—"
-        key = f"{pan}||{section}"
+        financial_year = _get_financial_year(txn.posting_date) if txn.posting_date else None
+        company_code = (txn.company_code or "").strip()
+        key = f"{company_code}||{financial_year or ''}||{pan}||{section}"
         base_amount = _get_tds_base_amount(txn)
         if base_amount is None:
             base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
@@ -1160,6 +1164,7 @@ def _threshold_vendor_summaries(transactions) -> list[dict[str, Any]]:
             grouped[key] = {
                 "id": key,
                 "companyCode": txn.company_code or None,
+                "financialYear": financial_year,
                 "name": txn.vendor_name or txn.vendor_code or "Unknown vendor",
                 "vendorId": pan,
                 "vendorCodes": [],

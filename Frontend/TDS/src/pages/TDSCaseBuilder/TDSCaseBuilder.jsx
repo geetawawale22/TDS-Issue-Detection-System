@@ -5,7 +5,11 @@ import Issues from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import StatusBadge, { severityToTone } from '@/components/Common/StatusBadge'
-import { resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter, setStatusFilter, setVendorFilter } from '@/redux/slices/issuesSlice'
+import {
+  resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter,
+  setStatusFilter, setVendorFilter, selectActiveIssues, selectActiveValidationRows,
+  selectActiveCaseLedger,
+} from '@/redux/slices/issuesSlice'
 import { formatCurrency, formatDate } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { getDisplayIssueType, issueTypeFilterOptions } from '@/data/issueTypes'
@@ -273,16 +277,15 @@ export default function TDSCaseBuilder() {
   const [expandedLedgerKey, setExpandedLedgerKey] = useState(null)
   const [glModal, setGlModal] = useState(null)
   const uploadMeta = useSelector((state) => state.issues.uploadMeta)
-  const uploadedIssues = useSelector((state) => state.issues.uploadedIssues)
   const { searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter } = useSelector((state) => state.issues)
 
-  const stats = uploadMeta?.stats || {}
+  const filteredCaseLedger = useSelector(selectActiveCaseLedger)
+  const issueRows = useSelector(selectActiveIssues)
+  const validationRows = useSelector(selectActiveValidationRows)
   const ledgerRows = useMemo(() => (
-    (uploadMeta?.caseLedger || []).map((row) => ({ ...row, id: row.caseId }))
-  ), [uploadMeta])
-  const issueRows = uploadedIssues || []
+    filteredCaseLedger.map((row) => ({ ...row, id: row.caseId }))
+  ), [filteredCaseLedger])
   const hasUpload = Boolean(uploadMeta)
-  const validationRows = uploadMeta?.validationRows || []
   const vendorOptions = useMemo(() => {
     const values = [
       ...ledgerRows.map((row) => row.vendor),
@@ -317,13 +320,13 @@ export default function TDSCaseBuilder() {
   }, [activeTab, quickFilter])
 
   const summaryCards = useMemo(() => [
-    { label: 'Rows Read', value: stats.rowsRead ?? 0, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Total rows read from upload' },
-    { label: 'Document Groups', value: stats.ledgerCases ?? 0, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference' },
-    { label: 'Balanced Groups', value: stats.balancedLedgerCases ?? 0, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: 'Net amount is zero' },
-    { label: 'Open Items', value: stats.openLedgerCases ?? 0, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found' },
-    { label: 'Issue Groups', value: stats.issueLedgerCases ?? 0, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Ledger groups with issue' },
-    { label: 'Issues', value: stats.issuesFound ?? 0, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
-  ], [stats])
+    { label: 'Transactions', value: validationRows.length, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Transactions in the selected Company/FY scope' },
+    { label: 'Document Groups', value: ledgerRows.length, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference' },
+    { label: 'Balanced Groups', value: ledgerRows.filter((row) => row.status === 'BALANCED').length, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: 'Net amount is zero' },
+    { label: 'Open Items', value: ledgerRows.filter((row) => row.openItem || row.status === 'OPEN').length, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found' },
+    { label: 'Issue Groups', value: ledgerRows.filter((row) => row.status === 'ISSUE').length, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Ledger groups with issue' },
+    { label: 'Issues', value: issueRows.length, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
+  ], [validationRows, ledgerRows, issueRows])
 
   const ledgerColumns = [
     { key: 'vendor', header: 'Vendor', render: (row) => (

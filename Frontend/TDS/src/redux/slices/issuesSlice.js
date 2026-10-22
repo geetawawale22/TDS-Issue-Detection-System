@@ -451,41 +451,94 @@ export function selectIsLive(state) {
   return state.issues.dataSource === 'upload'
 }
 
-/**
- * Company scoping for real uploaded data (the Navbar's Company switcher —
- * see appSlice.js). The Issues upload table is not hidden by the Navbar FY
- * selection; SAP extracts can contain mixed posting dates while still being
- * analysed as one uploaded file.
- *
- * A row with no `companyCode` (older cached uploads from before this field
- * existed, or a row SAP genuinely didn't tag) is never excluded by the
- * company filter — treating "unknown" as "doesn't match" would silently
- * hide data instead of just not being able to scope it.
- */
+/** Scope uploaded rows to the global company and Indian financial year. */
 function scopeToCompany(rows, state) {
   if (state.issues.dataSource !== 'upload') return rows
   const { selectedCompanyCode } = state.app
-  return rows.filter((row) => {
-    if (selectedCompanyCode && row.companyCode && row.companyCode !== selectedCompanyCode) return false
-    return true
-  })
+  return selectedCompanyCode
+    ? rows.filter((row) => row.companyCode === selectedCompanyCode)
+    : rows
 }
 
 function scopeToCompanyAndFY(rows, state) {
   if (state.issues.dataSource !== 'upload') return rows
   const { financialYear } = state.app
   return scopeToCompany(rows, state).filter((row) => {
-    if (financialYear && row.date && getFinancialYear(row.date) !== financialYear) return false
-    return true
+    if (!financialYear) return true
+    const rowDate = row.date || row.postingDate
+    if (!rowDate && !row.financialYear) return true
+    const rowFinancialYear = rowDate
+      ? getFinancialYear(rowDate)
+      : row.financialYear
+        ? String(row.financialYear).startsWith('FY ') ? String(row.financialYear) : `FY ${row.financialYear}`
+        : null
+    return rowFinancialYear === financialYear
   })
 }
 
 export function selectActiveIssues(state) {
-  return scopeToCompany(state.issues.uploadedIssues, state)
+  return scopeToCompanyAndFY(state.issues.uploadedIssues, state)
 }
 
 export function selectActiveValidationRows(state) {
-  return scopeToCompany(state.issues.uploadMeta?.validationRows || [], state)
+  return scopeToCompanyAndFY(state.issues.uploadMeta?.validationRows || [], state)
+}
+
+export function selectActiveUploadMetaRows(state, key) {
+  return scopeToCompanyAndFY(state.issues.uploadMeta?.[key] || [], state)
+}
+
+export function selectActiveCaseLedger(state) {
+  const { dataSource } = state.issues
+  const { selectedCompanyCode, financialYear } = state.app
+  const rows = state.issues.uploadMeta?.caseLedger || []
+  if (dataSource !== 'upload') return rows
+
+  return rows.flatMap((row) => {
+    if (selectedCompanyCode && row.companyCode !== selectedCompanyCode) return []
+    const events = (row.events || []).filter((event) => {
+      if (!financialYear) return true
+      const eventYear = event.postingDate && event.postingDate !== '—'
+        ? getFinancialYear(event.postingDate)
+        : row.financialYear
+          ? String(row.financialYear).startsWith('FY ') ? String(row.financialYear) : `FY ${row.financialYear}`
+          : null
+      return eventYear === financialYear
+    })
+    if (!events.length) return []
+    const sumAmount = (types) => events.reduce((sum, event) =>
+      sum + (types.includes(event.eventType) ? Math.abs(Number(event.amount) || 0) : 0), 0)
+    const netAmount = events.reduce((sum, event) => sum + (Number(event.amount) || 0), 0)
+    const invoiceAmount = sumAmount(['INVOICE'])
+    const advanceAmount = sumAmount(['ADVANCE_PAYMENT'])
+    const paymentAmount = sumAmount(['PAYMENT'])
+    const creditAmount = sumAmount(['CREDIT_MEMO'])
+    const reversalAmount = sumAmount(['REVERSAL'])
+    const adjustmentAmount = sumAmount(['DEBIT_NOTE', 'TRANSFER_POSTING', 'TDS_PAYMENT', 'JOURNAL', 'PROVISION', 'SUPPORTING', 'UNKNOWN'])
+    const openAmount = Math.max(0, invoiceAmount + advanceAmount - paymentAmount - creditAmount - reversalAmount - adjustmentAmount)
+    const openItem = Boolean(row.openItem)
+    const issueCount = events.reduce((sum, event) => sum + (event.issues?.length || 0), 0)
+    const status = issueCount ? 'ISSUE' : openItem ? 'OPEN' : Math.abs(netAmount) <= 1 ? 'BALANCED' : 'OPEN'
+    return [{
+      ...row,
+      events,
+      eventCount: events.length,
+      issueCount,
+      invoiceAmount,
+      advanceAmount,
+      paymentAmount,
+      creditAmount,
+      reversalAmount,
+      baseAmount: events.reduce((sum, event) => sum + (['INVOICE', 'ADVANCE_PAYMENT'].includes(event.eventType) ? Math.abs(Number(event.baseAmount) || 0) : 0), 0),
+      adjustmentAmount,
+      debitAmount: events.reduce((sum, event) => sum + (Number(event.amount) > 0 ? Number(event.amount) : 0), 0),
+      netAmount,
+      tdsAmount: events.reduce((sum, event) => sum + (Number(event.tdsAmount) || 0), 0),
+      openAmount,
+      openItem,
+      status,
+    }]
+  })
 }
 
 export function selectActiveVendors(state) {
@@ -663,7 +716,45 @@ export function selectThresholdConsumptionTrend(state) {
 }
 
 export function selectLdcUtilization(state) {
-  return scopeToCompanyAndFY(state.issues.uploadMeta?.ldcUtilization || readLastLdcUtilization(), state)
+  const rows = scopeToCompany(state.issues.uploadMeta?.ldcUtilization || readLastLdcUtilization(), state)
+  if (state.issues.dataSource !== 'upload' || !state.app.financialYear) return rows
+
+  return rows.map((row) => {
+    if (!Array.isArray(row.monthlyUsage) || row.monthlyUsage.length === 0) {
+      return row.financialYear
+        ? (scopeToCompanyAndFY([row], state)[0] || null)
+        : row // Older saved uploads did not include monthly usage by year.
+    }
+    const monthlyUsage = row.monthlyUsage.filter((month) =>
+      getFinancialYear(`${month.monthKey}-01`) === state.app.financialYear,
+    )
+    const used = monthlyUsage.reduce((sum, month) => sum + Number(month.used || 0), 0)
+    const limit = Number(row.limit)
+    const utilization = Number.isFinite(limit) && limit > 0 ? Math.round((used / limit) * 10000) / 100 : null
+    const status = utilization == null ? 'safe'
+      : utilization > 100 ? 'over_utilized'
+        : utilization >= 100 ? 'exhausted'
+          : utilization >= 90 ? 'high_warning'
+            : utilization >= 80 ? 'warning' : 'safe'
+    const statusLabel = status === 'over_utilized' ? 'LDC Over-utilized'
+      : status === 'exhausted' ? 'LDC Limit Exhausted'
+        : status === 'high_warning' ? 'LDC Limit 90% Utilized — High Warning'
+          : status === 'warning' ? 'LDC Limit 80% Utilized — Warning' : 'Within LDC Limit'
+    return {
+      ...row,
+      used,
+      transactions: monthlyUsage.reduce((sum, month) => sum + Number(month.transactions || 0), 0),
+      monthlyUsage,
+      available: Number.isFinite(limit) && limit > 0 ? limit - used : null,
+      utilization,
+      status,
+      statusLabel,
+    }
+  }).filter(Boolean)
+}
+
+export function selectActiveTdsCases(state) {
+  return selectActiveUploadMetaRows(state, 'tdsCases')
 }
 
 export function selectGlCorrections(state) {
