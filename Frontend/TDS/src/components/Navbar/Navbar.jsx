@@ -1,4 +1,4 @@
-import { Bell, Search, CalendarDays, RefreshCw, Building2, ShieldCheck, Menu } from 'lucide-react'
+import { Bell, Search, CalendarDays, Database, RefreshCw, Building2, ShieldCheck, Menu } from 'lucide-react'
 import { useSelector, useDispatch } from 'react-redux'
 import { useAuth } from '@/context/AuthContext'
 import { setSelectedCompanyCode, setFinancialYear, toggleSidebar, FINANCIAL_YEAR_OPTIONS } from '@/redux/slices/appSlice'
@@ -8,7 +8,7 @@ import './Navbar.css'
 
 export default function Navbar() {
   const dispatch = useDispatch()
-  const { financialYear, lastSyncTime, syncStatus, availableCompanyCodes, selectedCompanyCode } = useSelector((s) => s.app)
+  const { financialYear, lastSyncTime, dataSource, syncStatus, availableCompanyCodes, selectedCompanyCode } = useSelector((s) => s.app)
   const { user } = useAuth()
 
   return (
@@ -39,7 +39,7 @@ export default function Navbar() {
                   value={selectedCompanyCode ?? ''}
                   onChange={(e) => dispatch(setSelectedCompanyCode(e.target.value))}
                   className="navbar-meta-select"
-                  title="Filter application data by company code"
+                  title="Switch company — also sets the default for your next SAP upload"
                 >
                   <option value="">All</option>
                   {availableCompanyCodes.map((code) => (
@@ -65,6 +65,11 @@ export default function Navbar() {
               <option key={fy} value={fy}>{fy.replace('FY ', '')}</option>
             ))}
           </select>
+        </div>
+        <div className="navbar-meta-divider" />
+        <div className="navbar-meta-item">
+          <Database size={13} className="navbar-meta-icon" />
+          <span className="navbar-meta-value">{dataSource.split('—')[0].trim()}</span>
         </div>
         <div className="navbar-meta-divider" />
         <div className="navbar-meta-item">

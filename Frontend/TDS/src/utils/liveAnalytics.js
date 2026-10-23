@@ -3,8 +3,6 @@
  * (sample mock or live SAP upload).
  */
 
-import { getFinancialYear } from '@/utils/utils'
-
 const SECTION_THRESHOLDS = {
   '194Q': 5_000_000,
   '194C': 100_000,
@@ -110,8 +108,7 @@ export function deriveThresholdVendors(issues) {
       String(issue.issueType || '').startsWith('PAN_')
       || /PAN Missing\/Invalid/i.test(issue.category || '')
     )
-    const financialYear = getFinancialYear(issue.date || issue.postingDate) || ''
-    const key = `${issue.companyCode || ''}||${financialYear}||${pan}||${section}`
+    const key = `${pan}||${section}`
     if (!byKey.has(key)) {
       byKey.set(key, {
         id: key,
@@ -188,8 +185,7 @@ export function deriveThresholdVendorsFromUpload(thresholdRows, issues) {
   for (const issue of issues || []) {
     const pan = issue.vendorPan || '—'
     const section = issue.section || '—'
-    const financialYear = getFinancialYear(issue.date || issue.postingDate) || ''
-    const key = `${issue.companyCode || ''}||${financialYear}||${pan}||${section}`
+    const key = `${pan}||${section}`
     if (!issueGroups.has(key)) {
       issueGroups.set(key, { issueCount: 0, crossed: false, panIssue: false })
     }
@@ -208,11 +204,8 @@ export function deriveThresholdVendorsFromUpload(thresholdRows, issues) {
   return thresholdRows.map((sourceRow) => {
     const pan = sourceRow.pan || sourceRow.vendorId || '—'
     const section = sourceRow.section || '—'
-    const financialYear = sourceRow.financialYear
-      ? (String(sourceRow.financialYear).startsWith('FY ') ? sourceRow.financialYear : `FY ${sourceRow.financialYear}`)
-      : ''
     const key = sourceRow.id || `${pan}||${section}`
-    const issueGroup = issueGroups.get(`${sourceRow.companyCode || ''}||${financialYear}||${pan}||${section}`) || {}
+    const issueGroup = issueGroups.get(`${pan}||${section}`) || {}
     const hasKnownSection = section !== '—' && Object.prototype.hasOwnProperty.call(SECTION_THRESHOLDS, section)
     const threshold = hasKnownSection ? SECTION_THRESHOLDS[section] : null
     const currentAmount = Number(sourceRow.currentAmount) || 0

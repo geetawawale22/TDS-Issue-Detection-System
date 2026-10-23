@@ -12,13 +12,9 @@ export const ALL_COMPANIES = ''
 const FINANCIAL_YEAR_KEY = 'tds_selected_financial_year'
 const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
 
-// Indian FY runs April–March. Keep two prior years and the next year available.
-const today = new Date()
-const currentFinancialYearStart = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1
-const financialYearLabel = (year) => `FY ${year}-${String(year + 1).slice(-2)}`
-export const FINANCIAL_YEAR_OPTIONS = Array.from({ length: 4 }, (_, index) =>
-  financialYearLabel(currentFinancialYearStart - 2 + index),
-)
+// Indian FY runs April–March. 2025-26 is "current"; a couple of years each
+// side covers reviewing prior filings or preparing for the next one.
+export const FINANCIAL_YEAR_OPTIONS = ['FY 2023-24', 'FY 2024-25', 'FY 2025-26', 'FY 2026-27']
 
 function readLastUploadMeta() {
   if (typeof window === 'undefined') return null
@@ -40,7 +36,7 @@ const initialSelectedCode =
 const storedFinancialYear = typeof window !== 'undefined' ? sessionStorage.getItem(FINANCIAL_YEAR_KEY) : null
 const initialFinancialYear = FINANCIAL_YEAR_OPTIONS.includes(storedFinancialYear)
   ? storedFinancialYear
-  : financialYearLabel(currentFinancialYearStart)
+  : 'FY 2025-26'
 
 // Start collapsed on phone-sized viewports so the off-canvas sidebar
 // (see AppLayout.css's <=768px rule) doesn't cover the page on first load.

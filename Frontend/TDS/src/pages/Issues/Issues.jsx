@@ -688,8 +688,6 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
     const exportSpec = {
       all: { rows: filteredValidationRowsForSummary, columns: VALIDATION_CSV_COLUMNS, suffix: 'all-transactions' },
-      tds_deducted: { rows: filteredValidationRowsForSummary.filter(isRowTdsDeducted), columns: VALIDATION_CSV_COLUMNS, suffix: 'tds-deducted' },
-      tds_not_deducted: { rows: filteredValidationRowsForSummary.filter((row) => !isRowTdsDeducted(row)), columns: VALIDATION_CSV_COLUMNS, suffix: 'tds-not-deducted' },
       passed: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'passed'), columns: VALIDATION_CSV_COLUMNS, suffix: 'passed' },
       issue: { rows: issueValidationRows, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
       insufficient: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
@@ -989,34 +987,28 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             </button>
           )}
         </div>
-        <div className={`issues-summary-card issues-summary-card--success ${validationView === 'tds_deducted' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('tds_deducted')}>
-            <BadgeCheck size={16} />
-            <div>
-              <div className="issues-summary-value">{tdsDeductionSummary.deducted.toLocaleString()}</div>
-              <div className="issues-summary-label">TDS Deducted</div>
-            </div>
-          </button>
-          {tdsDeductionSummary.deducted > 0 && (
-            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Deducted rows" aria-label="Download TDS Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('tds_deducted') }}>
-              <Download size={12} />
-            </button>
-          )}
-        </div>
-        <div className={`issues-summary-card issues-summary-card--danger ${validationView === 'tds_not_deducted' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('tds_not_deducted')}>
-            <BadgeX size={16} />
-            <div>
-              <div className="issues-summary-value">{tdsDeductionSummary.notDeducted.toLocaleString()}</div>
-              <div className="issues-summary-label">TDS Not Deducted</div>
-            </div>
-          </button>
-          {tdsDeductionSummary.notDeducted > 0 && (
-            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Not Deducted rows" aria-label="Download TDS Not Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('tds_not_deducted') }}>
-              <Download size={12} />
-            </button>
-          )}
-        </div>
+        <button
+          className={`issues-summary-card issues-summary-card--success ${validationView === 'tds_deducted' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('tds_deducted')}
+        >
+          <BadgeCheck size={16} />
+          <div>
+            <div className="issues-summary-value">{tdsDeductionSummary.deducted.toLocaleString()}</div>
+            <div className="issues-summary-label">TDS Deducted</div>
+          </div>
+        </button>
+        <button
+          className={`issues-summary-card issues-summary-card--danger ${validationView === 'tds_not_deducted' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('tds_not_deducted')}
+        >
+          <BadgeX size={16} />
+          <div>
+            <div className="issues-summary-value">{tdsDeductionSummary.notDeducted.toLocaleString()}</div>
+            <div className="issues-summary-label">TDS Not Deducted</div>
+          </div>
+        </button>
       </div>
 
       <div className="issues-summary-grid issues-summary-grid--five issues-summary-grid--four">
@@ -1058,20 +1050,17 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             </button>
           )}
         </div>
-        <div className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('skipped')}>
-            <CircleSlash size={16} />
-            <div>
-              <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
-              <div className="issues-summary-label">TDS Not Applicable</div>
-            </div>
-          </button>
-          {summary.skippedRows > 0 && (
-            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Not Applicable rows" aria-label="Download TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('skipped') }}>
-              <Download size={12} />
-            </button>
-          )}
-        </div>
+        <button
+          className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}
+          type="button"
+          onClick={() => setValidationView('skipped')}
+        >
+          <CircleSlash size={16} />
+          <div>
+            <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
+            <div className="issues-summary-label">TDS Not Applicable</div>
+          </div>
+        </button>
         <div className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}>
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('insufficient')}>
             <AlertTriangle size={16} />

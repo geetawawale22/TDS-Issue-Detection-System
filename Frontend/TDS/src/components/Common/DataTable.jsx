@@ -160,7 +160,6 @@ export default function DataTable({
                 return (
                   <Fragment key={rowKey}>
                     <tr
-                      className={onRowClick ? 'data-table-row-clickable' : undefined}
                       onClick={() => onRowClick && onRowClick(row)}
                       style={{ cursor: onRowClick ? 'pointer' : 'default' }}
                     >

@@ -186,10 +186,6 @@
   color: var(--color-primary);
 }
 
-@media (hover: none) {
-  .issues-summary-card-download { opacity: 1; }
-}
-
 .issues-summary-value {
   font-size: 19px;
   font-weight: 600;

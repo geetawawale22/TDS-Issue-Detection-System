@@ -132,11 +132,6 @@
   cursor: pointer;
 }
 
-.data-table tbody tr.data-table-row-clickable:hover {
-  background: #FFF1F2;
-  box-shadow: inset 3px 0 0 var(--color-primary);
-}
-
 .data-table tbody td {
   padding: 9px 12px;
   vertical-align: middle;

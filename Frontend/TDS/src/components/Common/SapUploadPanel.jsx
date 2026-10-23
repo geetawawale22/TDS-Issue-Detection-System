@@ -58,7 +58,7 @@ export default function SapUploadPanel({
 
   function handleCompanyCodeChange(value) {
     setCompanyCode(value)
-    if (followSelectedCompany) dispatch(setSelectedCompanyCode(value))
+    if (followSelectedCompany && value) dispatch(setSelectedCompanyCode(value))
   }
   const [includeInfo, setIncludeInfo] = useState(false)
   const [dragOver, setDragOver] = useState(false)
