@@ -1,0 +1,139 @@
+.pan-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pan-kpi-button {
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.pan-kpi-button:hover,
+.pan-kpi-button:focus-visible {
+  border-color: #2563EB;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), var(--shadow-sm);
+  outline: none;
+}
+
+.pan-kpi-button.is-active {
+  border-color: #E31837;
+  box-shadow: 0 0 0 3px rgba(227, 24, 55, 0.10), var(--shadow-sm);
+}
+
+.pan-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--border-radius-xs);
+  background: var(--color-warning-bg);
+  color: #92400E;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.pan-banner svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.pan-banner code {
+  font-size: 11.5px;
+}
+
+.pan-strong {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.pan-muted {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+.pan-search-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+}
+
+.pan-search-wrapper .filter-input {
+  width: 220px;
+}
+
+.data-table tr.pan-row--failing td {
+  background: var(--color-danger-bg);
+}
+
+.data-table tr.pan-row--failing td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-danger);
+}
+
+.pan-value--failing,
+.pan-rate--failing {
+  color: #B91C1C;
+  font-weight: 600;
+}
+
+.pan-rate--failing {
+  font-size: 12px;
+}
+
+.pan-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pan-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: #2563EB;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.pan-link--danger {
+  color: #B91C1C;
+}
+
+.pan-link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pan-spin {
+  animation: pan-spin 0.9s linear infinite;
+}
+
+@keyframes pan-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1200px) {
+  .pan-summary-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .pan-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pan-search-wrapper .filter-input {
+    width: 100%;
+  }
+}

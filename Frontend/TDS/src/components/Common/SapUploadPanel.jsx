@@ -10,9 +10,10 @@ import {
   uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
   selectActiveIssues, selectActiveValidationRows,
 } from '@/redux/slices/issuesSlice'
-import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode } from '@/redux/slices/appSlice'
+import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode, setFinancialYear } from '@/redux/slices/appSlice'
 import { seedPansFromIssues } from '@/redux/slices/panSlice'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
+import { dominantFinancialYear } from '@/utils/utils'
 import './SapUploadPanel.css'
 
 const ACCEPTED = '.csv,.xlsx,.xls,.xlsm'
@@ -126,6 +127,10 @@ export default function SapUploadPanel({
       })
       dispatch(uploadSucceeded(result))
       dispatch(seedPansFromIssues(result.issues || []))
+      // Show the FY the uploaded data belongs to, so its rows aren't hidden
+      // by an FY selected earlier.
+      const uploadFinancialYear = dominantFinancialYear(result.validationRows || [])
+      if (uploadFinancialYear) dispatch(setFinancialYear(uploadFinancialYear))
       dispatch(setSyncStatus('synced'))
       dispatch(setLastSyncTime('Just now'))
       dispatch(setDataSourceLabel(

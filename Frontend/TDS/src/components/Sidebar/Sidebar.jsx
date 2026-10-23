@@ -4,7 +4,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutGrid, Gauge, GitPullRequestArrow,
   FileBarChart, Settings, ShieldCheck, ChevronsLeft,
-  BadgePercent, GitBranch,
+  BadgePercent, GitBranch, IdCard,
 } from 'lucide-react'
 import { useDispatch, useSelector } from 'react-redux'
 import { toggleSidebar } from '@/redux/slices/appSlice'
@@ -17,6 +17,7 @@ const navItems = [
   { label: 'Correction Center',    path: '/correction-center',     icon: GitPullRequestArrow },
   { label: 'Reports',              path: '/reports',               icon: FileBarChart },
   { label: 'LDC Compliance',        path: '/ldc-compliance',        icon: BadgePercent },
+  { label: 'PAN Verification',     path: '/pan-verification',      icon: IdCard },
   { label: 'Settings',             path: '/settings',              icon: Settings },
 ]
 

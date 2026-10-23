@@ -61,7 +61,11 @@ export default function Navbar() {
             onChange={(e) => dispatch(setFinancialYear(e.target.value))}
             className="navbar-meta-select"
           >
-            {FINANCIAL_YEAR_OPTIONS.map((fy) => (
+            {/* An uploaded file can be from an FY outside the default list. */}
+            {(FINANCIAL_YEAR_OPTIONS.includes(financialYear)
+              ? FINANCIAL_YEAR_OPTIONS
+              : [...FINANCIAL_YEAR_OPTIONS, financialYear].sort()
+            ).map((fy) => (
               <option key={fy} value={fy}>{fy.replace('FY ', '')}</option>
             ))}
           </select>

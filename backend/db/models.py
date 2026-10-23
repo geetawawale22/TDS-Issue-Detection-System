@@ -220,3 +220,36 @@ class LDCUploadIssueRow(Base):
     issues = Column(Text, nullable=False)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
+# PAN VERIFICATION TABLE
+# One row per PAN — the latest Government PAN check result. The
+# rule engine reads this before analysis, so an INVALID or
+# INOPERATIVE PAN is treated like a missing PAN under Section 206AA.
+# ============================================================
+
+class PanVerification(Base):
+    __tablename__ = "pan_verifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pan = Column(String(10), unique=True, nullable=False, index=True)
+
+    status = Column(String(20), nullable=False)
+    # VERIFIED       — PAN exists and is operative
+    # INVALID        — Government API says the PAN does not exist
+    # INOPERATIVE    — PAN exists but is inoperative (e.g. not linked with Aadhaar)
+    # INVALID_FORMAT — fails the AAAAA9999A structure check, never sent to the API
+    # NOT_VERIFIED   — Government API not configured yet, so only format was checked
+    # ERROR          — the API call failed; retry later
+
+    source = Column(String(20), nullable=False)
+    # "api" | "manual" | "format_check"
+
+    name_on_record = Column(String(255), nullable=True)
+    # Name registered against the PAN — reserved for the later name-match check.
+
+    message = Column(Text, nullable=True)
+    checked_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    checked_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

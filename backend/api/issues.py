@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+import json
 import math
 from io import BytesIO
 from pathlib import Path
@@ -17,14 +18,16 @@ from uuid import uuid4
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy import or_
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 from core.dependencies import get_current_user, get_user_company_codes
 from db.database import get_db
-from db.models import LDCCertificateMaster, User, VendorMaster
+from db.models import LDCCertificateMaster, PanVerification, User, VendorMaster
 from ingestion.sap_translator import (
     COLUMN_ALIASES,
     build_transactions_from_sap_export,
@@ -246,6 +249,35 @@ def _set_ldc_no_match_reason(txn, certificates: list[LDCCertificateMaster], reas
         f"{reason}. Available LDC scope for this PAN/vendor is company {company_codes}, "
         f"section {sections}, WTax {wtax_keys}, validity {validities}."
     )
+
+
+def _apply_pan_verification_to_transactions(transactions, db: Session) -> None:
+    """
+    Copy saved Government PAN check results onto the transactions so the
+    rule engine treats INVALID / INOPERATIVE PANs like a missing PAN (206AA).
+    Runs after the LDC step, which may fill in PANs from the vendor master.
+    """
+    pans = {
+        txn.vendor_pan.strip().upper()
+        for txn in transactions
+        if txn.vendor_pan and _looks_like_pan(txn.vendor_pan)
+    }
+    if not pans:
+        return
+    try:
+        status_by_pan = {
+            row.pan: row.status
+            for row in db.query(PanVerification.pan, PanVerification.status)
+            .filter(PanVerification.pan.in_(pans))
+            .all()
+        }
+    except ProgrammingError:
+        # pan_verifications table not migrated yet — analyse without it.
+        db.rollback()
+        return
+    for txn in transactions:
+        pan = (txn.vendor_pan or "").strip().upper()
+        txn.vendor_pan_status = status_by_pan.get(pan)
 
 
 def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
@@ -882,13 +914,23 @@ def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, An
 
     return sorted(case_ledgers, key=lambda item: (item.get("status") != "ISSUE", item.get("anchorDocNo") or ""))
 
+def _read_excel_fast(content: bytes) -> pd.DataFrame:
+    # calamine (Rust) reads large workbooks ~6x faster than openpyxl and gives
+    # the same frame; openpyxl stays as the fallback if it is unavailable or
+    # trips on an unusual workbook.
+    try:
+        return pd.read_excel(BytesIO(content), engine="calamine")
+    except Exception:
+        return pd.read_excel(BytesIO(content), engine="openpyxl")
+
+
 def _read_upload(filename: str, content: bytes) -> pd.DataFrame:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
         try:
-            return pd.read_csv(BytesIO(content))
+            return pd.read_csv(BytesIO(content), low_memory=False)
         except UnicodeDecodeError:
-            return pd.read_csv(BytesIO(content), encoding="latin-1")
+            return pd.read_csv(BytesIO(content), encoding="latin-1", low_memory=False)
 
     try:
         # openpyxl supports both .xlsx and macro-enabled .xlsm workbooks.
@@ -898,7 +940,7 @@ def _read_upload(filename: str, content: bytes) -> pd.DataFrame:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Legacy .xls files are not supported yet. Save the file as .xlsx and upload it again.",
             )
-        return pd.read_excel(BytesIO(content), engine="openpyxl")
+        return _read_excel_fast(content)
     except HTTPException:
         raise
     except Exception as exc:
@@ -1441,7 +1483,25 @@ def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, st
     return notes
 
 
-@router.post("/upload")
+class _FastJSONResponse(JSONResponse):
+    """JSON response that skips FastAPI's per-value ``jsonable_encoder`` walk.
+
+    Upload results hold hundreds of thousands of plain dicts/strings/numbers,
+    and walking them in Python took longer than the analysis itself. Only the
+    few non-native values (dates, Decimals, ...) go through jsonable_encoder.
+    """
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            default=jsonable_encoder,
+        ).encode("utf-8")
+
+
+@router.post("/upload", response_class=_FastJSONResponse)
 async def upload_sap_file(
     files: list[UploadFile] | None = File(None),
     file: UploadFile | None = File(None),
@@ -1534,6 +1594,7 @@ async def upload_sap_file(
         )
 
     _apply_ldc_master_to_transactions(transactions, db)
+    _apply_pan_verification_to_transactions(transactions, db)
     tds_cases, case_stats = build_tds_cases(transactions)
     ldc_utilization = _build_ldc_utilization(transactions)
     _attach_ldc_limits(ldc_utilization, db)
@@ -1673,7 +1734,9 @@ async def upload_sap_file(
         "low": sum(issue["severity"] == "low" for issue in issues),
     }
 
-    return {
+    # Returned as a response object (not a dict) so FastAPI does not run its
+    # slow jsonable_encoder over the whole payload first.
+    return _FastJSONResponse({
         "uploadId": str(uuid4()),
         "fileName": filename,
         "fileNames": filenames,
@@ -1684,13 +1747,15 @@ async def upload_sap_file(
         "sections": sections,
         "thresholdVendors": threshold_vendors,
         "ldcUtilization": ldc_utilization,
-        "tdsCases": tds_cases,
+        # Not read by the UI (the Document Ledger uses caseLedger) and ~1/6 of
+        # the payload on large uploads, so it is left empty here.
+        "tdsCases": [],
         "caseStats": case_stats,
         "caseLedger": case_ledger,
         "validationRows": validation_rows,
         "unrecognizedColumns": [],
         "errors": [],
-    }
+    })
 
 
 @router.post("/upload-case-sources")
@@ -1720,6 +1785,7 @@ async def upload_case_source_files(
 
     transactions, _duplicate_transactions = _dedupe_transactions(build_transactions_from_sap_rows(transaction_rows))
     _apply_ldc_master_to_transactions(transactions, db)
+    _apply_pan_verification_to_transactions(transactions, db)
     tds_cases, case_stats = build_tds_cases(transactions)
     ldc_utilization = _build_ldc_utilization(transactions)
     _attach_ldc_limits(ldc_utilization, db)

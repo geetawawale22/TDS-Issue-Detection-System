@@ -20,6 +20,8 @@ export default function DataTable({
   // primary list.
   showFloatingPager = false,
   stateKey,
+  // Optional (row) => className, e.g. to highlight rows that need attention.
+  rowClassName,
 }) {
   const didMountRef = useRef(false)
   const [page, setPageState] = useState(() => stateKey ? pageByStateKey[stateKey] ?? 1 : 1)
@@ -160,7 +162,7 @@ export default function DataTable({
                 return (
                   <Fragment key={rowKey}>
                     <tr
-                      className={onRowClick ? 'data-table-row-clickable' : undefined}
+                      className={[onRowClick && 'data-table-row-clickable', rowClassName?.(row)].filter(Boolean).join(' ') || undefined}
                       onClick={() => onRowClick && onRowClick(row)}
                       style={{ cursor: onRowClick ? 'pointer' : 'default' }}
                     >

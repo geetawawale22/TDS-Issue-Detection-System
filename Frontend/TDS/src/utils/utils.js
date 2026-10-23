@@ -31,6 +31,21 @@ export function getFinancialYear(dateInput) {
   return `FY ${year}-${String(year + 1).slice(-2)}`
 }
 
+// The financial year most of the given rows fall in (by posting date), or
+// null when no row has a usable date. Used to follow the FY of an upload.
+export function dominantFinancialYear(rows = []) {
+  const counts = new Map()
+  rows.forEach((row) => {
+    const fy = getFinancialYear(row.postingDate || row.date)
+    if (fy) counts.set(fy, (counts.get(fy) || 0) + 1)
+  })
+  let best = null
+  counts.forEach((count, fy) => {
+    if (!best || count > counts.get(best)) best = fy
+  })
+  return best
+}
+
 function parseDateInput(dateInput) {
   if (!dateInput) return null
   if (dateInput instanceof Date) {

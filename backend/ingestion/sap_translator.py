@@ -156,15 +156,28 @@ def _get(row: dict, field: str) -> Any:
         if key in row and row[key] is not None and str(row[key]).strip() not in ("", "nan", "None"):
             return row[key]
 
-    normalised_row = {
-        _normalise_header_name(key): value
-        for key, value in row.items()
-    }
+    # Every row of an upload shares the same headers, so the normalised
+    # header lookup is built once per column layout rather than per call.
+    header_map = _normalised_header_map(tuple(row))
     for key in COLUMN_ALIASES.get(field, (field,)):
-        value = normalised_row.get(_normalise_header_name(key))
+        original_key = header_map.get(_normalise_header_name_cached(key))
+        if original_key is None:
+            continue
+        value = row[original_key]
         if value is not None and str(value).strip() not in ("", "nan", "None"):
             return value
     return None
+
+
+@lru_cache(maxsize=4096)
+def _normalise_header_name_cached(value: str) -> str:
+    return _normalise_header_name(value)
+
+
+@lru_cache(maxsize=64)
+def _normalised_header_map(keys: tuple) -> dict[str, Any]:
+    # Later headers win on a clash, matching the previous dict-comprehension.
+    return {_normalise_header_name(key): key for key in keys}
 
 
 def get_tds_section_code_raw(row: dict) -> str:

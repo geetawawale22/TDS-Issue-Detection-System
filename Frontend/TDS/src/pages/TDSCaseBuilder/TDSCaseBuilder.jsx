@@ -286,6 +286,11 @@ export default function TDSCaseBuilder() {
     filteredCaseLedger.map((row) => ({ ...row, id: row.caseId }))
   ), [filteredCaseLedger])
   const hasUpload = Boolean(uploadMeta)
+  // Rows with at least one issue — a row failing two rules counts once, so this
+  // matches the "Issues Found" card inside the Issues tab.
+  const issueRowCount = useMemo(() => (
+    validationRows.filter((row) => row.status === 'issue').length
+  ), [validationRows])
   const vendorOptions = useMemo(() => {
     const values = [
       ...ledgerRows.map((row) => row.vendor),
@@ -325,8 +330,8 @@ export default function TDSCaseBuilder() {
     { label: 'Balanced Groups', value: ledgerRows.filter((row) => row.status === 'BALANCED').length, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: 'Net amount is zero' },
     { label: 'Open Items', value: ledgerRows.filter((row) => row.openItem || row.status === 'OPEN').length, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found' },
     { label: 'Issue Groups', value: ledgerRows.filter((row) => row.status === 'ISSUE').length, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Ledger groups with issue' },
-    { label: 'Issues', value: issueRows.length, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
-  ], [validationRows, ledgerRows, issueRows])
+    { label: 'Issues', value: issueRowCount, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
+  ], [validationRows, ledgerRows, issueRowCount])
 
   const ledgerColumns = [
     { key: 'vendor', header: 'Vendor', render: (row) => (
@@ -687,7 +692,7 @@ export default function TDSCaseBuilder() {
           Document Ledger ({ledgerRows.length.toLocaleString()})
         </button>
         <button type="button" className={`case-tab ${activeTab === 'issues' ? 'active' : ''}`} onClick={() => applyQuickFilter('issues', 'issues-all')}>
-          Issues ({issueRows.length.toLocaleString()})
+          Issues ({issueRowCount.toLocaleString()})
         </button>
         <button type="button" className={`case-tab ${activeTab === 'gl' ? 'active' : ''}`} onClick={() => applyQuickFilter('gl', 'gl-all')}>
           GL Ledger ({glRows.length.toLocaleString()})

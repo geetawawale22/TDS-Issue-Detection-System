@@ -28,6 +28,7 @@ class Transaction(BaseModel):
     vendor_code: str
     vendor_name: Optional[str] = None
     vendor_pan: str
+    vendor_pan_status: Optional[str] = None       # Government PAN check result (pan_verifications.status), if any
     vendor_category: Optional[str] = None         # derived from PAN 4th char, or SAP field if confirmed
     person: Optional[str] = None
 

@@ -768,11 +768,15 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     { key: 'section', header: 'Section', render: (r) => <span className="font-mono issues-section-single">{r.section}</span> },
     { key: 'baseAmount', header: 'Base Amt', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
-    { key: 'tdsNote', header: 'TDS Note', render: (r) => (
-      r.tdsNote
-        ? <span className="issues-tds-note" title={r.tdsNote}>{r.tdsNote}</span>
-        : <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-    )},
+    // TDS Note is shown only in the "TDS Not Deducted" and
+    // "Passed - TDS Not Applicable" views.
+    ...(['tds_not_deducted', 'skipped'].includes(validationView) ? [
+      { key: 'tdsNote', header: 'TDS Note', render: (r) => (
+        r.tdsNote
+          ? <span className="issues-tds-note" title={r.tdsNote}>{r.tdsNote}</span>
+          : <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+      )},
+    ] : []),
     { key: 'status', header: validationView === 'issue' ? 'Issue Type' : 'Validation Result', sortValue: (r) => (
       r.status === 'issue' ? (r.issueTypeLabel || 'Issue Found') : formatStatusLabel(r.status)
     ), render: (r) => {
@@ -1025,7 +1029,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             <CheckCircle2 size={16} />
             <div>
               <div className="issues-summary-value">{summary.passedRows.toLocaleString()}</div>
-              <div className="issues-summary-label">Passed</div>
+              <div className="issues-summary-label">Passed - TDS Deducted</div>
             </div>
           </button>
           {summary.passedRows > 0 && (
@@ -1035,6 +1039,20 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
               title="Download CSV of all Passed rows"
               onClick={(e) => { e.stopPropagation(); handleExportKpi('passed') }}
             >
+              <Download size={12} />
+            </button>
+          )}
+        </div>
+        <div className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('skipped')}>
+            <CircleSlash size={16} />
+            <div>
+              <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
+              <div className="issues-summary-label">Passed - TDS Not Applicable</div>
+            </div>
+          </button>
+          {summary.skippedRows > 0 && (
+            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Not Applicable rows" aria-label="Download TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('skipped') }}>
               <Download size={12} />
             </button>
           )}
@@ -1054,20 +1072,6 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
               title="Download CSV of all Issues Found rows"
               onClick={(e) => { e.stopPropagation(); handleExportKpi('issue') }}
             >
-              <Download size={12} />
-            </button>
-          )}
-        </div>
-        <div className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('skipped')}>
-            <CircleSlash size={16} />
-            <div>
-              <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
-              <div className="issues-summary-label">TDS Not Applicable</div>
-            </div>
-          </button>
-          {summary.skippedRows > 0 && (
-            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Not Applicable rows" aria-label="Download TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('skipped') }}>
               <Download size={12} />
             </button>
           )}

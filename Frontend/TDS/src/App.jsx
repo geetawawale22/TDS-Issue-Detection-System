@@ -17,6 +17,7 @@ import ThresholdMonitoring from '@/pages/ThresholdMonitoring/ThresholdMonitoring
 import CorrectionCenter from '@/pages/CorrectionCenter/CorrectionCenter'
 import Reports from '@/pages/Reports/Reports'
 import LDCCompliance from '@/pages/LDCCompliance/LDCCompliance'
+import PanVerification from '@/pages/PanVerification/PanVerification'
 import TDSCaseBuilder from '@/pages/TDSCaseBuilder/TDSCaseBuilder'
 import Settings from '@/pages/Settings/Settings'
 
@@ -57,6 +58,7 @@ function App() {
               <Route path="/correction-center" element={<CorrectionCenter />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/ldc-compliance" element={<LDCCompliance />} />
+              <Route path="/pan-verification" element={<PanVerification />} />
               <Route path="/tds-case-builder" element={<Navigate to="/issues" replace />} />
               <Route path="/settings" element={<Settings />} />
             </Route>

@@ -1,5 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit'
 import { readStoredSession } from '@/services/sessionStorage'
+import { dominantFinancialYear } from '@/utils/utils'
 
 // Company code the user was last working in, kept in sessionStorage so a
 // page refresh doesn't reset it mid-session. Only meaningful once we know
@@ -38,9 +39,12 @@ const initialSelectedCode =
     : initialCompanyCodes[0] ?? null
 
 const storedFinancialYear = typeof window !== 'undefined' ? sessionStorage.getItem(FINANCIAL_YEAR_KEY) : null
-const initialFinancialYear = FINANCIAL_YEAR_OPTIONS.includes(storedFinancialYear)
+// Any "FY 2026-27" style value is accepted, since an upload can switch to an
+// FY outside FINANCIAL_YEAR_OPTIONS. With nothing chosen this session, follow
+// the saved upload's FY so its rows aren't hidden.
+const initialFinancialYear = /^FY \d{4}-\d{2}$/.test(storedFinancialYear || '')
   ? storedFinancialYear
-  : financialYearLabel(currentFinancialYearStart)
+  : dominantFinancialYear(lastUploadMeta?.validationRows || []) || financialYearLabel(currentFinancialYearStart)
 
 // Start collapsed on phone-sized viewports so the off-canvas sidebar
 // (see AppLayout.css's <=768px rule) doesn't cover the page on first load.

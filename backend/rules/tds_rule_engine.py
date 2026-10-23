@@ -310,13 +310,13 @@ def check_pan_validity(txn: Transaction) -> Optional[TDSIssue]:
     exceed 20%. So both candidate rates are now computed here and the
     higher one is applied whenever PAN is missing/invalid.
 
-    NOTE: This checks PAN PRESENCE and FORMAT only, using SAP data.
-    It does NOT confirm the PAN is genuinely active/operative with the
-    Income Tax Department — that requires the Government PAN
-    verification API, which is not yet available (pending Mahindra).
-    Once available, plug the real check into _is_pan_operative() below.
+    A well-formed PAN is also treated as not furnished when the
+    Government PAN check (PAN Verification page, stored on the
+    transaction as vendor_pan_status) found it INVALID or INOPERATIVE.
+    PANs that have not been verified yet are not flagged.
     """
-    if _is_valid_pan_format(txn.vendor_pan):
+    reason = _pan_failure_reason(txn)
+    if reason is None:
         return None  # PAN looks fine — 206AA doesn't apply here.
         # 206AB alone (PAN present, vendor is a non-filer) is handled
         # separately by check_206ab_non_filer further down the chain.
@@ -343,8 +343,6 @@ def check_pan_validity(txn: Transaction) -> Optional[TDSIssue]:
                 required_rate = section_206ab_rate
                 rule_applied = "206AA + 206AB (higher of the two applies)"
 
-    reason = "missing" if not txn.vendor_pan else "invalid format"
-
     if txn.tds_deducted_rate is None:
         return TDSIssue(
             category="PAN Missing/Invalid — TDS Not Deducted",
@@ -369,12 +367,21 @@ def check_pan_validity(txn: Transaction) -> Optional[TDSIssue]:
     )
 
 
-def _is_pan_operative(pan: str) -> Optional[bool]:
+def _pan_failure_reason(txn: Transaction) -> Optional[str]:
     """
-    PLACEHOLDER for future Government PAN verification API integration.
-    Returns None until real API access is available — meaning this
-    check is currently skipped, not failed.
+    Why the vendor PAN counts as "not furnished" under Section 206AA, or
+    None when it is fine. Verification results come from the
+    pan_verifications table (see services/pan_verification_service.py).
     """
+    if not txn.vendor_pan:
+        return "missing"
+    if not _is_valid_pan_format(txn.vendor_pan):
+        return "invalid format"
+    pan_status = (txn.vendor_pan_status or "").upper()
+    if pan_status == "INVALID":
+        return "invalid as per Government PAN verification"
+    if pan_status == "INOPERATIVE":
+        return "inoperative as per Government PAN verification"
     return None
 
 

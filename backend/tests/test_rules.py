@@ -505,6 +505,37 @@ def test_invalid_pan_for_194q_uses_five_percent_206aa_exception():
     assert "requires 5.0% TDS" in issue.message
 
 
+def test_pan_marked_invalid_by_government_check_applies_206aa():
+    transaction = _contractor_transaction("ABCFA1234K", 1.0)
+    transaction.vendor_pan_status = "INVALID"
+
+    issue = check_pan_validity(transaction)
+
+    assert issue is not None
+    assert issue.category == "PAN Missing/Invalid — Short TDS Deducted"
+    assert issue.expected_rate == 20.0
+    assert "invalid as per Government PAN verification" in issue.message
+
+
+def test_inoperative_pan_applies_206aa():
+    transaction = _contractor_transaction("ABCFA1234K", 20.0)
+    transaction.vendor_pan_status = "INOPERATIVE"
+
+    issue = check_pan_validity(transaction)
+
+    assert issue is not None
+    assert issue.category == "PAN Missing/Invalid — Correctly Handled"
+    assert "inoperative" in issue.message
+
+
+def test_unverified_or_verified_pan_is_not_flagged_under_206aa():
+    for pan_status in (None, "NOT_VERIFIED", "ERROR", "VERIFIED"):
+        transaction = _contractor_transaction("ABCFA1234K", 1.0)
+        transaction.vendor_pan_status = pan_status
+
+        assert check_pan_validity(transaction) is None
+
+
 def test_missing_pan_and_non_filer_where_206aa_is_still_higher():
     """
     For a low-rate section like 194C, 206AB's 2x rate (or 5% floor)
