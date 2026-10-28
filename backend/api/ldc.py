@@ -328,6 +328,17 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _exemption_percent(row: dict[str, Any]) -> float | None:
+    """Certificate exemption % (60 = TDS reduced by 60%, 100 = nil TDS).
+
+    A blank cell means no exemption, i.e. 0%; only non-numeric text is invalid.
+    """
+    value = _get(row, "Approved_TDS_Rate", "Exemption_Percentage")
+    if _is_blank(value):
+        return 0.0
+    return _to_float(value)
+
+
 def _normalise_columns(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.copy()
     frame.columns = [str(column).strip().replace(" ", "_") for column in frame.columns]
@@ -372,7 +383,7 @@ def _validate_certificate(row: dict[str, Any], vendor_pans: set[str]) -> list[st
     issues: list[str] = []
     cert_type = _clean_upper(_get(row, "Certificate_Type")) or "LOWER"
     pan = _extract_pan(_get(row, "PAN", "Tax_Number_3", "Tax_Number_1"))
-    rate = _to_float(_get(row, "Approved_TDS_Rate", "Exemption_Percentage"))
+    exemption = _exemption_percent(row)
     valid_from = _to_date(_get(row, "Valid_From", "Exemption_From"))
     valid_to = _to_date(_get(row, "Valid_To", "Exemption_To"))
     status_value = _clean_upper(_get(row, "Status")) or "ACTIVE"
@@ -391,12 +402,12 @@ def _validate_certificate(row: dict[str, Any], vendor_pans: set[str]) -> list[st
         issues.append("Company code missing")
     if not _ldc_section_key(row):
         issues.append("TDS section missing")
-    if rate is None:
-        issues.append("Approved TDS rate missing/invalid")
-    elif rate < 0:
-        issues.append("Approved TDS rate cannot be negative")
-    if cert_type == "NIL" and rate != 0:
-        issues.append("NIL certificate must have 0% approved rate")
+    if exemption is None:
+        issues.append("Exemption % invalid")
+    elif not 0 <= exemption <= 100:
+        issues.append("Exemption % must be between 0 and 100")
+    if cert_type == "NIL" and exemption != 100:
+        issues.append("NIL certificate must have 100% exemption")
     if valid_from is None:
         issues.append("Valid From date missing/invalid")
     if valid_to is None:
@@ -547,7 +558,7 @@ async def upload_ldc_certificates(
         section = _ldc_section_key(row_dict)
         certificate_type = _clean_upper(_get(row_dict, "Certificate_Type")) or "LOWER"
         status_value = _clean_upper(_get(row_dict, "Status")) or "ACTIVE"
-        approved_rate = _to_float(_get(row_dict, "Approved_TDS_Rate", "Exemption_Percentage"))
+        approved_rate = _exemption_percent(row_dict)
         valid_from = _to_date(_get(row_dict, "Valid_From", "Exemption_From"))
         valid_to = _to_date(_get(row_dict, "Valid_To", "Exemption_To"))
 
@@ -579,7 +590,7 @@ async def upload_ldc_certificates(
         if not section:
             persist_blockers.append("TDS section missing")
         if approved_rate is None:
-            persist_blockers.append("Approved TDS rate missing/invalid")
+            persist_blockers.append("Exemption % invalid")
         if valid_from is None:
             persist_blockers.append("Valid From date missing/invalid")
         if valid_to is None:

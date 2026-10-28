@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from api import auth
 from api import admin
 from api import issues
@@ -7,6 +8,11 @@ from api import ldc
 from api import pan
 
 app = FastAPI(title="TDS Issue Detection System")
+
+# Upload results run to tens of MB of repetitive JSON; gzip cuts the download
+# roughly tenfold and the browser decompresses it transparently. Level 5
+# keeps compression time low compared with the default of 9.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
 app.add_middleware(
     CORSMiddleware,

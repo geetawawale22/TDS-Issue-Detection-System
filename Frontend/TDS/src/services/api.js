@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { readStoredSession, clearSession } from './sessionStorage'
+import { startRequest, endRequest } from './loaderBus'
 
 const DEFAULT_API_HOST = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? `http://${DEFAULT_API_HOST}:8000`
@@ -15,14 +16,32 @@ api.interceptors.request.use((config) => {
   if (session?.token) {
     config.headers.Authorization = `Bearer ${session.token}`
   }
+  // File uploads render their own progress UI, so they skip the page loader.
+  // Callers can also opt out explicitly with { skipGlobalLoader: true }.
+  const isUpload = config.data instanceof FormData || Boolean(config.onUploadProgress)
+  if (!config.skipGlobalLoader && !isUpload) {
+    config._trackedByLoader = true
+    startRequest()
+  }
   return config
 })
+
+function finishTracking(config) {
+  if (config?._trackedByLoader) {
+    config._trackedByLoader = false
+    endRequest()
+  }
+}
 
 // Normalize FastAPI error shape ({ detail: "..." }) into a plain Error,
 // and force a full logout if the token is rejected/expired server-side.
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    finishTracking(response.config)
+    return response
+  },
   (error) => {
+    finishTracking(error.config)
     const status = error.response?.status
     const detail = error.response?.data?.detail
 

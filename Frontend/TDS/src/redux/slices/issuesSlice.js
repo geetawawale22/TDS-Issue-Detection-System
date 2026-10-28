@@ -1,4 +1,5 @@
-import { createSlice } from '@reduxjs/toolkit'
+import { createSlice, current, isDraft } from '@reduxjs/toolkit'
+import { clearCachedUpload, readCachedUpload, writeCachedUpload } from '@/utils/uploadCache'
 import {
   deriveIssuesByType,
   deriveIssuesBySection,
@@ -19,6 +20,10 @@ const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
 const LDC_UTILIZATION_STORAGE_KEY = 'tds_ldc_utilization_results'
 const CORRECTION_REGISTER_STORAGE_KEY = 'tds_correction_register'
 const LAST_UPLOAD_SCHEMA_VERSION = 5
+// localStorage holds ~5 MB per origin and an upload row serialises to 1–2 KB,
+// so anything past this many rows can never be saved. Skipping the attempt
+// avoids stringifying tens of MB on every upload and correction.
+const LAST_UPLOAD_MAX_ROWS = 10000
 
 
 function correctionActor(user) {
@@ -119,23 +124,46 @@ function saveLastUpload(state) {
   } catch {
     // LDC utilization is a small convenience cache; upload analysis remains the source of truth.
   }
+  // Reducers pass an Immer draft, which is revoked once the reducer returns;
+  // snapshot it so the async IndexedDB write below still has the data.
+  const snapshot = isDraft(state) ? current(state) : state
   const payload = {
     schemaVersion: LAST_UPLOAD_SCHEMA_VERSION,
-    uploadedIssues: state.uploadedIssues,
-    uploadMeta: state.uploadMeta,
-    correctionGroups: state.correctionGroups,
+    uploadedIssues: snapshot.uploadedIssues,
+    uploadMeta: snapshot.uploadMeta,
+    correctionGroups: snapshot.correctionGroups,
   }
-  try {
-    window.localStorage.setItem(LAST_UPLOAD_STORAGE_KEY, JSON.stringify(payload))
-  } catch {
-    window.localStorage.removeItem(LAST_UPLOAD_STORAGE_KEY)
+  const rowCount = (payload.uploadedIssues?.length || 0)
+    + (payload.uploadMeta?.validationRows?.length || 0)
+    + (payload.uploadMeta?.caseLedger?.length || 0)
+  if (rowCount <= LAST_UPLOAD_MAX_ROWS) {
+    try {
+      window.localStorage.setItem(LAST_UPLOAD_STORAGE_KEY, JSON.stringify(payload))
+      clearCachedUpload()
+      return
+    } catch {
+      // Over the localStorage quota after all; fall through to IndexedDB.
+    }
   }
+  // Too large for localStorage: keep it in IndexedDB so a reload or the
+  // session-expired redirect doesn't blank the page.
+  window.localStorage.removeItem(LAST_UPLOAD_STORAGE_KEY)
+  writeCachedUpload(payload)
 }
 
 function clearLastUpload() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(LAST_UPLOAD_STORAGE_KEY)
   window.localStorage.removeItem(LDC_UTILIZATION_STORAGE_KEY)
+  clearCachedUpload()
+}
+
+/** Large uploads live in IndexedDB; read them back once the app has started. */
+export async function readCachedLastUpload() {
+  const cached = await readCachedUpload()
+  if (!cached || !Array.isArray(cached.uploadedIssues)) return null
+  if (cached.schemaVersion !== LAST_UPLOAD_SCHEMA_VERSION) return null
+  return cached
 }
 
 
@@ -226,7 +254,11 @@ const issuesSlice = createSlice({
     uploadSucceeded: (state, action) => {
       const payload = action.payload
       state.dataSource = 'upload'
-      state.uploadedIssues = applyCorrectionRegisterToIssues(payload.issues || [], state.correctionGroups || [])
+      // The API sends the issue message once as `description`; the UI also reads it as `plainEnglish`.
+      const issues = (payload.issues || []).map((issue) => (
+        issue.plainEnglish === undefined ? { ...issue, plainEnglish: issue.description } : issue
+      ))
+      state.uploadedIssues = applyCorrectionRegisterToIssues(issues, state.correctionGroups || [])
       state.uploadMeta = {
         uploadId: payload.uploadId,
         fileName: payload.fileName,
@@ -422,6 +454,17 @@ const issuesSlice = createSlice({
       state.uploadError = action.payload || 'Upload failed'
       state.uploadProgress = 0
     },
+    // Upload read back from IndexedDB after start-up. Ignored if a new upload
+    // already landed while the cache was being read.
+    restoreLastUpload: (state, action) => {
+      if (state.uploadMeta) return
+      const cached = action.payload
+      const correctionGroups = state.correctionGroups?.length ? state.correctionGroups : cached.correctionGroups || []
+      state.dataSource = 'upload'
+      state.uploadMeta = cached.uploadMeta
+      state.correctionGroups = correctionGroups
+      state.uploadedIssues = applyCorrectionRegisterToIssues(cached.uploadedIssues || [], correctionGroups)
+    },
     clearUpload: (state) => {
       state.dataSource = 'empty'
       state.uploadedIssues = []
@@ -443,7 +486,7 @@ export const {
   setDashboardVendorNameFilter, setDashboardSectionFilter, setDashboardIssueTypeFilter,
   setDashboardTdsDeductionFilter,
   openDrawer, closeDrawer, resetFilters, resetDashboardFilters,
-  uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
+  uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, restoreLastUpload, clearUpload,
   createManualCorrection, createMatchedSapCorrection,
 } = issuesSlice.actions
 

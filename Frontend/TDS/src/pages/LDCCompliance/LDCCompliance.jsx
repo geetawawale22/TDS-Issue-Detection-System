@@ -7,9 +7,7 @@ import {
   ShieldCheck, Search,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
-import ProgressBar from '@/components/Common/ProgressBar'
 import StatusBadge from '@/components/Common/StatusBadge'
-import { selectLdcUtilization } from '@/redux/slices/issuesSlice'
 import { fetchLdcCertificates, uploadLdcCertificates } from '@/services/ldcService'
 import { downloadCsv, downloadExcel } from '@/utils/csvExport'
 import { formatDate } from '@/utils/utils'
@@ -45,15 +43,6 @@ const ALLOWED_LDC_COMPANY_CODES = new Set(['1001', '1079', '1081'])
 const amountDisplay = (value) => (
   value == null || value === '' ? '—' : Number(value).toLocaleString('en-IN')
 )
-const roundToTwo = (value) => Math.round(Number(value || 0) * 100) / 100
-const ldcLimitStatus = (utilization) => {
-  if (utilization == null) return ['safe', 'Within LDC Limit']
-  if (utilization > 100) return ['over_utilized', 'LDC Over-utilized']
-  if (utilization >= 100) return ['exhausted', 'LDC Limit Exhausted']
-  if (utilization >= 90) return ['high_warning', 'LDC Limit 90% Utilized']
-  if (utilization >= 80) return ['warning', 'LDC Limit 80% Utilized']
-  return ['safe', 'Within LDC Limit']
-}
 const hasPositiveLimit = (row) => Number(row?.approvedLimit) > 0
 const isAllowedLdcCompanyCode = (companyCode) => ALLOWED_LDC_COMPANY_CODES.has(String(companyCode || '').trim())
 const NEW_SECTION_BY_OLD_SECTION = {
@@ -200,15 +189,6 @@ function certificateStatus(validFromValue, validToValue) {
   })
 }
 
-function utilizationLookupKeys(row) {
-  const cert = clean(row?.certificateNumber).toUpperCase()
-  const pan = clean(row?.pan).toUpperCase()
-  return [
-    `${cert}||${pan}`,
-    `${cert}||`,
-  ]
-}
-
 function isActiveCertificate(row) {
   return row.status === 'ACTIVE' && dateStatus(row) === 'Active'
 }
@@ -284,6 +264,55 @@ function uniqueCertificateRows(sourceRows) {
     rowsByCertificate.set(key, preferCertificateRow(rowsByCertificate.get(key), row))
   })
   return [...rowsByCertificate.values()]
+}
+
+// Normal (statutory) TDS rate per old section, mirroring the backend's
+// config/tds_sections.yaml. 194I and 194J have two legitimate rates, each
+// tagged with a short label; 194C depends on the PAN holder (4th letter
+// P/H → 1%, else 2%).
+const DUAL_RATE_SECTIONS = {
+  '194J': [{ rate: 2, label: 'tech', name: 'technical' }, { rate: 10, label: 'prof', name: 'professional' }],
+  '194I': [{ rate: 2, label: 'P&M', name: 'plant & machinery' }, { rate: 10, label: 'L&B', name: 'land & building' }],
+}
+const STATUTORY_RATES = {
+  '193': 10, '194': 10, '194A': 10, '194H': 2, '194IA': 1, '194K': 10,
+  '194LA': 10, '194N': 2, '194O': 0.1, '194Q': 0.1,
+  '196A': 20, '196B': 10, '196C': 10, '196D': 20,
+}
+
+function statutoryRates(row) {
+  const section = clean(row.section).toUpperCase().match(/\b(19\d[A-Z]{0,2})\b/)?.[1]
+  if (!section) return []
+  if (section === '194C') return [{ rate: ['P', 'H'].includes(clean(row.pan).toUpperCase()[3]) ? 1 : 2 }]
+  if (DUAL_RATE_SECTIONS[section]) return DUAL_RATE_SECTIONS[section]
+  return STATUTORY_RATES[section] != null ? [{ rate: STATUTORY_RATES[section] }] : []
+}
+
+// Rate TDS should be deducted at under the certificate:
+// normal rate × (100 − exemption %) / 100. Empty when either is unknown.
+function effectiveRates(row) {
+  if (row.approvedRate == null) return []
+  return statutoryRates(row).map((item) => ({
+    ...item,
+    effective: Math.round(item.rate * (100 - row.approvedRate)) / 100,
+  }))
+}
+
+// "1.2%", or "0.2% (tech) / 1% (prof)" for two-rate sections. When both
+// work out the same (e.g. 100% exemption → 0%), a single value is enough.
+function formatEffectiveRates(row) {
+  const rates = effectiveRates(row)
+  if (!rates.length) return '—'
+  if (new Set(rates.map((item) => item.effective)).size === 1) return `${rates[0].effective}%`
+  return rates.map((item) => `${item.effective}% (${item.label})`).join(' / ')
+}
+
+// Tooltip in words, e.g. "Normal rate 2%, less 40% exemption = 1.2%".
+function effectiveRateExplanation(row) {
+  const rates = effectiveRates(row)
+  if (!rates.length) return ''
+  const normal = rates.map((item) => (item.name ? `${item.rate}% (${item.name})` : `${item.rate}%`)).join(' or ')
+  return `Normal rate ${normal}, less ${row.approvedRate}% exemption = ${formatEffectiveRates(row)}`
 }
 
 function ldcSectionKey(normalized) {
@@ -386,7 +415,6 @@ function normalizeRow(row, index) {
     id: `ldc-${index}`,
     rowNumber: index + 2,
     certificateNumber: clean(normalized.Certificate_Number || normalized.Exemption_Number),
-    certificateType: clean(normalized.Certificate_Type || 'LOWER').toUpperCase(),
     pan,
     vendorName: clean(normalized.Vendor_Name || normalized.Supplier_Name || normalized.Supplier),
     vendorCode: clean(normalized.Vendor_Code || normalized.Supplier),
@@ -420,13 +448,12 @@ function validateRows(rows) {
   return rows.map((row) => {
     const issues = []
     if (!row.certificateNumber) issues.push('Certificate number missing')
-    if (!['LOWER', 'NIL'].includes(row.certificateType)) issues.push('Certificate type must be LOWER or NIL')
     if (!PAN_RE.test(row.pan)) issues.push('PAN format invalid')
     if (!row.vendorName) issues.push('Vendor name missing')
     if (!row.companyCode) issues.push('Company code missing')
     if (!row.section) issues.push('TDS section missing')
     if (row.approvedRate == null) issues.push('Exemption percentage missing/invalid')
-    if (row.approvedRate != null && row.approvedRate < 0) issues.push('Exemption percentage cannot be negative')
+    if (row.approvedRate != null && (row.approvedRate < 0 || row.approvedRate > 100)) issues.push('Exemption percentage must be between 0 and 100')
     if (!row.validFrom) issues.push('Valid From date missing/invalid')
     if (!row.validTo) issues.push('Valid To date missing/invalid')
     if (row.validFrom && row.validTo && row.validFrom > row.validTo) issues.push('Valid From is after Valid To')
@@ -453,7 +480,6 @@ function validationStatusForIssues(issues = []) {
 }
 
 export default function LDCCompliance() {
-  const liveLdcUtilization = useSelector(selectLdcUtilization)
   const selectedCompanyCode = useSelector((state) => state.app.selectedCompanyCode)
   const [rows, setRows] = useState(() => ldcPageCache.rows ?? [])
   const [fileName, setFileName] = useState(() => ldcPageCache.fileName)
@@ -511,7 +537,6 @@ export default function LDCCompliance() {
             id: `saved-ldc-${index}`,
             rowNumber: row.rowNumber,
             certificateNumber: row.certificateNumber || '',
-            certificateType: row.certificateType || '',
             pan: row.pan || '',
             vendorName: row.vendorName || '',
             vendorCode: row.vendorCode || '',
@@ -697,127 +722,36 @@ export default function LDCCompliance() {
     })
   }, [allowedRows, allowedIssueRows, search, quickFilter])
 
-  const currentCertificateByKey = useMemo(() => {
-    const byKey = new Map()
-    const byCertificate = new Map()
-    allowedRows
-      .filter((row) => !row.isIssueRow && row.certificateNumber)
-      .forEach((row) => {
-        const cert = String(row.certificateNumber || '').trim()
-        const pan = String(row.pan || '').trim().toUpperCase()
-        byCertificate.set(cert, preferCertificateRow(byCertificate.get(cert), row))
-        if (pan) {
-          const key = `${cert}||${pan}`
-          byKey.set(key, preferCertificateRow(byKey.get(key), row))
-        }
-      })
-    return { byKey, byCertificate }
-  }, [allowedRows])
-
-  const currentLdcUtilization = useMemo(() => {
-    const hasCurrentCertificates = currentCertificateByKey.byCertificate.size > 0
-    if (!hasCurrentCertificates) {
-      return liveLdcUtilization
-        .filter((row) => isAllowedLdcCompanyCode(row.companyCode)
-          && (!selectedCompanyCode || row.companyCode === selectedCompanyCode))
-        .map((row) => ({
-          ...row,
-          certificateStatus: certificateStatus(row.validFrom, row.validTo),
-        }))
-    }
-
-    return liveLdcUtilization
-      .filter((row) => isAllowedLdcCompanyCode(row.companyCode)
-        && (!selectedCompanyCode || row.companyCode === selectedCompanyCode))
-      .map((row) => {
-        const cert = String(row.certificateNumber || '').trim()
-        const pan = String(row.pan || '').trim().toUpperCase()
-        const masterRow = currentCertificateByKey.byKey.get(`${cert}||${pan}`) || currentCertificateByKey.byCertificate.get(cert)
-        if (!masterRow) return null
-        const limit = masterRow.approvedLimit ?? row.limit
-        const used = Number(row.used || 0)
-        const numericLimit = Number(limit)
-        const hasLimit = Number.isFinite(numericLimit) && numericLimit > 0
-        const available = hasLimit ? numericLimit - used : null
-        const utilization = hasLimit ? roundToTwo((used / numericLimit) * 100) : null
-        const [status, statusLabel] = ldcLimitStatus(utilization)
-        const validFrom = masterRow.validFrom ?? row.validFrom ?? null
-        const validTo = masterRow.validTo ?? row.validTo ?? null
-        return {
-          ...row,
-          vendor: masterRow.vendorName || row.vendor,
-          vendorId: masterRow.vendorCode || row.vendorId,
-          vendorCode: masterRow.vendorCode || row.vendorCode || row.vendorId,
-          pan: masterRow.pan || row.pan,
-          companyCode: masterRow.companyCode || row.companyCode,
-          section: masterRow.section || row.section,
-          approvedRate: masterRow.approvedRate ?? row.approvedRate,
-          validFrom,
-          validTo,
-          certificateStatus: certificateStatus(validFrom, validTo),
-          limit: hasLimit ? numericLimit : limit,
-          available,
-          utilization,
-          status,
-          statusLabel,
-        }
-      })
-      .filter(Boolean)
-  }, [currentCertificateByKey, liveLdcUtilization])
-
-  const utilizationByCertificate = useMemo(() => {
-    const byKey = new Map()
-    currentLdcUtilization.forEach((row) => {
-      const [certPanKey, certOnlyKey] = utilizationLookupKeys(row)
-      if (!byKey.has(certPanKey)) byKey.set(certPanKey, row)
-      if (!byKey.has(certOnlyKey)) byKey.set(certOnlyKey, row)
-    })
-    return byKey
-  }, [currentLdcUtilization])
-
-  const exportRows = useMemo(() => (
-    filteredRows.map((row) => {
-      const [certPanKey, certOnlyKey] = utilizationLookupKeys(row)
-      const utilizationRow = utilizationByCertificate.get(certPanKey) || utilizationByCertificate.get(certOnlyKey) || null
-      return { ...row, utilizationRow }
-    })
-  ), [filteredRows, utilizationByCertificate])
-
   const exportColumns = useMemo(() => ([
     { label: 'Supplier', value: (row) => row.vendorName || '—' },
     { label: 'Vendor Code', value: (row) => row.vendorCode || '—' },
     { label: 'PAN', value: (row) => row.pan || '—' },
     { label: 'Certificate Number', value: (row) => row.certificateNumber || '—' },
-    { label: 'Certificate Type', value: (row) => row.certificateType || '—' },
     { label: 'Company Code', value: (row) => row.companyCode || '—' },
     { label: 'Deductor TAN', value: (row) => row.deductorTan || '—' },
     { label: 'Old Section / New Section', value: (row) => row.section || '—' },
     { label: 'Exemption %', value: (row) => row.approvedRate == null ? '—' : `${row.approvedRate}%` },
+    { label: 'Effective Rate', value: formatEffectiveRates },
     { label: 'Threshold', value: (row) => amountDisplay(row.approvedLimit) },
     { label: 'Valid From', value: (row) => formatDate(row.validFrom) },
     { label: 'Valid Till', value: (row) => formatDate(row.validTo) },
     { label: 'Certificate Status', value: (row) => certificateStatus(row.validFrom, row.validTo) },
     { label: 'Validation Status', value: (row) => row.validationStatus || '—' },
     { label: 'Issue Details', value: (row) => (row.issues ?? []).join('; ') || '—' },
-    { label: 'LDC Limit', value: (row) => row.utilizationRow ? amountDisplay(row.utilizationRow.limit) : '—' },
-    { label: 'LDC Used', value: (row) => row.utilizationRow ? amountDisplay(row.utilizationRow.used) : '—' },
-    { label: 'LDC Available', value: (row) => row.utilizationRow ? amountDisplay(row.utilizationRow.available) : '—' },
-    { label: 'LDC Utilization %', value: (row) => row.utilizationRow?.utilization == null ? '—' : `${row.utilizationRow.utilization}%` },
-    { label: 'LDC Utilization Status', value: (row) => row.utilizationRow?.statusLabel || '—' },
   ]), [])
 
   function handleExport(format) {
-    if (!exportRows.length) {
+    if (!filteredRows.length) {
       toast('No LDC rows to export')
       return
     }
     const suffix = quickFilter === 'issues' ? 'issues' : 'certificates'
     const baseName = `ldc-compliance-${suffix}`
     if (format === 'excel') {
-      downloadExcel(`${baseName}.xlsx`, exportColumns, exportRows, 'LDC Compliance')
+      downloadExcel(`${baseName}.xlsx`, exportColumns, filteredRows, 'LDC Compliance')
       return
     }
-    downloadCsv(`${baseName}.csv`, exportColumns, exportRows)
+    downloadCsv(`${baseName}.csv`, exportColumns, filteredRows)
   }
 
   const quickFilterLabel = {
@@ -835,10 +769,7 @@ export default function LDCCompliance() {
     )},
     { key: 'vendorCode', header: 'Vendor Code', render: (row) => <span className="font-mono ldc-strong">{row.vendorCode || '—'}</span> },
     { key: 'certificateNumber', header: 'Certificate', render: (row) => (
-      <div>
-        <div className="ldc-strong">{row.certificateNumber || '—'}</div>
-        <div className="ldc-muted">{row.certificateType || '—'}</div>
-      </div>
+      <div className="ldc-strong">{row.certificateNumber || '—'}</div>
     )},
     { key: 'companyCode', header: 'Company / TAN', render: (row) => (
       <div>
@@ -848,6 +779,19 @@ export default function LDCCompliance() {
     )},
     { key: 'section', header: 'Old Section / New Section', render: (row) => <span className="font-mono">{row.section || '—'}</span> },
     { key: 'approvedRate', header: 'Exemption %', render: (row) => <span className="font-mono">{row.approvedRate == null ? '—' : `${row.approvedRate}%`}</span> },
+    { key: 'effectiveRate', header: 'Effective Rate', sortValue: (row) => effectiveRates(row)[0]?.effective ?? -1, render: (row) => {
+      const rates = effectiveRates(row)
+      if (!rates.length) return <span className="ldc-muted">—</span>
+      // Two-rate sections that differ get one line each: tech, then prof.
+      const lines = new Set(rates.map((item) => item.effective)).size === 1
+        ? [formatEffectiveRates(row)]
+        : rates.map((item) => `${item.effective}% (${item.label})`)
+      return (
+        <div className="font-mono" title={effectiveRateExplanation(row)}>
+          {lines.map((line) => <div key={line} style={{ whiteSpace: 'nowrap' }}>{line}</div>)}
+        </div>
+      )
+    }},
     { key: 'approvedLimit', header: 'Threshold', render: (row) => <span className="font-mono">{amountDisplay(row.approvedLimit)}</span> },
     { key: 'validTo', header: 'Valid Till', render: (row) => (
       <div>
@@ -857,36 +801,6 @@ export default function LDCCompliance() {
     )},
     { key: 'validationStatus', header: 'Status', sortValue: (row) => row.validationStatus, render: (row) => (
       <StatusBadge label={row.validationStatus} tone={row.issues.length ? 'danger' : 'success'} />
-    )},
-  ]
-
-  const utilizationTone = (status) => {
-    if (status === 'over_utilized' || status === 'exhausted') return 'danger'
-    if (status === 'high_warning' || status === 'warning') return 'warning'
-    return 'success'
-  }
-
-  const utilizationColumns = [
-    { key: 'pan', header: 'PAN', render: (row) => <span className="font-mono ldc-strong">{row.pan || '—'}</span> },
-    { key: 'vendor', header: 'Vendor', render: (row) => (
-      <div className="ldc-strong">{row.vendor}</div>
-    )},
-    { key: 'vendorCode', header: 'Vendor Code', render: (row) => <span className="font-mono ldc-strong">{row.vendorCode || row.vendorId || '—'}</span> },
-    { key: 'certificateNumber', header: 'Certificate', render: (row) => (
-      <div>
-        <div className="ldc-strong">{row.certificateNumber}</div>
-        <div className="ldc-muted">{row.section} · exemption {row.approvedRate ?? '—'}%</div>
-      </div>
-    )},
-    { key: 'limit', header: 'Limit', render: (row) => <span className="font-mono">{row.limit == null ? 'Not set' : amountDisplay(row.limit)}</span> },
-    { key: 'used', header: 'Used', render: (row) => <span className="font-mono">{Number(row.used || 0).toLocaleString('en-IN')}</span> },
-    { key: 'available', header: 'Available', render: (row) => <span className="font-mono">{amountDisplay(row.available)}</span> },
-    { key: 'certificateStatus', header: 'Certificate Status', render: (row) => <StatusBadge label={row.certificateStatus || 'Unknown'} tone={row.certificateStatus === 'Active' ? 'success' : row.certificateStatus === 'Expired' ? 'danger' : 'warning'} /> },
-    { key: 'status', header: 'Status', sortValue: (row) => row.statusLabel || 'Within LDC Limit', render: (row) => <StatusBadge label={row.statusLabel || 'Within LDC Limit'} tone={utilizationTone(row.status)} /> },
-    { key: 'utilization', header: 'Utilization', render: (row) => (
-      row.utilization == null
-        ? <span className="ldc-muted">—</span>
-        : <div style={{ width: 130 }}><ProgressBar value={Math.min(row.utilization, 100)} showLabel /></div>
     )},
   ]
 
@@ -996,20 +910,6 @@ export default function LDCCompliance() {
           />
         </div>
 
-      </div>
-
-      <div className="table-card ldc-utilization-card">
-        <div className="table-card-header">
-          <div>
-            <div className="table-card-title">LDC Limit Utilization</div>
-          </div>
-        </div>
-        <DataTable
-          columns={utilizationColumns}
-          data={currentLdcUtilization}
-          pageSize={8}
-          emptyState={<div className="data-table-empty">Upload and analyse an SAP file to see live LDC utilization</div>}
-        />
       </div>
     </div>
   )

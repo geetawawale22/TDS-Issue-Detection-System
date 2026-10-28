@@ -150,23 +150,55 @@ def _normalise_section_and_advance(
         return ADVANCE_SECTION_ALIASES[section], True
     return section, is_advance
 
+_BLANK_VALUES = frozenset(("", "nan", "None"))
+
+
 def _get(row: dict, field: str) -> Any:
     """Read a value using Mahindra column names, with legacy fallbacks."""
-    for key in COLUMN_ALIASES.get(field, (field,)):
-        if key in row and row[key] is not None and str(row[key]).strip() not in ("", "nan", "None"):
-            return row[key]
+    return _row_reader(row)(field)
 
-    # Every row of an upload shares the same headers, so the normalised
-    # header lookup is built once per column layout rather than per call.
-    header_map = _normalised_header_map(tuple(row))
-    for key in COLUMN_ALIASES.get(field, (field,)):
-        original_key = header_map.get(_normalise_header_name_cached(key))
-        if original_key is None:
-            continue
-        value = row[original_key]
-        if value is not None and str(value).strip() not in ("", "nan", "None"):
-            return value
-    return None
+
+def _row_reader(row: dict):
+    """Return ``field -> value`` for one row, resolving headers once per row.
+
+    The translators read ~35 fields per row; building the header tuple once
+    here instead of inside every ``_get`` call keeps that per-row work flat.
+    """
+    keys = tuple(row)
+
+    def read(field: str) -> Any:
+        for key in _field_lookup_keys(keys, field):
+            value = row[key]
+            if value is not None and str(value).strip() not in _BLANK_VALUES:
+                return value
+        return None
+
+    return read
+
+
+@lru_cache(maxsize=4096)
+def _field_lookup_keys(keys: tuple, field: str) -> tuple:
+    """Row headers to try, in order, when reading ``field``.
+
+    Every row of an upload shares the same headers, so the alias search is
+    done once per column layout instead of once per row. The order matches
+    the per-row search it replaces: exact alias matches first, then aliases
+    matched after normalising header spelling (case, spaces, underscores).
+    """
+    aliases = COLUMN_ALIASES.get(field, (field,))
+    present = set(keys)
+    exact = [alias for alias in aliases if alias in present]
+    header_map = _normalised_header_map(keys)
+    normalised = [
+        header_map[_normalise_header_name_cached(alias)]
+        for alias in aliases
+        if _normalise_header_name_cached(alias) in header_map
+    ]
+    ordered = []
+    for key in (*exact, *normalised):
+        if key not in ordered:
+            ordered.append(key)
+    return tuple(ordered)
 
 
 @lru_cache(maxsize=4096)
@@ -335,11 +367,12 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
     )
 
     for row in raw_rows:
+        get = _row_reader(row)
         raw_section_code = get_tds_section_code_raw(row)
         raw_section_description = get_tds_section_description_raw(row)
-        raw_section_value = raw_section_code or str(_get(row, "tds_section") or "").strip()
-        withholding_tax_type = str(_get(row, "withholding_tax_type") or "").strip().upper()
-        withholding_tax_code = str(_get(row, "withholding_tax_code") or "").strip().upper()
+        raw_section_value = raw_section_code or str(get("tds_section") or "").strip()
+        withholding_tax_type = str(get("withholding_tax_type") or "").strip().upper()
+        withholding_tax_code = str(get("withholding_tax_code") or "").strip().upper()
         if not raw_section_value and withholding_tax_type and withholding_tax_code:
             raw_section_value = f"{withholding_tax_type}/{withholding_tax_code}"
 
@@ -348,81 +381,81 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
         explicit_section = _normalise_explicit_tds_section_code(raw_section_code or raw_section_value)
         applied_section = explicit_section or expected_section or raw_section_value
 
-        doc_type = str(_get(row, "doc_type") or "")
+        doc_type = str(get("doc_type") or "")
         section_value, is_advance_payment = _normalise_section_and_advance(
             applied_section,
             doc_type,
-            str(_get(row, "special_gl_indicator") or ""),
-            str(_get(row, "special_gl_transaction_type") or ""),
+            str(get("special_gl_indicator") or ""),
+            str(get("special_gl_transaction_type") or ""),
         )
-        rate_value = _parse_rate_percent(_get(row, "tds_rate"))
+        rate_value = _parse_rate_percent(get("tds_rate"))
         if rate_value is None:
             rate_value = parsed_rate
-        transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
+        transaction_kind = str(get("transaction_kind") or "").strip() or None
         if transaction_kind is None:
             transaction_kind = infer_payment_type_from_tds_text(descriptive_text)
 
-        pan = _normalise_pan(_get(row, "pan"))
+        pan = _normalise_pan(get("pan"))
 
         txn = Transaction(
-            doc_number=str(_get(row, "doc_number") or ""),
-            line_item_number=str(_get(row, "line_item_number") or "").strip() or None,
+            doc_number=str(get("doc_number") or ""),
+            line_item_number=str(get("line_item_number") or "").strip() or None,
             doc_type=doc_type,
             transaction_kind=transaction_kind,
-            assignment_number=str(_get(row, "assignment_number") or "").strip() or None,
-            posting_date=_parse_date(_get(row, "posting_date")),
-            bill_date=_parse_date(_get(row, "bill_date")),
-            bill_no=str(_get(row, "bill_no") or "").strip() or None,
-            po_no=str(_get(row, "po_no") or "").strip() or None,
-            company_code=str(_get(row, "company_code") or "").strip() or None,
-            fiscal_year=str(_get(row, "fiscal_year") or "").strip() or None,
+            assignment_number=str(get("assignment_number") or "").strip() or None,
+            posting_date=_parse_date(get("posting_date")),
+            bill_date=_parse_date(get("bill_date")),
+            bill_no=str(get("bill_no") or "").strip() or None,
+            po_no=str(get("po_no") or "").strip() or None,
+            company_code=str(get("company_code") or "").strip() or None,
+            fiscal_year=str(get("fiscal_year") or "").strip() or None,
 
-            vendor_code=str(_get(row, "vendor_code") or ""),
-            vendor_name=str(_get(row, "vendor_name") or "").strip() or None,
+            vendor_code=str(get("vendor_code") or ""),
+            vendor_name=str(get("vendor_name") or "").strip() or None,
             vendor_pan=pan,
             vendor_category=_derive_vendor_category(pan),
-            person=str(_get(row, "person") or "").strip() or None,
+            person=str(get("person") or "").strip() or None,
 
-            gl_account=str(_get(row, "gl_account") or ""),
-            gl_description=str(_get(row, "gl_description") or "").strip() or None,
-            hsn_sac_code=str(_get(row, "hsn_sac_code") or "").strip() or None,
+            gl_account=str(get("gl_account") or ""),
+            gl_description=str(get("gl_description") or "").strip() or None,
+            hsn_sac_code=str(get("hsn_sac_code") or "").strip() or None,
 
-            bill_amount=float(_get(row, "bill_amount") or 0),
-            basic_amount=float(_get(row, "basic_amount") or 0),
-            debit_credit=str(_get(row, "debit_credit") or "").strip() or None,
-            clearing_document=str(_get(row, "clearing_document") or "").strip() or None,
-            clearing_fiscal_year=str(_get(row, "clearing_fiscal_year") or "").strip() or None,
-            clearing_date=_parse_date(_get(row, "clearing_date")),
-            invoice_reference_document=str(_get(row, "invoice_reference_document") or "").strip() or None,
-            invoice_reference_fiscal_year=str(_get(row, "invoice_reference_fiscal_year") or "").strip() or None,
-            invoice_reference_line_item=str(_get(row, "invoice_reference_line_item") or "").strip() or None,
+            bill_amount=float(get("bill_amount") or 0),
+            basic_amount=float(get("basic_amount") or 0),
+            debit_credit=str(get("debit_credit") or "").strip() or None,
+            clearing_document=str(get("clearing_document") or "").strip() or None,
+            clearing_fiscal_year=str(get("clearing_fiscal_year") or "").strip() or None,
+            clearing_date=_parse_date(get("clearing_date")),
+            invoice_reference_document=str(get("invoice_reference_document") or "").strip() or None,
+            invoice_reference_fiscal_year=str(get("invoice_reference_fiscal_year") or "").strip() or None,
+            invoice_reference_line_item=str(get("invoice_reference_line_item") or "").strip() or None,
             is_advance_payment=is_advance_payment,
 
             tds_raw_section=descriptive_text or section_value,
             tds_applicable_section=(
                 expected_section
                 if explicit_section and expected_section and explicit_section != expected_section
-                else str(_get(row, "tds_applicable_section") or "").strip() or None
+                else str(get("tds_applicable_section") or "").strip() or None
             ),
-            tds_applicable_rate=_safe_float(_get(row, "tds_applicable_rate")),
-            tds_applicable_amount=_safe_float(_get(row, "tds_applicable_amount")),
+            tds_applicable_rate=_safe_float(get("tds_applicable_rate")),
+            tds_applicable_amount=_safe_float(get("tds_applicable_amount")),
 
             tds_deducted_section=section_value,
             tds_legacy_section=section_value,
             tds_new_section=extract_new_section_reference(descriptive_text),
             tds_deducted_rate=rate_value,
-            tds_deducted_amount=_safe_float(_get(row, "tds_amount")),
+            tds_deducted_amount=_safe_float(get("tds_amount")),
             withholding_tax_type=withholding_tax_type or None,
             withholding_tax_code=withholding_tax_code or None,
-            withholding_tax_base_amount=_safe_float(_get(row, "withholding_tax_base_amount")),
+            withholding_tax_base_amount=_safe_float(get("withholding_tax_base_amount")),
 
-            ldc_exemption_percent=_safe_float(_get(row, "ldc_exemption_percent")),
-            ldc_exempt_from=_parse_date(_get(row, "ldc_exempt_from")),
-            ldc_exempt_to=_parse_date(_get(row, "ldc_exempt_to")),
-            ldc_exemption_number=str(_get(row, "ldc_exemption_number") or "").strip() or None,
-            ldc_exemption_reason=str(_get(row, "ldc_exemption_reason") or "").strip() or None,
+            ldc_exemption_percent=_safe_float(get("ldc_exemption_percent")),
+            ldc_exempt_from=_parse_date(get("ldc_exempt_from")),
+            ldc_exempt_to=_parse_date(get("ldc_exempt_to")),
+            ldc_exemption_number=str(get("ldc_exemption_number") or "").strip() or None,
+            ldc_exemption_reason=str(get("ldc_exemption_reason") or "").strip() or None,
 
-            advance_document_reference=str(_get(row, "advance_document_reference") or "").strip() or None,
+            advance_document_reference=str(get("advance_document_reference") or "").strip() or None,
         )
         apply_gl_rule(txn)
         transactions.append(txn)
@@ -448,71 +481,72 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
     transactions: List[Transaction] = []
 
     for row in raw_rows:
-        rate = _safe_float(_get(row, "tds_rate"))
+        get = _row_reader(row)
+        rate = _safe_float(get("tds_rate"))
 
         raw_section_text = get_tds_section_description_raw(row) or get_tds_section_raw(row)
-        withholding_tax_type = str(_get(row, "withholding_tax_type") or "").strip().upper()
-        withholding_tax_code = str(_get(row, "withholding_tax_code") or "").strip().upper()
+        withholding_tax_type = str(get("withholding_tax_type") or "").strip().upper()
+        withholding_tax_code = str(get("withholding_tax_code") or "").strip().upper()
         if not raw_section_text and withholding_tax_type and withholding_tax_code:
             raw_section_text = f"{withholding_tax_type}/{withholding_tax_code}"
         old_section, parsed_rate = decode_tds_section_string(raw_section_text)
         explicit_section = _normalise_explicit_tds_section_code(get_tds_section_code_raw(row))
         applied_section = explicit_section or old_section
         new_section = extract_new_section_reference(raw_section_text)
-        transaction_kind = str(_get(row, "transaction_kind") or "").strip() or None
+        transaction_kind = str(get("transaction_kind") or "").strip() or None
         if transaction_kind is None:
             transaction_kind = infer_payment_type_from_tds_text(raw_section_text)
 
         # Prefer the explicit rate column; fall back to the percentage parsed from tds_description.
         final_rate = rate if rate is not None else parsed_rate
         # TDS_Amount comes signed (credit/debit convention) — normalize to positive
-        raw_amount = _safe_float(_get(row, "tds_amount"))
+        raw_amount = _safe_float(get("tds_amount"))
         tds_amount = abs(raw_amount) if raw_amount is not None else None
 
-        pan = _normalise_pan(_get(row, "pan"))
+        pan = _normalise_pan(get("pan"))
 
         # Deductee category is often stated directly in the text
         # (e.g. "Ind/HUF"), cross-check against PAN-derived category later
         vendor_category = _derive_vendor_category(pan)
-        doc_type = str(_get(row, "doc_type") or "")
+        doc_type = str(get("doc_type") or "")
         _, is_advance_payment = _normalise_section_and_advance(
             applied_section,
             doc_type,
-            str(_get(row, "special_gl_indicator") or ""),
-            str(_get(row, "special_gl_transaction_type") or ""),
+            str(get("special_gl_indicator") or ""),
+            str(get("special_gl_transaction_type") or ""),
         )
 
         txn = Transaction(
-            doc_number=str(_get(row, "doc_number") or ""),
-            line_item_number=str(_get(row, "line_item_number") or "").strip() or None,
+            doc_number=str(get("doc_number") or ""),
+            line_item_number=str(get("line_item_number") or "").strip() or None,
             doc_type=doc_type,
             transaction_kind=transaction_kind,
-            assignment_number=str(_get(row, "assignment_number") or "").strip() or None,
-            posting_date=_parse_date(_get(row, "posting_date")),
-            bill_date=_parse_date(_get(row, "bill_date")),
-            bill_no=str(_get(row, "bill_no") or "").strip() or None,
-            po_no=str(_get(row, "po_no") or "").strip() or None,
-            company_code=str(_get(row, "company_code") or "").strip() or None,
-            fiscal_year=str(_get(row, "fiscal_year") or "").strip() or None,
+            assignment_number=str(get("assignment_number") or "").strip() or None,
+            posting_date=_parse_date(get("posting_date")),
+            bill_date=_parse_date(get("bill_date")),
+            bill_no=str(get("bill_no") or "").strip() or None,
+            po_no=str(get("po_no") or "").strip() or None,
+            company_code=str(get("company_code") or "").strip() or None,
+            fiscal_year=str(get("fiscal_year") or "").strip() or None,
 
-            vendor_code=str(_get(row, "vendor_code") or ""),
-            vendor_name=str(_get(row, "vendor_name") or "").strip() or None,
+            vendor_code=str(get("vendor_code") or ""),
+            vendor_name=str(get("vendor_name") or "").strip() or None,
             vendor_pan=pan,
             vendor_category=vendor_category,
-            person=str(_get(row, "person") or "").strip() or None,
+            person=str(get("person") or "").strip() or None,
 
-            gl_account=str(_get(row, "gl_account") or "").strip() or None,
-            gl_description=str(_get(row, "gl_description") or "").strip() or None,
+            gl_account=str(get("gl_account") or "").strip() or None,
+            gl_description=str(get("gl_description") or "").strip() or None,
 
-            bill_amount=_safe_float(_get(row, "bill_amount")) or 0.0,
-            basic_amount=_safe_float(_get(row, "basic_amount")),  # None if blank — do NOT fall back to bill_amount (GST-inclusive), that produces false positives
-            debit_credit=str(_get(row, "debit_credit") or "").strip() or None,
-            clearing_document=str(_get(row, "clearing_document") or "").strip() or None,
-            clearing_fiscal_year=str(_get(row, "clearing_fiscal_year") or "").strip() or None,
-            clearing_date=_parse_date(_get(row, "clearing_date")),
-            invoice_reference_document=str(_get(row, "invoice_reference_document") or "").strip() or None,
-            invoice_reference_fiscal_year=str(_get(row, "invoice_reference_fiscal_year") or "").strip() or None,
-            invoice_reference_line_item=str(_get(row, "invoice_reference_line_item") or "").strip() or None,
+            bill_amount=_safe_float(get("bill_amount")) or 0.0,
+            basic_amount=_safe_float(get("basic_amount")),  # None if blank — do NOT fall back to bill_amount (GST-inclusive), that produces false positives
+            debit_credit=str(get("debit_credit") or "").strip() or None,
+            clearing_document=str(get("clearing_document") or "").strip() or None,
+            clearing_fiscal_year=str(get("clearing_fiscal_year") or "").strip() or None,
+            clearing_date=_parse_date(get("clearing_date")),
+            invoice_reference_document=str(get("invoice_reference_document") or "").strip() or None,
+            invoice_reference_fiscal_year=str(get("invoice_reference_fiscal_year") or "").strip() or None,
+            invoice_reference_line_item=str(get("invoice_reference_line_item") or "").strip() or None,
             is_advance_payment=is_advance_payment,
 
             tds_raw_section=raw_section_text,
@@ -525,7 +559,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             tds_raw_amount=raw_amount,  # signed, for audit traceability
             withholding_tax_type=withholding_tax_type or None,
             withholding_tax_code=withholding_tax_code or None,
-            withholding_tax_base_amount=_safe_float(_get(row, "withholding_tax_base_amount")),
+            withholding_tax_base_amount=_safe_float(get("withholding_tax_base_amount")),
         )
         apply_gl_rule(txn)
         transactions.append(txn)

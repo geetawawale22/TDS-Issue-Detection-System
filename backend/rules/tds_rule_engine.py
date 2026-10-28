@@ -1,4 +1,5 @@
 import yaml
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 from datetime import date
@@ -178,6 +179,9 @@ def _normalise_clause(raw_clause: str) -> str:
     return parts[0] + "".join(f"({part})" for part in parts[1:])
 
 
+# Pure function of the SAP text; uploads repeat a handful of distinct
+# section strings across thousands of rows, so results are cached.
+@lru_cache(maxsize=8192)
 def extract_new_section_reference(raw_text: str) -> Optional[str]:
     """Return the exact Section 393(1) table reference present in SAP text."""
     if not raw_text:
@@ -189,6 +193,9 @@ def extract_new_section_reference(raw_text: str) -> Optional[str]:
     return f"393(1){clause}" if clause else None
 
 
+# Pure function of the SAP text; uploads repeat a handful of distinct
+# section strings across thousands of rows, so results are cached.
+@lru_cache(maxsize=8192)
 def decode_tds_section_string(raw_text: str) -> tuple:
     """
     Decodes Mahindra's descriptive TDS_Section string (e.g.
@@ -232,6 +239,9 @@ def decode_tds_section_string(raw_text: str) -> tuple:
     return old_section, rate
 
 
+# Pure function of the SAP text; uploads repeat a handful of distinct
+# section strings across thousands of rows, so results are cached.
+@lru_cache(maxsize=8192)
 def infer_payment_type_from_tds_text(raw_text: str) -> Optional[str]:
     """Infer payment type from descriptive TDSSection text when no separate field exists."""
     if not raw_text:

@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSelector } from 'react-redux'
-import { AlertOctagon, Gauge, ShieldCheck, Download, BadgePercent } from 'lucide-react'
+import { AlertOctagon, Gauge, ShieldCheck, Download, BadgePercent, ChevronDown, ChevronRight } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
-import StatusBadge, { thresholdStatusToTone } from '@/components/Common/StatusBadge'
+// Vendor Threshold Tracker disabled: thresholdStatusToTone was only used by its table.
+// import StatusBadge, { thresholdStatusToTone } from '@/components/Common/StatusBadge'
+import StatusBadge from '@/components/Common/StatusBadge'
 import ProgressBar from '@/components/Common/ProgressBar'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
-  selectThresholdVendors,
+  // selectThresholdVendors, // Vendor Threshold Tracker disabled
   selectIsLive,
   selectLdcUtilization,
 } from '@/redux/slices/issuesSlice'
 import { fetchLdcCertificates } from '@/services/ldcService'
-import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
+import { formatCurrency, formatDate } from '@/utils/utils'
+// formatStatusLabel was only used by the (disabled) Vendor Threshold Tracker.
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import '@/components/Common/Common.css'
 import './ThresholdMonitoring.css'
@@ -36,6 +39,8 @@ const toCrore = (value) => roundToTwo(Number(value || 0) / CRORE)
 const TOP_LIMIT_BARS = 8
 const TOP_TREND_LINES = 4
 const TREND_COLORS = ['#E01330', '#2563EB', '#10B981', '#F59E0B', '#64748B']
+// Worst-first ranking used to pick a PAN's overall utilization status.
+const LDC_STATUS_RANK = { safe: 0, warning: 1, high_warning: 2, exhausted: 3, over_utilized: 4 }
 const TODAY = new Date()
 TODAY.setHours(0, 0, 0, 0)
 
@@ -58,9 +63,11 @@ function certificateValidity(validFromValue, validToValue) {
 
 export default function ThresholdMonitoring() {
   const [search, setSearch] = useState('')
-  const [activeTracker, setActiveTracker] = useState('ldc')
+  // Vendor Threshold Tracker disabled; the LDC tracker is the only table.
+  // const [activeTracker, setActiveTracker] = useState('ldc')
   const [ldcCertificates, setLdcCertificates] = useState([])
-  const vendors = useSelector(selectThresholdVendors)
+  const [expandedLdcKey, setExpandedLdcKey] = useState(null)
+  // const vendors = useSelector(selectThresholdVendors)
   const ldcUtilization = useSelector(selectLdcUtilization)
   const isLive = useSelector(selectIsLive)
 
@@ -135,23 +142,29 @@ export default function ThresholdMonitoring() {
       .filter(Boolean)
   }, [ldcCertificateByKey, ldcUtilization])
 
-  const exceeded = vendors.filter((v) => v.status === 'exceeded')
-  const near      = vendors.filter((v) => v.status === 'near')
-  const safe      = vendors.filter((v) => v.status === 'safe')
-  const panIssues = vendors.filter((v) => v.status === 'pan_issue')
-
-  const filtered = useMemo(
-    () => vendors.filter((v) => v.name.toLowerCase().includes(search.toLowerCase())),
-    [search, vendors],
-  )
-  const filteredLdc = useMemo(
-    () => currentLdcUtilization.filter((r) =>
-      (r.vendor || '').toLowerCase().includes(search.toLowerCase()) ||
-      (r.pan || '').toLowerCase().includes(search.toLowerCase()) ||
-      (r.certificateNumber || '').toLowerCase().includes(search.toLowerCase())
-    ),
-    [currentLdcUtilization, search],
-  )
+  // ---- Vendor Threshold Tracker (disabled) ----
+  // const exceeded = vendors.filter((v) => v.status === 'exceeded')
+  // const near      = vendors.filter((v) => v.status === 'near')
+  // const safe      = vendors.filter((v) => v.status === 'safe')
+  // const panIssues = vendors.filter((v) => v.status === 'pan_issue')
+  //
+  // const filtered = useMemo(
+  //   () => vendors.filter((v) => v.name.toLowerCase().includes(search.toLowerCase())),
+  //   [search, vendors],
+  // )
+  // One row per PAN + certificate; the vendors billed under it are listed
+  // when the row is expanded, and are searchable too.
+  const filteredLdc = useMemo(() => {
+    const needle = search.toLowerCase()
+    return currentLdcUtilization
+      .map((r) => ({ ...r, id: `${r.certificateNumber || ''}||${r.pan || ''}` }))
+      .filter((r) =>
+        (r.vendor || '').toLowerCase().includes(needle) ||
+        (r.pan || '').toLowerCase().includes(needle) ||
+        (r.certificateNumber || '').toLowerCase().includes(needle) ||
+        (r.vendors || []).some((v) => `${v.vendor} ${v.vendorId}`.toLowerCase().includes(needle))
+      )
+  }, [currentLdcUtilization, search])
 
   const ldcWarning = currentLdcUtilization.filter((r) => ['warning', 'high_warning'].includes(r.status))
   const ldcCritical = currentLdcUtilization.filter((r) => ['exhausted', 'over_utilized'].includes(r.status))
@@ -218,39 +231,40 @@ export default function ThresholdMonitoring() {
     return { data, keys }
   }, [currentLdcUtilization])
 
-  const summaryCards = [
-    { label: 'Exceeded',   value: exceeded.length, icon: AlertOctagon, tone: 'danger',  sub: 'Requires immediate review' },
-    { label: 'PAN Issues', value: panIssues.length, icon: AlertOctagon, tone: 'danger', sub: 'PAN missing or invalid' },
-    { label: 'Near Limit', value: near.length,      icon: Gauge,        tone: 'warning', sub: 'Within 75–100% of limit' },
-    { label: 'Safe',       value: safe.length,      icon: ShieldCheck,  tone: 'success', sub: 'Comfortably under threshold' },
-  ]
-
-  const columns = [
-    { key: 'pan', header: 'PAN', render: (r) => <span className="font-mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.pan || '—'}</span> },
-    { key: 'name', header: 'Vendor', render: (r) => <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name || '—'}</div> },
-    { key: 'vendorCodes', header: 'Vendor Code', render: (r) => (
-      <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>
-        {(r.vendorCodes || []).length ? r.vendorCodes.join(', ') : '—'}
-      </span>
-    )},
-    { key: 'section',       header: 'Section',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
-    { key: 'threshold',     header: 'Threshold', render: (r) => (
-      <span className="font-mono" style={{ fontSize: 11.5 }}>
-        {r.threshold == null ? 'Not determined' : formatCurrency(r.threshold)}
-      </span>
-    )},
-    { key: 'currentAmount', header: 'Current',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.currentAmount)}</span> },
-    { key: 'status',        header: 'Status',    sortValue: (r) => (
-      r.status === 'pan_issue' ? 'PAN Issue' : formatStatusLabel(r.status)
-    ), render: (r) => (
-      <StatusBadge label={r.status === 'pan_issue' ? 'PAN Issue' : formatStatusLabel(r.status)} tone={thresholdStatusToTone(r.status)} />
-    )},
-    { key: 'progress',      header: 'Progress',  render: (r) => (
-      r.threshold == null
-        ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
-        : <div style={{ width: 130 }}><ProgressBar value={r.progress} showLabel /></div>
-    )},
-  ]
+  // ---- Vendor Threshold Tracker (disabled): summary cards and table columns ----
+  // const summaryCards = [
+  //   { label: 'Exceeded',   value: exceeded.length, icon: AlertOctagon, tone: 'danger',  sub: 'Requires immediate review' },
+  //   { label: 'PAN Issues', value: panIssues.length, icon: AlertOctagon, tone: 'danger', sub: 'PAN missing or invalid' },
+  //   { label: 'Near Limit', value: near.length,      icon: Gauge,        tone: 'warning', sub: 'Within 75–100% of limit' },
+  //   { label: 'Safe',       value: safe.length,      icon: ShieldCheck,  tone: 'success', sub: 'Comfortably under threshold' },
+  // ]
+  //
+  // const columns = [
+  //   { key: 'pan', header: 'PAN', render: (r) => <span className="font-mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.pan || '—'}</span> },
+  //   { key: 'name', header: 'Vendor', render: (r) => <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name || '—'}</div> },
+  //   { key: 'vendorCodes', header: 'Vendor Code', render: (r) => (
+  //     <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>
+  //       {(r.vendorCodes || []).length ? r.vendorCodes.join(', ') : '—'}
+  //     </span>
+  //   )},
+  //   { key: 'section',       header: 'Section',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.section}</span> },
+  //   { key: 'threshold',     header: 'Threshold', render: (r) => (
+  //     <span className="font-mono" style={{ fontSize: 11.5 }}>
+  //       {r.threshold == null ? 'Not determined' : formatCurrency(r.threshold)}
+  //     </span>
+  //   )},
+  //   { key: 'currentAmount', header: 'Current',   render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.currentAmount)}</span> },
+  //   { key: 'status',        header: 'Status',    sortValue: (r) => (
+  //     r.status === 'pan_issue' ? 'PAN Issue' : formatStatusLabel(r.status)
+  //   ), render: (r) => (
+  //     <StatusBadge label={r.status === 'pan_issue' ? 'PAN Issue' : formatStatusLabel(r.status)} tone={thresholdStatusToTone(r.status)} />
+  //   )},
+  //   { key: 'progress',      header: 'Progress',  render: (r) => (
+  //     r.threshold == null
+  //       ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
+  //       : <div style={{ width: 130 }}><ProgressBar value={r.progress} showLabel /></div>
+  //   )},
+  // ]
 
   const ldcStatusTone = (status) => {
     if (status === 'over_utilized' || status === 'exhausted') return 'danger'
@@ -258,33 +272,133 @@ export default function ThresholdMonitoring() {
     return 'success'
   }
 
+  // Unique PAN rows. A PAN can hold several certificates (one per section),
+  // each with its own limit, so those stay separate inside the expanded row;
+  // the PAN row shows the totals and the worst status across them.
+  const ldcPanRows = useMemo(() => {
+    const byPan = new Map()
+    filteredLdc.forEach((cert) => {
+      const pan = cert.pan || '—'
+      if (!byPan.has(pan)) byPan.set(pan, { id: pan, pan, certificates: [], vendorMap: new Map() })
+      const group = byPan.get(pan)
+      group.certificates.push(cert)
+      const certVendors = cert.vendors?.length
+        ? cert.vendors
+        : [{ vendorId: cert.vendorId || cert.vendorCode || '—', vendor: cert.vendor || '—', used: Number(cert.used || 0), transactions: cert.transactions }]
+      certVendors.forEach((v) => {
+        const vendor = group.vendorMap.get(v.vendorId) || { vendorId: v.vendorId, vendor: v.vendor, used: 0, transactions: 0, certificates: [] }
+        vendor.used += Number(v.used || 0)
+        vendor.transactions += Number(v.transactions || 0)
+        if (!vendor.certificates.includes(cert.certificateNumber)) vendor.certificates.push(cert.certificateNumber)
+        group.vendorMap.set(v.vendorId, vendor)
+      })
+    })
+    return [...byPan.values()].map(({ vendorMap, ...group }) => {
+      const certs = group.certificates
+      const worst = certs.reduce((a, b) => ((LDC_STATUS_RANK[b.status] ?? 0) > (LDC_STATUS_RANK[a.status] ?? 0) ? b : a))
+      const active = certs.find((c) => c.validityLabel === 'Active')
+      const latest = [...certs].sort((a, b) => String(b.validTo || '').localeCompare(String(a.validTo || '')))[0]
+      const utilizations = certs.map((c) => c.utilization).filter((u) => u != null)
+      return {
+        ...group,
+        vendors: [...vendorMap.values()].sort((a, b) => b.used - a.used),
+        used: certs.reduce((sum, c) => sum + Number(c.used || 0), 0),
+        status: worst.status,
+        statusLabel: worst.statusLabel,
+        validityLabel: (active || latest).validityLabel,
+        validityTone: (active || latest).validityTone,
+        utilization: utilizations.length ? Math.max(...utilizations) : null,
+      }
+    })
+  }, [filteredLdc])
+
+  function renderLdcPan(p) {
+    return (
+      <div className="ldc-pan-detail">
+        <div className="ldc-sub-title">Certificates ({p.certificates.length})</div>
+        <table className="ldc-vendor-table">
+          <thead>
+            <tr><th>Certificate</th><th>LDC Limit</th><th>Utilized</th><th>Available</th><th>Validity</th><th>Cert Status</th><th>Utilization Status</th><th>Progress</th></tr>
+          </thead>
+          <tbody>
+            {p.certificates.map((c) => (
+              <tr key={c.id}>
+                <td>
+                  <div style={{ fontWeight: 600 }}>{c.certificateNumber}</div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{c.section} · exemption {c.approvedRate ?? '—'}%</div>
+                </td>
+                <td className="font-mono">{c.limit == null ? 'Not set' : formatCurrency(c.limit)}</td>
+                <td className="font-mono">{formatCurrency(c.used || 0)}</td>
+                <td className="font-mono">{c.available == null ? '—' : formatCurrency(c.available)}</td>
+                <td className="font-mono">{formatDate(c.validFrom)} - {formatDate(c.validTo)}</td>
+                <td><StatusBadge label={c.validityLabel || 'Validity Unknown'} tone={c.validityTone || 'neutral'} /></td>
+                <td><StatusBadge label={c.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(c.status)} /></td>
+                <td>{c.utilization == null ? '—' : <div style={{ width: 120 }}><ProgressBar value={Math.min(c.utilization, 100)} showLabel /></div>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="ldc-sub-title">Vendors ({p.vendors.length})</div>
+        <table className="ldc-vendor-table">
+          <thead>
+            <tr><th>Vendor Code</th><th>Vendor</th><th>Certificate</th><th>Utilized</th><th>Share of PAN</th><th>Transactions</th></tr>
+          </thead>
+          <tbody>
+            {p.vendors.map((v) => (
+              <tr key={v.vendorId}>
+                <td className="font-mono">{v.vendorId}</td>
+                <td>{v.vendor}</td>
+                <td className="font-mono">{v.certificates.join(', ')}</td>
+                <td className="font-mono">{formatCurrency(v.used || 0)}</td>
+                <td className="font-mono">{p.used ? `${roundToTwo((v.used / p.used) * 100)}%` : '—'}</td>
+                <td className="font-mono">{v.transactions || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {p.certificates.some((c) => !c.vendors?.length) && (
+          <div className="ldc-vendor-empty">Re-upload the SAP file to see every vendor code under each certificate.</div>
+        )}
+      </div>
+    )
+  }
+
   const ldcColumns = [
-    { key: 'pan', header: 'PAN', render: (r) => <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>{r.pan || '—'}</span> },
-    { key: 'vendor', header: 'Vendor', render: (r) => <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.vendor || '—'}</div> },
-    { key: 'vendorId', header: 'Vendor Code', render: (r) => <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>{r.vendorId || r.vendorCode || '—'}</span> },
-    { key: 'certificateNumber', header: 'Certificate', render: (r) => (
+    { key: 'pan', header: 'PAN', render: (p) => (
+      <span className="ldc-pan-cell">
+        {expandedLdcKey === p.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <span className="font-mono" style={{ fontSize: 11.5, fontWeight: 600 }}>{p.pan}</span>
+      </span>
+    )},
+    { key: 'vendors', header: 'Vendor', sortValue: (p) => p.vendors[0]?.vendor || '', render: (p) => (
       <div>
-        <div style={{ fontSize: 12.5, fontWeight: 600 }}>{r.certificateNumber}</div>
-        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.section} · exemption {r.approvedRate ?? '—'}%</div>
+        <div style={{ fontSize: 12.5, fontWeight: 600 }}>{p.vendors[0]?.vendor || '—'}</div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+          {p.vendors.length === 1 ? p.vendors[0].vendorId : `${p.vendors.length} vendor codes`}
+        </div>
       </div>
     )},
-    { key: 'limit', header: 'LDC Limit', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.limit == null ? 'Not set' : formatCurrency(r.limit)}</span> },
-    { key: 'used', header: 'Utilized', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.used || 0)}</span> },
-    { key: 'available', header: 'Available', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{r.available == null ? '—' : formatCurrency(r.available)}</span> },
-    { key: 'validity', header: 'Validity', sortValue: (r) => `${r.validTo || ''}`, render: (r) => (
+    { key: 'certificates', header: 'Certificates', sortValue: (p) => p.certificates.length, render: (p) => (
       <div>
-        <div className="font-mono" style={{ fontSize: 11.5 }}>{formatDate(r.validFrom)} - {formatDate(r.validTo)}</div>
-        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Certificate period</div>
+        <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+          {p.certificates.length === 1 ? p.certificates[0].certificateNumber : `${p.certificates.length} certificates`}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+          {p.certificates.length === 1
+            ? `${p.certificates[0].section} · exemption ${p.certificates[0].approvedRate ?? '—'}%`
+            : p.certificates.map((c) => c.certificateNumber).join(', ')}
+        </div>
       </div>
     )},
-    { key: 'validityStatus', header: 'Cert Status', sortValue: (r) => r.validityLabel || 'Validity Unknown', render: (r) => (
-      <StatusBadge label={r.validityLabel || 'Validity Unknown'} tone={r.validityTone || 'neutral'} />
+    { key: 'used', header: 'Total Utilized', render: (p) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(p.used || 0)}</span> },
+    { key: 'validityStatus', header: 'Cert Status', sortValue: (p) => p.validityLabel || 'Validity Unknown', render: (p) => (
+      <StatusBadge label={p.validityLabel || 'Validity Unknown'} tone={p.validityTone || 'neutral'} />
     )},
-    { key: 'status', header: 'Utilization Status', sortValue: (r) => r.statusLabel || 'Within LDC Limit', render: (r) => <StatusBadge label={r.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(r.status)} /> },
-    { key: 'utilization', header: 'Progress', render: (r) => (
-      r.utilization == null
+    { key: 'status', header: 'Utilization Status', sortValue: (p) => LDC_STATUS_RANK[p.status] ?? 0, render: (p) => <StatusBadge label={p.statusLabel || 'Within LDC Limit'} tone={ldcStatusTone(p.status)} /> },
+    { key: 'utilization', header: 'Highest Utilization', sortValue: (p) => p.utilization ?? -1, render: (p) => (
+      p.utilization == null
         ? <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
-        : <div style={{ width: 130 }}><ProgressBar value={Math.min(r.utilization, 100)} showLabel /></div>
+        : <div style={{ width: 130 }}><ProgressBar value={Math.min(p.utilization, 100)} showLabel /></div>
     )},
   ]
 
@@ -304,6 +418,7 @@ export default function ThresholdMonitoring() {
         </div>
       </div>
 
+      {/* Vendor Threshold Tracker disabled: its hint and Exceeded / PAN Issues / Near Limit / Safe cards.
       {isLive && (
         <p className="sap-hint" style={{ border: '1px solid var(--color-border)', borderRadius: 8, marginBottom: 10, background: 'var(--color-surface)' }}>
           Vendor thresholds are derived from your latest SAP upload (issue amounts by vendor + section).
@@ -322,6 +437,7 @@ export default function ThresholdMonitoring() {
           </div>
         ))}
       </div>
+      */}
 
       {isLive && (
         <div className="summary-grid-4" style={{ marginTop: 12 }}>
@@ -423,12 +539,12 @@ export default function ThresholdMonitoring() {
               <button
                 type="button"
                 role="tab"
-                aria-selected={activeTracker === 'ldc'}
-                className={`threshold-tab ${activeTracker === 'ldc' ? 'active' : ''}`}
-                onClick={() => setActiveTracker('ldc')}
+                aria-selected
+                className="threshold-tab active"
               >
                 LDC Certificate Limit Tracker
               </button>
+              {/* Vendor Threshold Tracker disabled.
               <button
                 type="button"
                 role="tab"
@@ -438,26 +554,29 @@ export default function ThresholdMonitoring() {
               >
                 Vendor Threshold Tracker
               </button>
+              */}
             </div>
           </div>
           <input
             className="filter-input"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={activeTracker === 'ldc' ? 'Search LDC, PAN, vendor…' : 'Search vendors…'}
+            placeholder="Search LDC, PAN, vendor…"
             style={{ width: 180 }}
           />
         </div>
-        {activeTracker === 'ldc' ? (
-          <DataTable
-            columns={ldcColumns}
-            data={filteredLdc}
-            pageSize={8}
-            emptyState={<div className="data-table-empty">No LDC utilization found in the latest SAP upload</div>}
-          />
-        ) : (
-          <DataTable columns={columns} data={filtered} pageSize={8} />
-        )}
+        <DataTable
+          columns={ldcColumns}
+          data={ldcPanRows}
+          pageSize={8}
+          expandedRowKey={expandedLdcKey}
+          onRowClick={(row) => setExpandedLdcKey((key) => (key === row.id ? null : row.id))}
+          renderExpandedRow={renderLdcPan}
+          emptyState={<div className="data-table-empty">No LDC utilization found in the latest SAP upload</div>}
+        />
+        {/* Vendor Threshold Tracker disabled.
+        <DataTable columns={columns} data={filtered} pageSize={8} />
+        */}
       </div>
     </div>
   )

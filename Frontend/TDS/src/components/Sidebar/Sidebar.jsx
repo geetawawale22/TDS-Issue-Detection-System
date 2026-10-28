@@ -15,9 +15,9 @@ const navItems = [
   { label: 'TDS Analysis',         path: '/issues',                icon: GitBranch },
   { label: 'Threshold Monitoring', path: '/threshold-monitoring',  icon: Gauge },
   { label: 'Correction Center',    path: '/correction-center',     icon: GitPullRequestArrow },
-  { label: 'Reports',              path: '/reports',               icon: FileBarChart },
-  { label: 'LDC Compliance',        path: '/ldc-compliance',        icon: BadgePercent },
+  { label: 'LDC Master',           path: '/ldc-compliance',        icon: BadgePercent },
   { label: 'PAN Verification',     path: '/pan-verification',      icon: IdCard },
+  { label: 'Reports',              path: '/reports',               icon: FileBarChart },
   { label: 'Settings',             path: '/settings',              icon: Settings },
 ]
 

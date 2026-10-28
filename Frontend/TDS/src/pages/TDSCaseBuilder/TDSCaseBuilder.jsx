@@ -1,17 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { AlertTriangle, ChevronDown, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
-import Issues from '@/pages/Issues/Issues'
+import Issues, { issueMatchesFilters, issueRowsMatchingIssues, validationRowMatchesFilters } from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import StatusBadge, { severityToTone } from '@/components/Common/StatusBadge'
 import {
   resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter,
   setStatusFilter, setVendorFilter, selectActiveIssues, selectActiveValidationRows,
-  selectActiveCaseLedger,
+  selectActiveCaseLedger, openDrawer,
 } from '@/redux/slices/issuesSlice'
 import { formatCurrency, formatDate } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
+import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiFilter'
 import { getDisplayIssueType, issueTypeFilterOptions } from '@/data/issueTypes'
 import { downloadCsv, ISSUE_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
@@ -118,6 +119,54 @@ function appliedRateForEvent(event) {
   return Math.round((tdsAmount / baseAmount) * 10000) / 100
 }
 
+// Rate actually deducted on a line (TDS ÷ base), ignoring any SAP rate.
+function calculatedRateForEvent(event) {
+  const baseAmount = Math.abs(Number(event.baseAmount || 0))
+  if (!baseAmount) return null
+  return Math.round((Math.abs(Number(event.tdsAmount || 0)) / baseAmount) * 10000) / 100
+}
+
+// Whether a line's TDS was deducted at the rate it should have been: the LDC
+// expected rate when a certificate applies, otherwise the SAP rate. TDS is
+// rounded to the rupee, so up to ₹1 of difference still counts as a match.
+// 'matched' | 'mismatched', or null when there is no base or rate to check.
+// Lines with no rate of their own to judge: advance adjustments, clearing and
+// transfer lines, and lines with no TDS deducted where the rule engine raised
+// no issue (the TDS Note explains why — advance already taxed, below
+// threshold, payment against invoice, …).
+function isRateCheckSkipped(event) {
+  if (event.rateCheckNotApplicable) return true
+  return !Math.abs(Number(event.tdsAmount || 0)) && !event.issues?.length
+}
+
+function eventRateStatus(event) {
+  if (isRateCheckSkipped(event)) return null
+  // No TDS deducted but the rule engine flagged the document.
+  if (!Math.abs(Number(event.tdsAmount || 0))) return 'mismatched'
+  const baseAmount = Math.abs(Number(event.baseAmount || 0))
+  const ldc = eventLdc(event)
+  const targetRate = ldc ? ldc.expectedRate : eventSapRate(event)
+  if (targetRate == null || !baseAmount) return null
+  const expectedTds = (baseAmount * targetRate) / 100
+  return Math.abs(expectedTds - Math.abs(Number(event.tdsAmount || 0))) <= 1 ? 'matched' : 'mismatched'
+}
+
+function rowCalculatedRate(events) {
+  const rateLines = events.filter((event) => !isRateCheckSkipped(event))
+  const baseAmount = rateLines.reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0)
+  const tdsAmount = rateLines.reduce((total, event) => total + Math.abs(Number(event.tdsAmount || 0)), 0)
+  return baseAmount > 0 ? (tdsAmount / baseAmount) * 100 : null
+}
+
+// A GL row is red if any of its lines is, green only when every checkable line matches.
+function rowRateStatus(events) {
+  const statuses = events.map(eventRateStatus)
+  if (statuses.includes('mismatched')) return 'mismatched'
+  return statuses.includes('matched') ? 'matched' : null
+}
+
+const RATE_STATUS_CLASS = { matched: 'case-rate-matched', mismatched: 'case-rate-mismatched' }
+
 function formatRate(value) {
   if (value == null || Number.isNaN(Number(value))) return '—'
   return `${Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
@@ -150,21 +199,57 @@ function eventSectionLabel(event) {
   return sectionPairLabel(event.legacySection, event.newSection)
 }
 
-function glGroupKey(companyCode, glAccount, sectionLabel) {
+function glSectionKey(companyCode, glAccount, sectionLabel) {
   return `${presentValue(companyCode) || '—'}||${presentValue(glAccount) || 'No GL'}||${sectionLabel}`
 }
 
-function buildGlLedgerRows(ledgerRows, issuesByGlKey = new Map()) {
+// SAP-reported rate rounded to two decimals so 1 / 1.0 / 1.00 share a row;
+// blank and 0% rows share the "no rate" row, as the Rate column showed before.
+function eventSapRate(event) {
+  if (event.sapRate == null || event.sapRate === '') return null
+  const rate = Number(event.sapRate)
+  if (Number.isNaN(rate) || rate === 0) return null
+  return Math.round(rate * 100) / 100
+}
+
+function roundedRate(value) {
+  if (value == null || value === '' || Number.isNaN(Number(value))) return null
+  return Math.round(Number(value) * 100) / 100
+}
+
+// LDC terms on a line: certificate, its exemption % and the rate the rules
+// expect after that exemption. Null when no certificate covers the line.
+function eventLdc(event) {
+  const certificate = presentValue(event.ldcCertificate)
+  const exemptionRate = roundedRate(event.ldcRate)
+  if (!certificate || exemptionRate == null) return null
+  return { certificate, exemptionRate, expectedRate: roundedRate(event.ldcExpectedRate) }
+}
+
+// One GL Ledger row per company + GL account + section + SAP rate + LDC
+// certificate/rate, so e.g. 194C lines at 1% and at 2%, or under two
+// different LDC certificates, on the same GL appear as separate rows.
+function buildGlLedgerRows(ledgerRows, issues = []) {
   const groups = new Map()
+  // Issues carry no SAP rate, so each one joins the row holding its document.
+  const groupKeyByDocument = new Map()
+  const firstGroupKeyBySection = new Map()
   ledgerRows.forEach((ledgerRow) => {
     (ledgerRow.events || []).forEach((event) => {
       const companyCode = presentValue(ledgerRow.companyCode) || '—'
       const glAccount = presentValue(event.glAccount) || 'No GL'
       const section = eventSectionLabel(event)
-      const key = glGroupKey(companyCode, glAccount, section)
+      const rate = eventSapRate(event)
+      const ldc = eventLdc(event)
+      const sectionKey = glSectionKey(companyCode, glAccount, section)
+      const ldcKey = ldc ? `${ldc.certificate}|${ldc.exemptionRate}|${ldc.expectedRate ?? ''}` : 'no-ldc'
+      const key = `${sectionKey}||${rate ?? 'none'}||${ldcKey}`
       if (!groups.has(key)) {
-        groups.set(key, { id: `GL-${key}`, glKey: key, companyCode, glAccount, section, events: [] })
+        groups.set(key, { id: `GL-${key}`, glKey: key, companyCode, glAccount, section, rate, ldc, events: [] })
       }
+      const documentKey = `${sectionKey}||${presentValue(event.docNo) || ''}`
+      if (!groupKeyByDocument.has(documentKey)) groupKeyByDocument.set(documentKey, key)
+      if (!firstGroupKeyBySection.has(sectionKey)) firstGroupKeyBySection.set(sectionKey, key)
       groups.get(key).events.push({
         ...event,
         id: `${key}-${groups.get(key).events.length}`,
@@ -175,33 +260,32 @@ function buildGlLedgerRows(ledgerRows, issuesByGlKey = new Map()) {
     })
   })
 
+  const issuesByGlKey = new Map()
+  issues.forEach((issue) => {
+    const sectionKey = glSectionKey(issue.companyCode, issue.glAccount, sectionPairLabel(issue.legacySection, issue.newSection))
+    const key = groupKeyByDocument.get(`${sectionKey}||${presentValue(issue.docNo) || ''}`)
+      || firstGroupKeyBySection.get(sectionKey)
+    if (!key) return
+    if (!issuesByGlKey.has(key)) issuesByGlKey.set(key, [])
+    issuesByGlKey.get(key).push(issue)
+  })
+
   return [...groups.values()]
     .map((group) => {
       const deductedRows = group.events.filter(isEventTdsDeducted).length
-      // Unique SAP-reported rates only (no TDS ÷ base derivation), matched at
-      // two decimals so 1 / 1.0 / 1.00 collapse into one value.
-      const rates = [...new Set(group.events
-        .map((event) => (event.sapRate == null || event.sapRate === '' ? NaN : Number(event.sapRate)))
-        .filter((rate) => !Number.isNaN(rate) && rate !== 0)
-        .map((rate) => Math.round(rate * 100) / 100))]
-        .sort((x, y) => x - y)
-      const ldcRates = [...new Set(group.events
-        .filter((event) => event.ldcRate != null && event.ldcRate !== '' && !Number.isNaN(Number(event.ldcRate)))
-        .map((event) => Math.round(Number(event.ldcRate) * 100) / 100))]
-        .sort((x, y) => x - y)
-      const ldcCertificates = [...new Set(group.events.map((event) => presentValue(event.ldcCertificate) && event.ldcRate != null ? event.ldcCertificate : null).filter(Boolean))]
+      const baseAmount = group.events.reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0)
+      const tdsAmount = group.events.reduce((total, event) => total + Math.abs(Number(event.tdsAmount || 0)), 0)
       return {
         ...group,
         rowCount: group.events.length,
-        vendorCount: new Set(group.events.map((event) => presentValue(event.vendorId) || presentValue(event.vendor)).filter(Boolean)).size,
-        documentAmount: group.events.reduce((total, event) => total + Number(event.amount || 0), 0),
-        baseAmount: group.events.reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0),
-        tdsAmount: group.events.reduce((total, event) => total + Math.abs(Number(event.tdsAmount || 0)), 0),
+        baseAmount,
+        tdsAmount,
+        // Effective rate actually deducted across the row: TDS ÷ base over the
+        // same lines the popup checks, so ₹0 adjustment lines don't dilute it.
+        calculatedRate: rowCalculatedRate(group.events),
+        rateStatus: rowRateStatus(group.events),
         deductedRows,
         notDeductedRows: group.events.length - deductedRows,
-        rates,
-        ldcRates,
-        ldcCertificates,
         issues: issuesByGlKey.get(group.glKey) || [],
         issueRows: (issuesByGlKey.get(group.glKey) || []).length,
       }
@@ -211,53 +295,82 @@ function buildGlLedgerRows(ledgerRows, issuesByGlKey = new Map()) {
       || a.glAccount.localeCompare(b.glAccount)
       || (a.section === 'No Section') - (b.section === 'No Section')
       || a.section.localeCompare(b.section)
+      || (a.rate == null) - (b.rate == null)
+      || (a.rate ?? 0) - (b.rate ?? 0)
+      || (a.ldc != null) - (b.ldc != null)
+      || (a.ldc?.certificate || '').localeCompare(b.ldc?.certificate || '')
+      || (a.ldc?.exemptionRate ?? 0) - (b.ldc?.exemptionRate ?? 0)
     ))
 }
 
-function IssueTypeDropdown({ value, disabled, onChange }) {
+// Checkbox dropdown used by every TDS Analysis filter. `value` is 'all' or an
+// array of option values; ticking nothing (or "All") goes back to 'all'.
+function MultiSelectFilter({ allLabel, options, value, disabled = false, disabledTitle, onChange }) {
   const [open, setOpen] = useState(false)
-  const selectedLabel = value === 'all'
-    ? 'All Issue Types'
-    : TDS_ANALYSIS_ISSUE_TYPE_OPTIONS.find(([optionValue]) => optionValue === value)?.[1] || value
+  const menuRef = useRef(null)
+  const selected = selectedValues(value) || []
+  const selectedSet = new Set(selected)
+  const labelFor = (optionValue) => options.find(([candidate]) => candidate === optionValue)?.[1] || optionValue
+  const buttonLabel = selected.length === 0
+    ? allLabel
+    : selected.length === 1 ? labelFor(selected[0]) : `${selected.length} selected`
 
   useEffect(() => {
     if (disabled) setOpen(false)
   }, [disabled])
 
+  useEffect(() => {
+    if (!open) return undefined
+    function handleOutsideClick(event) {
+      if (menuRef.current && !menuRef.current.contains(event.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [open])
+
+  function toggle(optionValue) {
+    const next = selectedSet.has(optionValue)
+      ? selected.filter((item) => item !== optionValue)
+      : [...selected, optionValue]
+    onChange(next.length ? next : 'all')
+  }
+
   return (
-    <div className="case-filter-menu">
+    <div className="case-filter-menu" ref={menuRef}>
       <button
-        className="filter-select case-filter-menu-button"
+        className={`filter-select case-filter-menu-button ${selected.length ? 'has-selection' : ''}`}
         type="button"
         disabled={disabled}
-        title={disabled ? 'Only applies to the Issues tab' : undefined}
+        title={disabled ? disabledTitle : selected.map(labelFor).join(', ') || undefined}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((next) => !next)}
       >
-        <span>{selectedLabel}</span>
+        <span>{buttonLabel}</span>
         <ChevronDown size={14} />
       </button>
       {open && !disabled && (
-        <div className="case-filter-menu-list" role="listbox">
+        <div className="case-filter-menu-list" role="listbox" aria-multiselectable="true">
           <button
-            className={`case-filter-menu-option ${value === 'all' ? 'is-active' : ''}`}
+            className={`case-filter-menu-option ${selected.length === 0 ? 'is-active' : ''}`}
             type="button"
             role="option"
-            aria-selected={value === 'all'}
-            onClick={() => { onChange('all'); setOpen(false) }}
+            aria-selected={selected.length === 0}
+            onClick={() => onChange('all')}
           >
-            All Issue Types
+            <input type="checkbox" readOnly tabIndex={-1} checked={selected.length === 0} />
+            {allLabel}
           </button>
-          {TDS_ANALYSIS_ISSUE_TYPE_OPTIONS.map(([optionValue, label]) => (
+          {options.map(([optionValue, label]) => (
             <button
-              className={`case-filter-menu-option ${value === optionValue ? 'is-active' : ''}`}
+              className={`case-filter-menu-option ${selectedSet.has(optionValue) ? 'is-active' : ''}`}
               type="button"
               key={optionValue}
               role="option"
-              aria-selected={value === optionValue}
-              onClick={() => { onChange(optionValue); setOpen(false) }}
+              aria-selected={selectedSet.has(optionValue)}
+              onClick={() => toggle(optionValue)}
             >
+              <input type="checkbox" readOnly tabIndex={-1} checked={selectedSet.has(optionValue)} />
               {label}
             </button>
           ))}
@@ -266,6 +379,10 @@ function IssueTypeDropdown({ value, disabled, onChange }) {
     </div>
   )
 }
+
+const SEVERITY_OPTIONS = [['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]
+const STATUS_OPTIONS = [['open', 'Open'], ['in_review', 'In Review'], ['resolved', 'Resolved'], ['rejected', 'Rejected']]
+const ISSUES_TAB_ONLY = 'Only applies to the Issues tab'
 
 export default function TDSCaseBuilder() {
   const dispatch = useDispatch()
@@ -286,11 +403,21 @@ export default function TDSCaseBuilder() {
     filteredCaseLedger.map((row) => ({ ...row, id: row.caseId }))
   ), [filteredCaseLedger])
   const hasUpload = Boolean(uploadMeta)
+  // Counts follow the shared filter bar, using the Issues page's own
+  // predicates so tab/card numbers match the cards inside the Issues tab.
+  const filterValues = useMemo(() => ({
+    searchQuery, vendorFilter, sectionFilter, docTypeFilter,
+    severityFilter, statusFilter, issueTypeFilter,
+  }), [searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+  const filteredValidationRows = useMemo(() => (
+    validationRows.filter((row) => validationRowMatchesFilters(row, filterValues))
+  ), [validationRows, filterValues])
   // Rows with at least one issue — a row failing two rules counts once, so this
   // matches the "Issues Found" card inside the Issues tab.
-  const issueRowCount = useMemo(() => (
-    validationRows.filter((row) => row.status === 'issue').length
-  ), [validationRows])
+  const issueRowCount = useMemo(() => {
+    const filteredIssues = issueRows.filter((issue) => issueMatchesFilters(issue, filterValues))
+    return issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
+  }, [issueRows, filteredValidationRows, filterValues])
   const vendorOptions = useMemo(() => {
     const values = [
       ...ledgerRows.map((row) => row.vendor),
@@ -324,15 +451,6 @@ export default function TDSCaseBuilder() {
     }))
   }, [activeTab, quickFilter])
 
-  const summaryCards = useMemo(() => [
-    { label: 'Transactions', value: validationRows.length, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Transactions in the selected Company/FY scope' },
-    { label: 'Document Groups', value: ledgerRows.length, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference' },
-    { label: 'Balanced Groups', value: ledgerRows.filter((row) => row.status === 'BALANCED').length, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: 'Net amount is zero' },
-    { label: 'Open Items', value: ledgerRows.filter((row) => row.openItem || row.status === 'OPEN').length, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found' },
-    { label: 'Issue Groups', value: ledgerRows.filter((row) => row.status === 'ISSUE').length, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Ledger groups with issue' },
-    { label: 'Issues', value: issueRowCount, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
-  ], [validationRows, ledgerRows, issueRowCount])
-
   const ledgerColumns = [
     { key: 'vendor', header: 'Vendor', render: (row) => (
       <div>
@@ -359,15 +477,11 @@ export default function TDSCaseBuilder() {
     { key: 'status', header: 'Status', sortValue: (row) => row.status, render: (row) => <StatusBadge label={row.status} tone={row.status === 'ISSUE' ? 'danger' : row.status === 'BALANCED' ? 'success' : 'warning'} /> },
   ]
 
-  const activeRows = useMemo(() => {
-    if (quickFilter === 'ledger-balanced') return ledgerRows.filter((row) => row.status === 'BALANCED')
-    if (quickFilter === 'ledger-open') return ledgerRows.filter((row) => row.openItem || row.status === 'OPEN')
-    if (quickFilter === 'ledger-issue') return ledgerRows.filter((row) => row.status === 'ISSUE')
-    return ledgerRows
-  }, [quickFilter, ledgerRows])
-  const visibleRows = useMemo(() => {
+  // Ledger groups matching the filter bar; drives the tab count, the ledger
+  // summary cards and (after the quick filter) the table.
+  const filteredLedgerRows = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
-    return activeRows.filter((row) => {
+    return ledgerRows.filter((row) => {
       const events = row.events || []
       const eventText = events.map((event) => [
         event.docNo,
@@ -383,9 +497,9 @@ export default function TDSCaseBuilder() {
         .filter(Boolean)
       const rowDocTypes = events.map((event) => String(event.docType || '').trim().toUpperCase()).filter(Boolean)
 
-      if (vendorFilter !== 'all' && row.vendor !== vendorFilter) return false
-      if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, rowSections)) return false
-      if (docTypeFilter !== 'all' && !rowDocTypes.includes(docTypeFilter)) return false
+      if (!filterIncludes(vendorFilter, row.vendor)) return false
+      if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, rowSections))) return false
+      if (!filterMatchesAny(docTypeFilter, (docType) => rowDocTypes.includes(docType))) return false
 
       if (!query) return true
       const searchable = [
@@ -408,33 +522,44 @@ export default function TDSCaseBuilder() {
       ].filter(Boolean).join(' ').toLowerCase()
       return searchable.includes(query)
     })
-  }, [activeRows, searchQuery, vendorFilter, sectionFilter, docTypeFilter])
+  }, [ledgerRows, searchQuery, vendorFilter, sectionFilter, docTypeFilter])
+  const visibleRows = useMemo(() => {
+    if (quickFilter === 'ledger-balanced') return filteredLedgerRows.filter((row) => row.status === 'BALANCED')
+    if (quickFilter === 'ledger-open') return filteredLedgerRows.filter((row) => row.openItem || row.status === 'OPEN')
+    if (quickFilter === 'ledger-issue') return filteredLedgerRows.filter((row) => row.status === 'ISSUE')
+    return filteredLedgerRows
+  }, [quickFilter, filteredLedgerRows])
+
+  const summaryCards = useMemo(() => [
+    { label: 'Transactions', value: filteredValidationRows.length, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Transactions in the selected Company/FY scope and filters' },
+    { label: 'Document Groups', value: filteredLedgerRows.length, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference' },
+    { label: 'Balanced Groups', value: filteredLedgerRows.filter((row) => row.status === 'BALANCED').length, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: 'Net amount is zero' },
+    { label: 'Open Items', value: filteredLedgerRows.filter((row) => row.openItem || row.status === 'OPEN').length, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found' },
+    { label: 'Issue Groups', value: filteredLedgerRows.filter((row) => row.status === 'ISSUE').length, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Ledger groups with issue' },
+    { label: 'Issues', value: issueRowCount, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
+  ], [filteredValidationRows, filteredLedgerRows, issueRowCount])
   const canExpand = activeTab === 'ledger'
 
   // GL tab: vendor/section/doc type filters apply per transaction line before
   // grouping, so group totals reflect only the matching lines.
   const glRows = useMemo(() => {
-    const filteredLedgerRows = ledgerRows
-      .filter((row) => vendorFilter === 'all' || row.vendor === vendorFilter)
+    const lineFilteredLedgerRows = ledgerRows
+      .filter((row) => filterIncludes(vendorFilter, row.vendor))
       .map((row) => ({
         ...row,
         events: (row.events || []).filter((event) => {
-          if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [event.tdsSection].map(presentValue).filter(Boolean))) return false
-          if (docTypeFilter !== 'all' && String(event.docType || '').trim().toUpperCase() !== docTypeFilter) return false
+          if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [event.tdsSection].map(presentValue).filter(Boolean)))) return false
+          if (!filterIncludes(docTypeFilter, String(event.docType || '').trim().toUpperCase())) return false
           return true
         }),
       }))
-    const issuesByGlKey = new Map()
-    issueRows.forEach((issue) => {
-      if (vendorFilter !== 'all' && issue.vendor !== vendorFilter) return
-      if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [issue.section, issue.legacySection, issue.ruleSection, issue.newSection].map(presentValue).filter(Boolean))) return
-      if (docTypeFilter !== 'all' && String(issue.docType || '').trim().toUpperCase() !== docTypeFilter) return
-      const key = glGroupKey(issue.companyCode, issue.glAccount, sectionPairLabel(issue.legacySection, issue.newSection))
-      if (!issuesByGlKey.has(key)) issuesByGlKey.set(key, [])
-      issuesByGlKey.get(key).push(issue)
-    })
+    const lineFilteredIssues = issueRows.filter((issue) => (
+      filterIncludes(vendorFilter, issue.vendor)
+      && filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [issue.section, issue.legacySection, issue.ruleSection, issue.newSection].map(presentValue).filter(Boolean)))
+      && filterIncludes(docTypeFilter, String(issue.docType || '').trim().toUpperCase())
+    ))
     const query = searchQuery.trim().toLowerCase()
-    return buildGlLedgerRows(filteredLedgerRows, issuesByGlKey).filter((group) => {
+    return buildGlLedgerRows(lineFilteredLedgerRows, lineFilteredIssues).filter((group) => {
       if (!query) return true
       const searchable = [
         group.companyCode,
@@ -457,31 +582,43 @@ export default function TDSCaseBuilder() {
   }, [ledgerRows, issueRows, vendorFilter, sectionFilter, docTypeFilter, searchQuery])
 
   const glColumns = [
-    { key: 'companyCode', header: 'Company', render: (row) => <span className="font-mono">{row.companyCode}</span> },
     { key: 'glAccount', header: 'GL Account', render: (row) => (
       <div>
         <div className="font-mono case-strong">{row.glAccount}</div>
         <div className="case-muted">{row.rowCount} rows</div>
       </div>
     )},
-    { key: 'vendorCount', header: 'Vendors', render: (row) => <span className="font-mono">{row.vendorCount}</span> },
     { key: 'section', header: 'Section (Old / New)', render: (row) => (
       <span className={`font-mono ${row.section === 'No Section' ? 'case-muted' : ''}`}>{row.section}</span>
     )},
-    { key: 'documentAmount', header: 'Document Amount', render: (row) => <span className="font-mono">{formatCurrency(row.documentAmount)}</span> },
     { key: 'baseAmount', header: 'Base Amount', render: (row) => <span className="font-mono">{formatCurrency(row.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
-    { key: 'rate', header: 'Rate', sortValue: (row) => row.rates[0] ?? -1, render: (row) => (
+    { key: 'rate', header: 'Rate', sortValue: (row) => row.rate ?? -1, render: (row) => (
       <div>
-        <span className="font-mono" title={row.rates.length ? 'Unique TDS rates reported by SAP' : 'No SAP TDS rate on this GL section'}>
-          {row.rates.length ? row.rates.map(formatRate).join(', ') : '—'}
+        <span className="font-mono" title={row.rate != null ? 'TDS rate reported by SAP' : 'No SAP TDS rate on these lines'}>
+          {row.rate != null ? formatRate(row.rate) : '—'}
         </span>
-        {row.ldcRates.length > 0 && (
-          <div className="case-ldc-rate font-mono" title={`LDC certificate${row.ldcCertificates.length === 1 ? '' : 's'}: ${row.ldcCertificates.join(', ')}`}>
-            LDC {row.ldcRates.map(formatRate).join(', ')}
-          </div>
-        )}
       </div>
+    )},
+    { key: 'ldcRate', header: 'LDC Expected Rate', sortValue: (row) => row.ldc?.expectedRate ?? -1, render: (row) => (
+      row.ldc ? (
+        <div title={`LDC certificate ${row.ldc.certificate}`}>
+          <span className="font-mono">{row.ldc.expectedRate != null ? formatRate(row.ldc.expectedRate) : '—'}</span>
+          <div className="case-ldc-rate font-mono">Exemption {formatRate(row.ldc.exemptionRate)}</div>
+          <div className="case-muted font-mono">{row.ldc.certificate}</div>
+        </div>
+      ) : <span className="case-muted case-ldc-empty">—</span>
+    )},
+    { key: 'calculatedRate', header: 'Calculated Rate', sortValue: (row) => row.calculatedRate ?? -1, render: (row) => (
+      <span
+        className={`font-mono ${RATE_STATUS_CLASS[row.rateStatus] || ''}`}
+        title={{
+          matched: `TDS ÷ base over the checked lines of this row (₹0-TDS lines with no issue are left out) — every line matches the ${row.ldc ? 'LDC expected' : 'SAP'} rate`,
+          mismatched: `TDS ÷ base over the checked lines of this row (₹0-TDS lines with no issue are left out) — at least one line does not match the ${row.ldc ? 'LDC expected' : 'SAP'} rate`,
+        }[row.rateStatus] || 'TDS ÷ base over the checked lines of this row (₹0-TDS lines with no issue are left out)'}
+      >
+        {row.calculatedRate != null ? formatRate(row.calculatedRate) : '—'}
+      </span>
     )},
     { key: 'deductedRows', header: 'TDS Deducted / Not', render: (row) => (
       <span className="font-mono">{row.deductedRows.toLocaleString()} / {row.notDeductedRows.toLocaleString()}</span>
@@ -492,7 +629,7 @@ export default function TDSCaseBuilder() {
           type="button"
           className="case-gl-issue-link font-mono"
           disabled={!row.issueRows}
-          title={row.issueRows ? `View ${row.issueRows} issues on GL ${row.glAccount}, section ${row.section}` : 'No issues on this GL section'}
+          title={row.issueRows ? `View ${row.issueRows} issues on GL ${row.glAccount}, section ${row.section}, rate ${row.rate != null ? formatRate(row.rate) : '—'}` : 'No issues on these lines'}
           onClick={(event) => { event.stopPropagation(); setGlModal({ type: 'issues', key: row.glKey }) }}
         >
           {row.issueRows.toLocaleString()}
@@ -529,17 +666,41 @@ export default function TDSCaseBuilder() {
     { key: 'amount', header: 'Document Amount', render: (event) => <span className="font-mono">{formatCurrency(event.amount)}</span> },
     { key: 'baseAmount', header: 'Base Amount', render: (event) => <span className="font-mono">{formatCurrency(event.baseAmount)}</span> },
     { key: 'tdsSection', header: 'Section', render: (event) => <span className="font-mono">{event.tdsSection}</span> },
-    { key: 'tdsRate', header: 'Rate', sortValue: (event) => appliedRateForEvent(event), render: (event) => (
-      <div>
-        <span className="font-mono">{formatRate(appliedRateForEvent(event))}</span>
-        {event.ldcRate != null && event.ldcRate !== '' && (
-          <div className="case-ldc-rate font-mono" title={event.ldcCertificate ? `LDC certificate ${event.ldcCertificate}` : 'LDC rate'}>
-            LDC {formatRate(event.ldcRate)}
-          </div>
-        )}
-      </div>
-    ) },
     { key: 'tdsAmount', header: 'TDS', render: (event) => <span className="font-mono">{formatCurrency(event.tdsAmount)}</span> },
+    // Same three rates as the GL Ledger row, per line.
+    { key: 'sapRate', header: 'Rate', sortValue: (event) => eventSapRate(event) ?? -1, render: (event) => {
+      const rate = eventSapRate(event)
+      return (
+        <span className="font-mono" title={rate != null ? 'TDS rate reported by SAP' : 'No SAP TDS rate on this line'}>
+          {rate != null ? formatRate(rate) : '—'}
+        </span>
+      )
+    }},
+    { key: 'ldcExpectedRate', header: 'LDC Expected Rate', sortValue: (event) => eventLdc(event)?.expectedRate ?? -1, render: (event) => {
+      const ldc = eventLdc(event)
+      return ldc ? (
+        <div title={`LDC certificate ${ldc.certificate}`}>
+          <span className="font-mono">{ldc.expectedRate != null ? formatRate(ldc.expectedRate) : '—'}</span>
+          <div className="case-ldc-rate font-mono">Exemption {formatRate(ldc.exemptionRate)}</div>
+          <div className="case-muted font-mono">{ldc.certificate}</div>
+        </div>
+      ) : <span className="case-muted case-ldc-empty">—</span>
+    }},
+    { key: 'calculatedRate', header: 'Calculated Rate', sortValue: (event) => calculatedRateForEvent(event) ?? -1, render: (event) => {
+      const target = eventLdc(event) ? 'LDC expected' : 'SAP'
+      const status = eventRateStatus(event)
+      return (
+        <span
+          className={`font-mono ${RATE_STATUS_CLASS[status] || ''}`}
+          title={{
+            matched: `TDS ÷ base amount for this line — matches the ${target} rate`,
+            mismatched: `TDS ÷ base amount for this line — does not match the ${target} rate`,
+          }[status] || 'TDS ÷ base amount for this line'}
+        >
+          {formatRate(calculatedRateForEvent(event))}
+        </span>
+      )
+    }},
     { key: 'tdsNote', header: 'TDS Note', render: (event) => <span className="case-tds-note case-gl-modal-note" title={event.tdsNote || ''}>{event.tdsNote || '—'}</span> },
   ]
 
@@ -558,16 +719,29 @@ export default function TDSCaseBuilder() {
     { key: 'category', header: 'Issue Type', sortValue: (issue) => getDisplayIssueType(issue), render: (issue) => getDisplayIssueType(issue) },
     { key: 'severity', header: 'Severity', render: (issue) => <StatusBadge label={issue.severity} tone={severityToTone(issue.severity)} /> },
     { key: 'description', header: 'Details', render: (issue) => <span className="case-tds-note case-gl-modal-note" title={issue.description || ''}>{issue.description || '—'}</span> },
+    { header: '', render: (issue) => (
+      <button
+        type="button"
+        className="issues-review-btn"
+        onClick={(event) => { event.stopPropagation(); dispatch(openDrawer(issue.id)) }}
+      >
+        Review
+      </button>
+    )},
   ]
 
   function downloadGlIssues(row) {
     const fileBase = (uploadMeta?.fileName || 'tds-analysis').replace(/\.[^.]+$/, '')
     downloadCsv(
-      `${fileBase}-GL-${row.glAccount}-${row.section.replace(/[^A-Za-z0-9]+/g, '_')}-${row.companyCode}-issues.csv`,
+      `${fileBase}-GL-${row.glAccount}-${row.section.replace(/[^A-Za-z0-9]+/g, '_')}-${row.rate != null ? `${row.rate}pct` : 'no_rate'}${row.ldc ? `-LDC_${row.ldc.certificate}` : ''}-${row.companyCode}-issues.csv`,
       [
         { label: 'Company', value: () => row.companyCode },
         { label: 'GL Account', value: () => row.glAccount },
         { label: 'GL Section (Old / New)', value: () => row.section },
+        { label: 'SAP Rate', value: () => (row.rate != null ? formatRate(row.rate) : '—') },
+        { label: 'LDC Certificate', value: () => row.ldc?.certificate || '—' },
+        { label: 'LDC Exemption', value: () => (row.ldc ? formatRate(row.ldc.exemptionRate) : '—') },
+        { label: 'LDC Expected Rate', value: () => (row.ldc?.expectedRate != null ? formatRate(row.ldc.expectedRate) : '—') },
         ...ISSUE_CSV_COLUMNS,
       ],
       row.issues,
@@ -689,7 +863,7 @@ export default function TDSCaseBuilder() {
     <div className="case-tabs-panel">
       <div className="case-tabs" role="tablist" aria-label="TDS analysis results">
         <button type="button" className={`case-tab ${activeTab === 'ledger' ? 'active' : ''}`} onClick={() => applyQuickFilter('ledger', 'ledger-all')}>
-          Document Ledger ({ledgerRows.length.toLocaleString()})
+          Document Ledger ({filteredLedgerRows.length.toLocaleString()})
         </button>
         <button type="button" className={`case-tab ${activeTab === 'issues' ? 'active' : ''}`} onClick={() => applyQuickFilter('issues', 'issues-all')}>
           Issues ({issueRowCount.toLocaleString()})
@@ -715,48 +889,48 @@ export default function TDSCaseBuilder() {
         />
       </div>
       <div className="filter-bar-controls">
-        <select className="filter-select" value={vendorFilter} onChange={(event) => dispatch(setVendorFilter(event.target.value))}>
-          <option value="all">All Vendors</option>
-          {vendorOptions.slice(0, 80).map((vendor) => <option key={vendor} value={vendor}>{vendor}</option>)}
-        </select>
-        <select className="filter-select" value={sectionFilter} onChange={(event) => dispatch(setSectionFilter(event.target.value))}>
-          <option value="all">All Sections</option>
-          {sectionOptions.map((section) => <option key={section} value={section}>{section}</option>)}
-        </select>
-        <select
-          className="filter-select"
+        <MultiSelectFilter
+          allLabel="All Vendors"
+          options={vendorOptions.map((vendor) => [vendor, vendor])}
+          value={vendorFilter}
+          onChange={(next) => dispatch(setVendorFilter(next))}
+        />
+        <MultiSelectFilter
+          allLabel="All Sections"
+          options={sectionOptions.map((section) => [section, section])}
+          value={sectionFilter}
+          onChange={(next) => dispatch(setSectionFilter(next))}
+        />
+        <MultiSelectFilter
+          allLabel="All Severity"
+          options={SEVERITY_OPTIONS}
           value={severityFilter}
           disabled={activeTab !== 'issues'}
-          title={activeTab !== 'issues' ? 'Only applies to the Issues tab' : undefined}
-          onChange={(event) => dispatch(setSeverityFilter(event.target.value))}
-        >
-          <option value="all">All Severity</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </select>
-        <IssueTypeDropdown
+          disabledTitle={ISSUES_TAB_ONLY}
+          onChange={(next) => dispatch(setSeverityFilter(next))}
+        />
+        <MultiSelectFilter
+          allLabel="All Issue Types"
+          options={TDS_ANALYSIS_ISSUE_TYPE_OPTIONS}
           value={issueTypeFilter}
           disabled={activeTab !== 'issues'}
-          onChange={(nextValue) => dispatch(setIssueTypeFilter(nextValue))}
+          disabledTitle={ISSUES_TAB_ONLY}
+          onChange={(next) => dispatch(setIssueTypeFilter(next))}
         />
-        <select
-          className="filter-select"
+        <MultiSelectFilter
+          allLabel="All Status"
+          options={STATUS_OPTIONS}
           value={statusFilter}
           disabled={activeTab !== 'issues'}
-          title={activeTab !== 'issues' ? 'Only applies to the Issues tab' : undefined}
-          onChange={(event) => dispatch(setStatusFilter(event.target.value))}
-        >
-          <option value="all">All Status</option>
-          <option value="open">Open</option>
-          <option value="in_review">In Review</option>
-          <option value="resolved">Resolved</option>
-          <option value="rejected">Rejected</option>
-        </select>
-        <select className="filter-select" value={docTypeFilter} onChange={(event) => setDocTypeFilter(event.target.value)}>
-          <option value="all">All Doc Types</option>
-          {docTypeOptions.map((docType) => <option key={docType} value={docType}>{docType}</option>)}
-        </select>
+          disabledTitle={ISSUES_TAB_ONLY}
+          onChange={(next) => dispatch(setStatusFilter(next))}
+        />
+        <MultiSelectFilter
+          allLabel="All Doc Types"
+          options={docTypeOptions.map((docType) => [docType, docType])}
+          value={docTypeFilter}
+          onChange={setDocTypeFilter}
+        />
         <button className="filter-reset-btn" type="button" onClick={handleSharedFilterReset}>
           <RotateCcw size={12} />Reset
         </button>
@@ -811,6 +985,8 @@ export default function TDSCaseBuilder() {
       ) : activeTab === 'gl' ? (
         <>
           {resultsTabsPanel}
+          {/* Review drawer for the GL issues pop-up, shared with the Issues tab. */}
+          <Issues embedded reviewOnly />
           <div className="table-card">
           <DataTable
             columns={glColumns}
@@ -828,6 +1004,8 @@ export default function TDSCaseBuilder() {
                     <div className="case-gl-modal-title">
                       {glModal.type === 'issues' ? 'Issues on' : 'Transactions on'} GL <span className="font-mono">{activeGlModalRow.glAccount}</span>
                       {' · '}Section <span className="font-mono">{activeGlModalRow.section}</span>
+                      {' · '}Rate <span className="font-mono">{activeGlModalRow.rate != null ? formatRate(activeGlModalRow.rate) : '—'}</span>
+                      {activeGlModalRow.ldc && <>{' · '}LDC <span className="font-mono">{activeGlModalRow.ldc.certificate}</span></>}
                     </div>
                     <div className="case-muted">
                       Company <span className="font-mono">{activeGlModalRow.companyCode}</span>

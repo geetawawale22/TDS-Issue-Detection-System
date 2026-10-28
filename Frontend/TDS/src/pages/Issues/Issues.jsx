@@ -19,6 +19,7 @@ import {
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
 import { issueTypeFilterOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
+import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiFilter'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
@@ -266,7 +267,71 @@ function issueRowKey(row) {
   ].map((value) => String(value ?? '').trim().toUpperCase()).join('|')
 }
 
-export default function Issues({ embedded = false, initialView = 'all', filtersFirst = false, beforeSummary = null, hideFilters = false, externalDocTypeFilter = null, onExternalDocTypeFilterChange = null } = {}) {
+// Filter predicates shared with TDS Analysis (TDSCaseBuilder), so its tab and
+// card counts are computed exactly like this page's summary cards.
+// `filters` = { searchQuery, vendorFilter, sectionFilter, docTypeFilter,
+//               severityFilter, statusFilter, issueTypeFilter }
+export function issueMatchesFilters(issue, filters) {
+  const { searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter } = filters
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase()
+    if (
+      !issue.vendor?.toLowerCase().includes(q) &&
+      !issue.id?.toLowerCase().includes(q) &&
+      !String(issue.docNo ?? '').toLowerCase().includes(q) &&
+      !String(issue.docType ?? '').toLowerCase().includes(q) &&
+      !String(issue.vendorId ?? '').toLowerCase().includes(q) &&
+      !String(issue.section ?? '').toLowerCase().includes(q) &&
+      !String(issue.vendorPan ?? '').toLowerCase().includes(q)
+    ) return false
+  }
+  if (!filterIncludes(vendorFilter, issue.vendor)) return false
+  if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [issue.section, issue.legacySection, issue.ruleSection, issue.newSection]))) return false
+  if (!filterIncludes(docTypeFilter, String(issue.docType ?? '').toUpperCase())) return false
+  if (!filterIncludes(severityFilter, issue.severity)) return false
+  if (!filterIncludes(statusFilter, issue.status)) return false
+  const allowedTypes = allowedIssueTypes(issueTypeFilter)
+  if (allowedTypes) {
+    const rowTypes = [getDisplayIssueType(issue), issue.category, issue.issueTypeLabel, issue.issueType].filter(Boolean)
+    if (!rowTypes.some((type) => allowedTypes.includes(type))) return false
+  }
+  return true
+}
+
+// Each issue-type option value can itself cover several backend categories.
+function allowedIssueTypes(issueTypeFilter) {
+  const values = selectedValues(issueTypeFilter)
+  return values ? values.flatMap((value) => value.split(MULTI_CATEGORY_DELIMITER)) : null
+}
+
+export function validationRowMatchesFilters(row, filters) {
+  const { searchQuery, vendorFilter, sectionFilter, docTypeFilter } = filters
+  const q = searchQuery.trim().toLowerCase()
+  if (q) {
+    const searchable = [
+      row.vendor,
+      row.docNo,
+      row.docType,
+      row.vendorId,
+      row.section,
+      row.vendorPan,
+    ].filter(Boolean).join(' ').toLowerCase()
+    if (!searchable.includes(q)) return false
+  }
+  if (!filterIncludes(vendorFilter, row.vendor)) return false
+  if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [row.section, row.legacySection, row.ruleSection, row.newSection]))) return false
+  if (!filterIncludes(docTypeFilter, String(row.docType ?? '').toUpperCase())) return false
+  return true
+}
+
+// Issue-status validation rows that still have at least one issue after the
+// issue-level filters (severity/status/type) — a row failing two rules counts once.
+export function issueRowsMatchingIssues(validationRows, filteredIssues) {
+  const issueKeys = new Set(filteredIssues.map(issueRowKey))
+  return validationRows.filter((row) => row.status === 'issue' && issueKeys.has(issueRowKey(row)))
+}
+
+export default function Issues({ embedded = false, initialView = 'all', filtersFirst = false, beforeSummary = null, hideFilters = false, externalDocTypeFilter = null, onExternalDocTypeFilterChange = null, reviewOnly = false } = {}) {
   const dispatch = useDispatch()
   const [searchParams] = useSearchParams()
   const [validationView, setValidationView] = useState('all')
@@ -359,41 +424,23 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     }, 900)
   }
 
-  const filtered = useMemo(() => issues.filter((issue) => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase()
-      if (
-        !issue.vendor?.toLowerCase().includes(q) &&
-        !issue.id?.toLowerCase().includes(q) &&
-        !String(issue.docNo ?? '').toLowerCase().includes(q) &&
-        !String(issue.docType ?? '').toLowerCase().includes(q) &&
-        !String(issue.vendorId ?? '').toLowerCase().includes(q) &&
-        !String(issue.section ?? '').toLowerCase().includes(q) &&
-        !String(issue.vendorPan ?? '').toLowerCase().includes(q)
-      ) return false
-    }
-    if (vendorFilter    !== 'all' && issue.vendor    !== vendorFilter)    return false
-    if (sectionFilter   !== 'all' && !sectionMatches(sectionFilter, [issue.section, issue.legacySection, issue.ruleSection, issue.newSection]))   return false
-    if (activeDocTypeFilter   !== 'all' && String(issue.docType ?? '').toUpperCase() !== activeDocTypeFilter) return false
-    if (severityFilter  !== 'all' && issue.severity  !== severityFilter)  return false
-    if (statusFilter    !== 'all' && issue.status    !== statusFilter)    return false
-    if (issueTypeFilter !== 'all') {
-      const allowedTypes = issueTypeFilter.split(MULTI_CATEGORY_DELIMITER)
-      const rowTypes = [getDisplayIssueType(issue), issue.category, issue.issueTypeLabel, issue.issueType].filter(Boolean)
-      if (!rowTypes.some((type) => allowedTypes.includes(type))) return false
-    }
-    return true
-  }), [issues, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+  const filterValues = useMemo(() => ({
+    searchQuery, vendorFilter, sectionFilter, docTypeFilter: activeDocTypeFilter,
+    severityFilter, statusFilter, issueTypeFilter,
+  }), [searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+  const filtered = useMemo(() => issues.filter((issue) => issueMatchesFilters(issue, filterValues)), [issues, filterValues])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
 
   // Company/FY-scoped validation rows (see selectActiveValidationRows), with
   // one extra reclassification: a row with a zero base amount can't actually
   // be rate-checked, so it reads as "insufficient data" rather than a false
-  // "passed".
+  // "passed". Rows covered by a 100%-exemption (nil) LDC certificate stay
+  // passed: zero TDS is correct by certificate, whatever the base amount.
   const adjustedValidationRows = useMemo(() => (
     activeValidationRows.map((row) => (
       row.status !== 'skipped' && row.status !== 'issue' && Number(row.baseAmount) === 0
+        && !(row.ldcCertificate && Number(row.ldcExemptionPercent) >= 100)
         ? {
           ...row,
           status: 'insufficient',
@@ -546,39 +593,14 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     }
   }
 
-  const filteredValidationRowsForSummary = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-    return displayValidationRows.filter((row) => {
-      if (q) {
-        const searchable = [
-          row.vendor,
-          row.docNo,
-          row.docType,
-          row.vendorId,
-          row.section,
-          row.vendorPan,
-        ].filter(Boolean).join(' ').toLowerCase()
-        if (!searchable.includes(q)) return false
-      }
-      if (vendorFilter !== 'all' && row.vendor !== vendorFilter) return false
-      if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [row.section, row.legacySection, row.ruleSection, row.newSection])) return false
-      if (activeDocTypeFilter !== 'all' && String(row.docType ?? '').toUpperCase() !== activeDocTypeFilter) return false
-      return true
-    })
-  }, [displayValidationRows, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter])
+  const filteredValidationRowsForSummary = useMemo(() => (
+    displayValidationRows.filter((row) => validationRowMatchesFilters(row, filterValues))
+  ), [displayValidationRows, filterValues])
 
   // Derived from the same filter bar inputs as the table, so the cards and
   // visible rows stay aligned when Vendor/Section/Doc Type/Search changes.
   const summary = useMemo(() => {
-    const filteredIssueGroups = new Map()
-    filtered.forEach((issue) => {
-      const key = issueRowKey(issue)
-      if (!filteredIssueGroups.has(key)) filteredIssueGroups.set(key, [])
-      filteredIssueGroups.get(key).push(issue)
-    })
-    const filteredIssueRows = filteredValidationRowsForSummary.filter((row) => (
-      row.status === 'issue' && filteredIssueGroups.has(issueRowKey(row))
-    ))
+    const filteredIssueRows = issueRowsMatchingIssues(filteredValidationRowsForSummary, filtered)
 
     if (!uploadMeta) {
       return {
@@ -704,11 +726,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
 
   const columns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
-    { key: 'vendor', header: 'Vendor',    render: (r) => (
-      <div>
-        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
-        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId || '—'}</div>
-      </div>
+    { key: 'vendor', header: 'Vendor Name', render: (r) => (
+      <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</span>
+    )},
+    { key: 'vendorId', header: 'Vendor No.', render: (r) => (
+      <span className="font-mono" style={{ fontSize: 11.5 }}>{r.vendorId || '—'}</span>
     )},
     { key: 'vendorPan', header: 'PAN', render: (r) => (
       <span className="font-mono" style={{ fontSize: 11.5 }}>{r.vendorPan || r.vendorId || '—'}</span>
@@ -747,11 +769,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
 
   const transactionColumns = [
     { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
-    { key: 'vendor', header: 'Vendor', render: (r) => (
-      <div>
-        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</div>
-        <div className="font-mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{r.vendorId || '—'}</div>
-      </div>
+    { key: 'vendor', header: 'Vendor Name', render: (r) => (
+      <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</span>
+    )},
+    { key: 'vendorId', header: 'Vendor No.', render: (r) => (
+      <span className="font-mono" style={{ fontSize: 11.5 }}>{r.vendorId || '—'}</span>
     )},
     { key: 'vendorPan', header: 'PAN', render: (r) => (
       <span className="font-mono" style={{ fontSize: 11.5 }}>{r.vendorPan || r.vendorId || '—'}</span>
@@ -849,13 +871,14 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             !String(row.vendorPan ?? '').toLowerCase().includes(q)
           ) return false
         }
-        if (vendorFilter  !== 'all' && row.vendor  !== vendorFilter)  return false
-        if (sectionFilter !== 'all' && !sectionMatches(sectionFilter, [row.section, row.legacySection, row.ruleSection, row.newSection])) return false
-        if (activeDocTypeFilter !== 'all' && String(row.docType ?? '').toUpperCase() !== activeDocTypeFilter) return false
+        if (!filterIncludes(vendorFilter, row.vendor)) return false
+        if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [row.section, row.legacySection, row.ruleSection, row.newSection]))) return false
+        if (!filterIncludes(activeDocTypeFilter, String(row.docType ?? '').toUpperCase())) return false
         if (validationView === 'issue') {
-          if (severityFilter !== 'all' && matchingIssue?.severity !== severityFilter) return false
-          if (statusFilter !== 'all' && matchingIssue?.status !== statusFilter) return false
-          if (issueTypeFilter !== 'all' && (!matchingIssue || !issueTypeFilter.split(MULTI_CATEGORY_DELIMITER).includes(getDisplayIssueType(matchingIssue)))) return false
+          if (!filterIncludes(severityFilter, matchingIssue?.severity)) return false
+          if (!filterIncludes(statusFilter, matchingIssue?.status)) return false
+          const allowedTypes = allowedIssueTypes(issueTypeFilter)
+          if (allowedTypes && (!matchingIssue || !allowedTypes.includes(getDisplayIssueType(matchingIssue)))) return false
         }
         return true
       })
@@ -943,6 +966,50 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     </>
   )
 
+
+  // Review drawer plus its correction / SAP-match modals. With `reviewOnly`
+  // only these render, so another page (the GL Ledger issues pop-up) can open
+  // the same Review drawer by dispatching openDrawer(issue.id).
+  const reviewOverlays = (
+    <>
+        <IssueDrawer
+          issue={drawerIssue}
+          open={drawerIsOpen}
+          correctionGroups={drawerCorrectionGroups}
+          onCreateCorrection={reviewValidationRow ? null : handleOpenCorrection}
+          onMatchSapRows={reviewValidationRow ? null : handleOpenSapMatch}
+          onClose={() => {
+            setReviewValidationRow(null)
+            dispatch(closeDrawer())
+          }}
+        />
+
+        <CorrectionModal
+          issue={correctionIssue}
+          form={correctionForm}
+          onChange={setCorrectionForm}
+          onClose={() => setCorrectionIssue(null)}
+          onSave={handleSaveCorrection}
+        />
+
+        <MatchSapRowsModal
+          issue={matchIssue}
+          rows={matchCandidateRows}
+          selectedIds={selectedMatchIds}
+          method={matchMethod}
+          remarks={matchRemarks}
+          search={matchSearch}
+          onSearch={setMatchSearch}
+          onToggle={handleToggleMatchRow}
+          onMethodChange={setMatchMethod}
+          onRemarksChange={setMatchRemarks}
+          onClose={() => setMatchIssue(null)}
+          onSave={handleSaveSapMatch}
+        />
+    </>
+  )
+
+  if (reviewOnly) return reviewOverlays
 
   return (
     <div className={embedded ? 'issues-embedded' : undefined}>
@@ -1120,40 +1187,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
         />
       </div>
 
-      <IssueDrawer
-        issue={drawerIssue}
-        open={drawerIsOpen}
-        correctionGroups={drawerCorrectionGroups}
-        onCreateCorrection={reviewValidationRow ? null : handleOpenCorrection}
-        onMatchSapRows={reviewValidationRow ? null : handleOpenSapMatch}
-        onClose={() => {
-          setReviewValidationRow(null)
-          dispatch(closeDrawer())
-        }}
-      />
-
-      <CorrectionModal
-        issue={correctionIssue}
-        form={correctionForm}
-        onChange={setCorrectionForm}
-        onClose={() => setCorrectionIssue(null)}
-        onSave={handleSaveCorrection}
-      />
-
-      <MatchSapRowsModal
-        issue={matchIssue}
-        rows={matchCandidateRows}
-        selectedIds={selectedMatchIds}
-        method={matchMethod}
-        remarks={matchRemarks}
-        search={matchSearch}
-        onSearch={setMatchSearch}
-        onToggle={handleToggleMatchRow}
-        onMethodChange={setMatchMethod}
-        onRemarksChange={setMatchRemarks}
-        onClose={() => setMatchIssue(null)}
-        onSave={handleSaveSapMatch}
-      />
+      {reviewOverlays}
     </div>
   )
 }

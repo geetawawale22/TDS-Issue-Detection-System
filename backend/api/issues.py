@@ -495,10 +495,21 @@ def _build_ldc_utilization(transactions) -> list[dict[str, Any]]:
             "used": 0.0,
             "transactions": 0,
             "_monthlyUsage": {},
+            "_vendors": {},
         })
         amount = float(txn.basic_amount)
         row["used"] += amount
         row["transactions"] += 1
+        # One certificate covers every vendor code on the PAN; keep each
+        # vendor's share so the UI can show them under the certificate.
+        vendor_row = row["_vendors"].setdefault(txn.vendor_code or "—", {
+            "vendorId": txn.vendor_code or "—",
+            "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
+            "used": 0.0,
+            "transactions": 0,
+        })
+        vendor_row["used"] += amount
+        vendor_row["transactions"] += 1
         if txn.posting_date:
             month_key = txn.posting_date.strftime("%Y-%m")
             month_label = txn.posting_date.strftime("%b %y")
@@ -514,6 +525,7 @@ def _build_ldc_utilization(transactions) -> list[dict[str, Any]]:
     rows = []
     for row in by_certificate.values():
         monthly_usage = row.pop("_monthlyUsage", {})
+        row["vendors"] = sorted(row.pop("_vendors", {}).values(), key=lambda vendor: -vendor["used"])
         row["monthlyUsage"] = [
             monthly_usage[key]
             for key in sorted(monthly_usage)
@@ -877,6 +889,7 @@ def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, An
         applied_rate = _effective_applied_rate(tds_base_amount, txn.tds_deducted_amount)
         if applied_rate is None:
             applied_rate = txn.tds_deducted_rate
+        ldc_exemption_rate = _ldc_exemption_for_posting(txn)
         ledger["tdsAmount"] += tds_amount
         ledger["eventCount"] += 1
         ledger["issueCount"] += len(doc_issues)
@@ -897,10 +910,21 @@ def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, An
             "tdsRate": applied_rate,
             # Rate exactly as SAP reported it (rate column / TDS description), never derived.
             "sapRate": txn.tds_deducted_rate,
-            "ldcRate": _ldc_rate_for_posting(txn),
+            # LDC exemption % from the certificate (None outside its validity).
+            "ldcRate": ldc_exemption_rate,
+            # Rate the rules expect once that exemption is applied (statutory
+            # rate × (100 − exemption)/100, or an explicit approved rate).
+            "ldcExpectedRate": _get_applicable_rate(txn) if ldc_exemption_rate is not None else None,
             "ldcCertificate": txn.ldc_exemption_number,
             "tdsAmount": tds_amount,
             "tdsNote": (tds_notes or {}).get(id(txn)),
+            # No TDS is due on this line itself, so the UI skips its rate check:
+            # an advance adjustment (TDS was taken when the advance was paid), a
+            # clearing entry (AB) or a transfer posting (TP/TM).
+            "rateCheckNotApplicable": bool(
+                _is_advance_clearing_adjustment(txn)
+                or (txn.doc_type or "").strip().upper() in {"AB", "TP", "TM"}
+            ),
             "referenceDoc": txn.invoice_reference_document or txn.advance_document_reference or "—",
             "issues": [issue.get("category") for issue in doc_issues],
         })
@@ -997,44 +1021,20 @@ def _normalise_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return frame.where(pd.notna(frame), None).to_dict(orient="records")
 
 
-def _transaction_payload(txn) -> dict[str, Any]:
-    if hasattr(txn, "model_dump"):
-        return txn.model_dump(mode="json")
-    return txn.dict()
+def _ldc_exemption_for_posting(txn) -> float | None:
+    """LDC exemption % when a certificate covers this row's posting date, else None.
 
-
-def _dedupe_transactions(transactions) -> tuple[list[Any], list[Any]]:
-    """Keep only fully identical transaction objects once and return duplicates."""
-    deduped = []
-    duplicates = []
-    seen: set[tuple[tuple[str, Any], ...]] = set()
-
-    for txn in transactions:
-        key = tuple(sorted(_transaction_payload(txn).items()))
-        if key in seen:
-            duplicates.append(txn)
-            continue
-        seen.add(key)
-        deduped.append(txn)
-
-    return deduped, duplicates
-
-
-def _ldc_rate_for_posting(txn) -> float | None:
-    """LDC-approved TDS rate when a certificate covers this row's posting date, else None.
-
-    LDC master certificates store their approved rate in ldc_exemption_percent
-    (see _attach_ldc_certificate); an explicit ldc_approved_rate wins if present.
+    LDC master values are exemption percentages (see _attach_ldc_certificate):
+    60 means TDS is reduced by 60%, 100 means nil TDS, 0 means no relief.
     """
-    if not txn.ldc_exemption_number:
+    if not txn.ldc_exemption_number or txn.ldc_exemption_percent is None:
         return None
     if txn.posting_date and (
         (txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from)
         or (txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to)
     ):
         return None
-    rate = txn.ldc_approved_rate if txn.ldc_approved_rate is not None else txn.ldc_exemption_percent
-    return float(rate) if rate is not None else None
+    return float(txn.ldc_exemption_percent)
 
 
 def _effective_applied_rate(base_amount: float | None, tds_amount: float | None) -> float | None:
@@ -1106,14 +1106,9 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "newSection": txn.tds_new_section,
         "legacySection": txn.tds_legacy_section or txn.tds_deducted_section,
         "ruleSection": rule_issue.expected_section or txn.expected_tds_section or txn.tds_deducted_section,
-        "actualSection": txn.tds_deducted_section or txn.tds_legacy_section,
         "glAccount": txn.gl_account,
-        "glDescription": txn.gl_description,
-        "glRuleReason": txn.gl_rule_reason,
         "source": "GL" if txn.expected_tds_section or txn.gl_tds_applicability else "SAP",
-        "transactionAmount": base_amount,
         "baseAmount": base_amount,
-        "baseAmountAvailable": _get_tds_base_amount(txn) is not None,
         "tdsAmount": txn.tds_deducted_amount or 0.0,
         "expectedRate": expected_rate,
         "appliedRate": applied_rate,
@@ -1133,49 +1128,11 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "date": txn.posting_date.isoformat(),
         "postingDate": txn.posting_date.isoformat(),
         "documentDate": txn.bill_date.isoformat() if txn.bill_date else None,
+        # The UI also reads this as plainEnglish; issuesSlice fills that in so
+        # the same text is not sent twice per issue.
         "description": rule_issue.message,
-        "plainEnglish": rule_issue.message,
-        "issueDetail": rule_issue.message,
         "recommendedAction": recommended_action,
-        "suggestedCorrection": recommended_action,
     }
-
-
-def _dedupe_issue_rows(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove exact duplicate issue rows while ignoring generated display IDs."""
-    deduped: list[dict[str, Any]] = []
-    seen: set[tuple[tuple[str, Any], ...]] = set()
-
-    for issue in issues:
-        key = tuple(
-            sorted((field, value) for field, value in issue.items() if field != "id")
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(issue)
-
-    for index, issue in enumerate(deduped, start=1):
-        issue["id"] = f"UPL-{index:06d}"
-
-    return deduped
-
-
-def _dedupe_response_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove exact duplicate response rows while ignoring generated row IDs."""
-    deduped: list[dict[str, Any]] = []
-    seen: set[tuple[tuple[str, Any], ...]] = set()
-
-    for row in rows:
-        key = tuple(
-            sorted((field, value) for field, value in row.items() if field != "id")
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(row)
-
-    return deduped
 
 
 def _threshold_section_for_transaction(txn) -> str:
@@ -1189,53 +1146,56 @@ def _threshold_section_for_transaction(txn) -> str:
     )
 
 
-def _threshold_vendor_summaries(transactions) -> list[dict[str, Any]]:
-    grouped: dict[str, dict[str, Any]] = {}
-
-    for txn in transactions:
-        section = _threshold_section_for_transaction(txn)
-        pan = txn.vendor_pan or "—"
-        financial_year = _get_financial_year(txn.posting_date) if txn.posting_date else None
-        company_code = (txn.company_code or "").strip()
-        key = f"{company_code}||{financial_year or ''}||{pan}||{section}"
-        base_amount = _get_tds_base_amount(txn)
-        if base_amount is None:
-            base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
-
-        if key not in grouped:
-            grouped[key] = {
-                "id": key,
-                "companyCode": txn.company_code or None,
-                "financialYear": financial_year,
-                "name": txn.vendor_name or txn.vendor_code or "Unknown vendor",
-                "vendorId": pan,
-                "vendorCodes": [],
-                "vendorNames": [],
-                "pan": pan,
-                "section": section,
-                "currentAmount": 0.0,
-                "rowCount": 0,
-            }
-
-        vendor_code = txn.vendor_code or "—"
-        vendor_name = txn.vendor_name or txn.vendor_code or "Unknown vendor"
-        if vendor_code not in grouped[key]["vendorCodes"]:
-            grouped[key]["vendorCodes"].append(vendor_code)
-        if vendor_name not in grouped[key]["vendorNames"]:
-            grouped[key]["vendorNames"].append(vendor_name)
-        grouped[key]["currentAmount"] += float(base_amount or 0)
-        grouped[key]["rowCount"] += 1
-
-    for row in grouped.values():
-        if row["vendorNames"]:
-            row["name"] = " / ".join(row["vendorNames"][:2])
-            if len(row["vendorNames"]) > 2:
-                row["name"] += f" +{len(row['vendorNames']) - 2}"
-
-    return sorted(
-        grouped.values(),
-        key=lambda row: (row["pan"], row["section"]),
-    )
+# Vendor Threshold Tracker disabled: the Threshold Monitoring page now shows
+# only the LDC tracker, so this per-vendor/section summary is no longer built
+# on upload. Uncomment it and its two call sites to restore the tracker.
+# def _threshold_vendor_summaries(transactions) -> list[dict[str, Any]]:
+#     grouped: dict[str, dict[str, Any]] = {}
+#
+#     for txn in transactions:
+#         section = _threshold_section_for_transaction(txn)
+#         pan = txn.vendor_pan or "—"
+#         financial_year = _get_financial_year(txn.posting_date) if txn.posting_date else None
+#         company_code = (txn.company_code or "").strip()
+#         key = f"{company_code}||{financial_year or ''}||{pan}||{section}"
+#         base_amount = _get_tds_base_amount(txn)
+#         if base_amount is None:
+#             base_amount = txn.basic_amount if txn.basic_amount is not None else txn.bill_amount
+#
+#         if key not in grouped:
+#             grouped[key] = {
+#                 "id": key,
+#                 "companyCode": txn.company_code or None,
+#                 "financialYear": financial_year,
+#                 "name": txn.vendor_name or txn.vendor_code or "Unknown vendor",
+#                 "vendorId": pan,
+#                 "vendorCodes": [],
+#                 "vendorNames": [],
+#                 "pan": pan,
+#                 "section": section,
+#                 "currentAmount": 0.0,
+#                 "rowCount": 0,
+#             }
+#
+#         vendor_code = txn.vendor_code or "—"
+#         vendor_name = txn.vendor_name or txn.vendor_code or "Unknown vendor"
+#         if vendor_code not in grouped[key]["vendorCodes"]:
+#             grouped[key]["vendorCodes"].append(vendor_code)
+#         if vendor_name not in grouped[key]["vendorNames"]:
+#             grouped[key]["vendorNames"].append(vendor_name)
+#         grouped[key]["currentAmount"] += float(base_amount or 0)
+#         grouped[key]["rowCount"] += 1
+#
+#     for row in grouped.values():
+#         if row["vendorNames"]:
+#             row["name"] = " / ".join(row["vendorNames"][:2])
+#             if len(row["vendorNames"]) > 2:
+#                 row["name"] += f" +{len(row['vendorNames']) - 2}"
+#
+#     return sorted(
+#         grouped.values(),
+#         key=lambda row: (row["pan"], row["section"]),
+#     )
 
 
 def _transaction_validation_row(txn, status: str, reason: str, row_index: int, tds_note: str | None = None) -> dict[str, Any]:
@@ -1396,6 +1356,38 @@ def _note_amount(txn) -> float:
     return abs(float(txn.bill_amount or 0.0))
 
 
+def _ldc_covers_posting_date(txn) -> bool:
+    return bool(
+        txn.ldc_exemption_number
+        and txn.ldc_exempt_from and txn.ldc_exempt_to and txn.posting_date
+        and txn.ldc_exempt_from <= txn.posting_date <= txn.ldc_exempt_to
+    )
+
+
+def _nil_rate_ldc_without_tds(txn) -> bool:
+    """No TDS deducted and a 100%-exemption (nil) LDC certificate covers the posting date.
+
+    Zero TDS is then correct by certificate, even when SAP left the section,
+    rate or base blank, so the row is not "insufficient data".
+    """
+    return (
+        _blank_or_zero_amount(txn.tds_deducted_amount)
+        and _ldc_covers_posting_date(txn)
+        and (_ldc_exemption_for_posting(txn) or 0) >= 100
+    )
+
+
+def _cannot_verify_note(txn) -> str:
+    """Say exactly which SAP value is missing, instead of a generic message."""
+    no_signal = not _has_validation_signal(txn)
+    zero_base = _has_zero_base_amount(txn)
+    if no_signal and zero_base:
+        return "Cannot verify — SAP has no TDS section, rate or payment type, and the base amount is ₹0."
+    if zero_base:
+        return "Cannot verify — base amount is ₹0 in SAP, so the expected TDS cannot be calculated."
+    return "Cannot verify — SAP has no TDS section, rate or payment type for this row."
+
+
 def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, str]) -> dict[int, str]:
     """Plain-language reason for every row where no TDS was deducted.
 
@@ -1448,16 +1440,24 @@ def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, st
         if classify_event(txn) == "PAYMENT" and not txn.is_advance_payment:
             notes[id(txn)] = "Payment against invoice — TDS is deducted when the invoice is booked, not at payment."
             continue
-        if (
-            txn.ldc_exemption_number
-            and txn.ldc_exempt_from and txn.ldc_exempt_to
-            and txn.ldc_exempt_from <= txn.posting_date <= txn.ldc_exempt_to
-        ):
-            notes[id(txn)] = (
-                f"LDC certificate {txn.ldc_exemption_number} applies "
-                f"({_format_display_date(txn.ldc_exempt_from)} to {_format_display_date(txn.ldc_exempt_to)}) — "
-                "lower/nil TDS allowed."
-            )
+        if _ldc_covers_posting_date(txn):
+            period = f"{_format_display_date(txn.ldc_exempt_from)} to {_format_display_date(txn.ldc_exempt_to)}"
+            exemption = _ldc_exemption_for_posting(txn) or 0.0
+            certificate = f"LDC certificate {txn.ldc_exemption_number} ({exemption:g}% exemption, {period})"
+            expected_rate = _get_applicable_rate(txn)
+            expected_text = f"{expected_rate:.2f}%" if expected_rate is not None else None
+            if exemption >= 100:
+                notes[id(txn)] = f"{certificate} — nil TDS, no deduction required."
+            elif _has_zero_base_amount(txn) or not _has_validation_signal(txn):
+                notes[id(txn)] = (
+                    f"{certificate} — expected TDS {expected_text}, but SAP has no base amount/section for this row — cannot verify."
+                    if expected_text
+                    else f"{certificate} — SAP has no section/base for this row, so the expected rate cannot be worked out — cannot verify."
+                )
+            else:
+                notes[id(txn)] = (
+                    f"{certificate} — {expected_text or 'reduced'} TDS expected, but none was deducted — please review."
+                )
             continue
 
         section = _expected_section(txn)
@@ -1475,7 +1475,7 @@ def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, st
                 continue
 
         if _has_zero_base_amount(txn) or not _has_validation_signal(txn):
-            notes[id(txn)] = "Cannot verify — SAP has no TDS section/rate/base for this row."
+            notes[id(txn)] = _cannot_verify_note(txn)
             continue
 
         notes[id(txn)] = "No TDS deducted and no rule flagged it — please review."
@@ -1580,7 +1580,6 @@ async def upload_sap_file(
             if uses_descriptive_section
             else build_transactions_from_sap_rows(records)
         )
-        transactions, duplicate_transactions = _dedupe_transactions(transactions)
     except (ValidationError, ValueError, TypeError) as exc:
         raise HTTPException(
             status_code=422,
@@ -1640,10 +1639,11 @@ async def upload_sap_file(
         issue_transaction_ids.add(id(txn))
         issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
-    issues = _dedupe_issue_rows(issues)
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
-    threshold_vendors = _threshold_vendor_summaries(transactions)
+    # Vendor Threshold Tracker disabled; see _threshold_vendor_summaries.
+    # threshold_vendors = _threshold_vendor_summaries(transactions)
+    threshold_vendors = []
     tds_notes = _build_tds_notes(transactions, issue_reasons_by_transaction_id)
     case_ledger = _build_case_ledger_from_transactions(transactions, issues, tds_notes)
     skipped_validation_rows = sum(
@@ -1677,6 +1677,14 @@ async def upload_sap_file(
                 row_index,
                 tds_notes.get(txn_id),
             ))
+        elif _nil_rate_ldc_without_tds(txn):
+            validation_rows.append(_transaction_validation_row(
+                txn,
+                "passed",
+                f"LDC certificate {txn.ldc_exemption_number} gives 100% exemption on this posting date, so no TDS is required.",
+                row_index,
+                tds_notes.get(txn_id),
+            ))
         elif _has_zero_base_amount(txn):
             validation_rows.append(_transaction_validation_row(
                 txn,
@@ -1701,15 +1709,6 @@ async def upload_sap_file(
                 row_index,
                 tds_notes.get(txn_id),
             ))
-
-    duplicate_offset = len(transactions)
-    for duplicate_index, txn in enumerate(duplicate_transactions, start=1):
-        validation_rows.append(_transaction_validation_row(
-            txn,
-            "skipped",
-            f"Exact duplicate transaction row removed before validation. All field values matched an earlier row. Duplicate #{duplicate_index}.",
-            duplicate_offset + duplicate_index,
-        ))
 
     passed_rows = sum(row["status"] == "passed" for row in validation_rows)
     issue_rows = sum(row["status"] == "issue" for row in validation_rows)
@@ -1783,7 +1782,7 @@ async def upload_case_source_files(
     tds_rows = tds_frame.where(pd.notna(tds_frame), None).to_dict(orient="records")
     transaction_rows, joined_rows = _build_joined_case_transactions(vendor_rows, tds_rows)
 
-    transactions, _duplicate_transactions = _dedupe_transactions(build_transactions_from_sap_rows(transaction_rows))
+    transactions = build_transactions_from_sap_rows(transaction_rows)
     _apply_ldc_master_to_transactions(transactions, db)
     _apply_pan_verification_to_transactions(transactions, db)
     tds_cases, case_stats = build_tds_cases(transactions)
@@ -1823,12 +1822,13 @@ async def upload_case_source_files(
         issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
         issue_transaction_ids.add(id(txn))
 
-    issues = _dedupe_issue_rows(issues)
     missing_tds_candidates = [
         row for row in joined_rows
         if not row["tdsFound"] and str(row.get("docType") or "").upper() in {"RE", "KR", "KA"}
     ]
-    threshold_vendors = _threshold_vendor_summaries(transactions)
+    # Vendor Threshold Tracker disabled; see _threshold_vendor_summaries.
+    # threshold_vendors = _threshold_vendor_summaries(transactions)
+    threshold_vendors = []
     case_ledger = _build_case_ledger(joined_rows, issues)
     skipped_validation_rows = sum(
         id(txn) not in issue_transaction_ids and _is_skipped_non_tds_document_without_tds_amounts(txn)

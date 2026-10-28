@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { Suspense, useEffect, useRef } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
 import Sidebar from '@/components/Sidebar/Sidebar'
 import Navbar from '@/components/Navbar/Navbar'
+import PageLoader, { GlobalPageLoader } from '@/components/Common/PageLoader'
 import { toggleSidebar, setSidebarCollapsed } from '@/redux/slices/appSlice'
 import './AppLayout.css'
 
@@ -44,8 +45,11 @@ export default function AppLayout() {
           <Navbar />
         </header>
         <main className="page-scroll-area">
-          <Outlet />
+          <Suspense fallback={<PageLoader />}>
+            <Outlet />
+          </Suspense>
         </main>
+        <GlobalPageLoader />
       </div>
     </div>
   )
