@@ -13,7 +13,7 @@ import {
 import { formatCurrency, formatDate } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiFilter'
-import { getDisplayIssueType, issueTypeFilterOptions } from '@/data/issueTypes'
+import { getDisplayIssueType, issueTypeFilterOptionsFor } from '@/data/issueTypes'
 import { downloadCsv, ISSUE_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
 import './TDSCaseBuilder.css'
@@ -43,8 +43,6 @@ const TDS_ANALYSIS_ISSUE_TYPE_LABELS = new Set([
   'Wrong Section (Non-Resident)',
   'Wrong Section (Resident Misclassified)',
 ])
-const TDS_ANALYSIS_ISSUE_TYPE_OPTIONS = issueTypeFilterOptions()
-  .filter(([, label]) => TDS_ANALYSIS_ISSUE_TYPE_LABELS.has(label))
 
 function presentValue(value) {
   const text = String(value ?? '').trim()
@@ -418,6 +416,11 @@ export default function TDSCaseBuilder() {
     const filteredIssues = issueRows.filter((issue) => issueMatchesFilters(issue, filterValues))
     return issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
   }, [issueRows, filteredValidationRows, filterValues])
+  const issueTypeOptions = useMemo(
+    () => issueTypeFilterOptionsFor(issueRows, issueTypeFilter)
+      .filter(([, label]) => TDS_ANALYSIS_ISSUE_TYPE_LABELS.has(label)),
+    [issueRows, issueTypeFilter],
+  )
   const vendorOptions = useMemo(() => {
     const values = [
       ...ledgerRows.map((row) => row.vendor),
@@ -580,6 +583,12 @@ export default function TDSCaseBuilder() {
       return searchable.includes(query)
     })
   }, [ledgerRows, issueRows, vendorFilter, sectionFilter, docTypeFilter, searchQuery])
+
+  // Totals across the GL rows in view, shown above their columns.
+  const glTotals = useMemo(() => glRows.reduce((totals, row) => ({
+    baseAmount: totals.baseAmount + (Number(row.baseAmount) || 0),
+    tdsAmount: totals.tdsAmount + (Number(row.tdsAmount) || 0),
+  }), { baseAmount: 0, tdsAmount: 0 }), [glRows])
 
   const glColumns = [
     { key: 'glAccount', header: 'GL Account', render: (row) => (
@@ -911,7 +920,7 @@ export default function TDSCaseBuilder() {
         />
         <MultiSelectFilter
           allLabel="All Issue Types"
-          options={TDS_ANALYSIS_ISSUE_TYPE_OPTIONS}
+          options={issueTypeOptions}
           value={issueTypeFilter}
           disabled={activeTab !== 'issues'}
           disabledTitle={ISSUES_TAB_ONLY}
@@ -992,6 +1001,13 @@ export default function TDSCaseBuilder() {
             columns={glColumns}
             data={glRows}
             pageSize={200}
+            renderPreHeaderCell={(col) => (
+              col.key === 'baseAmount' || col.key === 'tdsAmount' ? (
+                <span className="font-mono case-strong" title={`Total ${col.header} across ${glRows.length.toLocaleString()} GL rows`}>
+                  {formatCurrency(glTotals[col.key])}
+                </span>
+              ) : col.key === 'glAccount' ? <span className="case-muted">Total</span> : null
+            )}
             onRowClick={(row) => setGlModal({ type: 'transactions', key: row.glKey })}
             emptyState={<div className="data-table-empty">No GL accounts found for this view</div>}
           />

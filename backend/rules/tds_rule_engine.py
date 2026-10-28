@@ -1,3 +1,4 @@
+import math
 import yaml
 from functools import lru_cache
 from pathlib import Path
@@ -30,6 +31,9 @@ MISSING_DEDUCTION_COVERAGE_THRESHOLD = TDS_CONFIG.get("missing_deduction_check",
     "gl_coverage_medium_threshold", 0.8
 )
 TDS_AMOUNT_ROUNDING_TOLERANCE = 1.0
+# Per-row TDS amount tolerance agreed with the business: differences up to
+# ₹0.50 either way are rounding, not an issue.
+TDS_ROW_AMOUNT_TOLERANCE = 0.5
 PAYMENT_TYPE_TO_SECTION = {
     str(section_config.get("payment_type", "")).strip().lower(): section_code
     for section_code, section_config in SECTIONS.items()
@@ -548,6 +552,21 @@ def check_short_excess_tds(txn: Transaction) -> Optional[TDSIssue]:
 
     return None
 
+def _tds_amount_matches(expected_amount: float, actual_amount: float) -> bool:
+    """
+    True when the deducted amount agrees with the expected amount.
+    Compares magnitudes, because SAP posts the base and the TDS with
+    independent signs (base on the credit side, TDS positive). Accepts a
+    ±₹0.50 difference, and also the expected amount rounded UP to the next
+    rupee, which is how SAP posts withholding tax (₹180.19 → ₹181).
+    """
+    expected = abs(expected_amount)
+    actual = abs(actual_amount)
+    if abs(actual - expected) <= TDS_ROW_AMOUNT_TOLERANCE:
+        return True
+    return actual == math.ceil(round(expected, 2))
+
+
 def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     """
     Category: Short/Excess TDS Deducted (amount-derived)
@@ -556,7 +575,7 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     rate LABEL looks correct but the real math doesn't add up —
     e.g. rate says '1%' but deducted amount works out to 0.85%.
 
-    Tolerance of ₹2 allows for standard rounding differences.
+    Rounding differences are allowed via _tds_amount_matches.
     """
     if txn.tds_deducted_amount is None or txn.tds_deducted_rate is None:
         return None  # need both to cross-check
@@ -574,14 +593,13 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     expected_rate = applicable_rate if txn.ldc_exemption_percent is not None or txn.ldc_approved_rate is not None else txn.tds_deducted_rate
     if expected_rate is None:
         return None
-    expected_amount = txn.basic_amount * (expected_rate / 100)
-    actual_amount = txn.tds_deducted_amount
+    expected_amount = abs(txn.basic_amount * (expected_rate / 100))
+    actual_amount = abs(txn.tds_deducted_amount)
 
-    diff = abs(expected_amount - actual_amount)
-    if diff <= 2:
+    if _tds_amount_matches(expected_amount, actual_amount):
         return None  # within rounding tolerance — fine
 
-    implied_rate = (actual_amount / txn.basic_amount) * 100
+    implied_rate = (actual_amount / abs(txn.basic_amount)) * 100
     ldc_context = ""
     if txn.ldc_exemption_reason and not txn.ldc_exemption_number:
         ldc_context = f"{txn.ldc_exemption_reason} Normal statutory rate is therefore used. "
@@ -598,7 +616,7 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
         message=(
             f"{ldc_context}"
             f"Expected rate is {expected_rate}%, which should give "
-            f"₹{expected_amount:,.2f} on a base of ₹{txn.basic_amount:,.2f}, "
+            f"₹{expected_amount:,.2f} on a base of ₹{abs(txn.basic_amount):,.2f}, "
             f"but ₹{actual_amount:,.2f} was actually deducted "
             f"(implied rate: {implied_rate:.4f}%)."
         ),
@@ -767,8 +785,7 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
     def normal_tds_is_satisfied(statutory_rate: Optional[float]) -> bool:
         if statutory_rate is None or txn.basic_amount is None or txn.tds_deducted_amount is None:
             return False
-        expected_tds = txn.basic_amount * (statutory_rate / 100)
-        return abs(expected_tds - txn.tds_deducted_amount) <= TDS_AMOUNT_ROUNDING_TOLERANCE
+        return _tds_amount_matches(txn.basic_amount * (statutory_rate / 100), txn.tds_deducted_amount)
 
     # Check certificate is valid on the posting date
     if txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from:
@@ -792,11 +809,13 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
         applicable_rate = _get_statutory_rate(txn) or 0.0
         cert_rate = applicable_rate * (1 - txn.ldc_exemption_percent / 100)
         rate_text = f"{txn.ldc_exemption_percent}% exemption"
-    expected_tds = txn.basic_amount * (cert_rate / 100)
-    actual_tds = txn.tds_deducted_amount or 0.0
-    actual_rate = (actual_tds / txn.basic_amount) * 100 if txn.basic_amount else 0.0
+    # SAP posts base and TDS with independent signs (e.g. base on the credit
+    # side, TDS positive), so compare magnitudes only.
+    expected_tds = abs(txn.basic_amount * (cert_rate / 100))
+    actual_tds = abs(txn.tds_deducted_amount or 0.0)
+    actual_rate = (actual_tds / abs(txn.basic_amount)) * 100 if txn.basic_amount else 0.0
 
-    if abs(expected_tds - actual_tds) > 1:
+    if not _tds_amount_matches(expected_tds, actual_tds):
         statutory_rate_text = (
             f" Normal statutory rate is {applicable_rate}%;"
             if txn.ldc_approved_rate is None

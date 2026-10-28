@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
-  Activity, AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash, PlusCircle, X,
+  Activity, AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash, X,
   BadgeCheck, BadgeX,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
@@ -14,11 +14,11 @@ import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters, createManualCorrection, createMatchedSapCorrection,
+  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters, createMatchedSapCorrection,
   selectActiveIssues, selectActiveVendors, selectActiveSections, selectActiveValidationRows,
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
-import { issueTypeFilterOptions, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
+import { issueTypeFilterOptionsFor, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
 import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiFilter'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
@@ -28,7 +28,6 @@ import './Issues.css'
 
 const SEVERITY_OPTIONS = [['all','All Severity'],['high','High'],['medium','Medium'],['low','Low']]
 const STATUS_OPTIONS   = [['all','All Status'],['open','Open'],['in_review','In Review'],['resolved','Resolved'],['rejected','Rejected']]
-const ISSUE_TYPE_OPTIONS = issueTypeFilterOptions()
 
 const SEVERITY_ICON = { high: AlertOctagon, medium: AlertTriangle, low: CheckCircle2 }
 const DEFAULT_SECTION_RATES = {
@@ -81,98 +80,6 @@ function SectionCell({ issue }) {
       <span>{oldSection} /</span>
       <span>{newSection}</span>
     </span>
-  )
-}
-
-
-function getExpectedTdsAmount(issue) {
-  const base = Number(issue?.baseAmount) || 0
-  const rate = Number(issue?.expectedRate)
-  if (!base || Number.isNaN(rate)) return Math.abs(Number(issue?.tdsAmount) || 0) + Math.abs(Number(issue?.taxImpact) || 0)
-  return Number((base * rate / 100).toFixed(2))
-}
-
-function buildCorrectionDefaults(issue) {
-  const actual = Math.abs(Number(issue?.tdsAmount) || 0)
-  const expected = getExpectedTdsAmount(issue)
-  const difference = Math.abs(Number(issue?.taxImpact) || (expected - actual) || 0)
-  return {
-    method: actual > expected ? 'FULL_REVERSAL' : 'DIFFERENCE_ONLY',
-    additionalAmount: difference.toFixed(2),
-    reversalAmount: actual.toFixed(2),
-    freshDeductionAmount: expected.toFixed(2),
-    remarks: '',
-  }
-}
-
-function CorrectionModal({ issue, form, onChange, onClose, onSave }) {
-  if (!issue) return null
-  const expected = getExpectedTdsAmount(issue)
-  const actual = Math.abs(Number(issue.tdsAmount) || 0)
-  const netImpact = form.method === 'FULL_REVERSAL'
-    ? (Number(form.freshDeductionAmount) || 0) - (Number(form.reversalAmount) || 0)
-    : Number(form.additionalAmount) || 0
-
-  return (
-    <div className="correction-modal-overlay" onClick={onClose}>
-      <div className="correction-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="correction-modal-header">
-          <div>
-            <div className="correction-modal-kicker">Manual Correction</div>
-            <h2>Create correction entry</h2>
-            <div className="font-mono correction-modal-doc">Original doc {issue.docNo}</div>
-          </div>
-          <button className="issue-drawer-close" type="button" onClick={onClose}><X size={16} /></button>
-        </div>
-
-        <div className="correction-modal-summary">
-          <div><span>Actual TDS</span><strong>{formatCurrency(actual)}</strong></div>
-          <div><span>Expected TDS</span><strong>{formatCurrency(expected)}</strong></div>
-          <div><span>Tax impact</span><strong>{formatCurrency(Math.abs(Number(issue.taxImpact) || expected - actual))}</strong></div>
-        </div>
-
-        <label className="correction-field">
-          <span>Correction method</span>
-          <select value={form.method} onChange={(event) => onChange({ ...form, method: event.target.value })}>
-            <option value="DIFFERENCE_ONLY">Difference only</option>
-            <option value="FULL_REVERSAL">Full reversal and fresh deduction</option>
-          </select>
-        </label>
-
-        {form.method === 'FULL_REVERSAL' ? (
-          <div className="correction-two-col">
-            <label className="correction-field">
-              <span>Reversal amount</span>
-              <input type="number" step="0.01" value={form.reversalAmount} onChange={(event) => onChange({ ...form, reversalAmount: event.target.value })} />
-            </label>
-            <label className="correction-field">
-              <span>Fresh deduction amount</span>
-              <input type="number" step="0.01" value={form.freshDeductionAmount} onChange={(event) => onChange({ ...form, freshDeductionAmount: event.target.value })} />
-            </label>
-          </div>
-        ) : (
-          <label className="correction-field">
-            <span>Additional deduction amount</span>
-            <input type="number" step="0.01" value={form.additionalAmount} onChange={(event) => onChange({ ...form, additionalAmount: event.target.value })} />
-          </label>
-        )}
-
-        <label className="correction-field">
-          <span>Remarks</span>
-          <textarea value={form.remarks} onChange={(event) => onChange({ ...form, remarks: event.target.value })} placeholder="Reason or SAP posting note" />
-        </label>
-
-        <div className="correction-preview">
-          <span>Net correction impact</span>
-          <strong className="font-mono">{formatCurrency(netImpact)}</strong>
-        </div>
-
-        <div className="correction-modal-actions">
-          <button className="btn btn-outline" type="button" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" type="button" onClick={onSave}><PlusCircle size={14} />Save correction</button>
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -257,8 +164,16 @@ function issueRowKey(row) {
   // Do not include section here. Wrong-section issues intentionally display the
   // expected/rule section, while the validation row may display the applied
   // section, so section-sensitive keys hide those issue rows from the table.
+  // Line item, assignment and withholding type/code tell apart SAP rows that
+  // share a document number and amounts (one row per withholding type, or the
+  // same line exported against two clearing items), so each row only shows
+  // its own issue.
   return [
     row.docNo,
+    row.lineItem,
+    row.assignmentNumber,
+    row.withholdingTaxType,
+    row.withholdingTaxCode,
     row.vendorId,
     row.vendorPan,
     row.docType,
@@ -337,8 +252,6 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const [validationView, setValidationView] = useState('all')
   const [reviewValidationRow, setReviewValidationRow] = useState(null)
   const [docTypeFilter, setDocTypeFilter] = useState('all')
-  const [correctionIssue, setCorrectionIssue] = useState(null)
-  const [correctionForm, setCorrectionForm] = useState(buildCorrectionDefaults(null))
   const [matchIssue, setMatchIssue] = useState(null)
   const [matchMethod, setMatchMethod] = useState('DIFFERENCE_ONLY')
   const [matchRemarks, setMatchRemarks] = useState('')
@@ -353,6 +266,10 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const currentUser = useSelector((s) => s.auth.user)
 
   const issues = useSelector(selectActiveIssues)
+  const issueTypeOptions = useMemo(
+    () => issueTypeFilterOptionsFor(issues, issueTypeFilter),
+    [issues, issueTypeFilter],
+  )
   const activeValidationRows = useSelector(selectActiveValidationRows)
   const vendorNames = useSelector(selectActiveVendors)
   const sections = useSelector(selectActiveSections)
@@ -477,23 +394,6 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       || String(group.originalDocumentNumber || '') === String(drawerIssue.docNo || '')
     ))
   }, [correctionGroups, drawerIssue, reviewValidationRow])
-
-  function handleOpenCorrection(issue) {
-    setCorrectionIssue(issue)
-    setCorrectionForm(buildCorrectionDefaults(issue))
-  }
-
-  function handleSaveCorrection() {
-    if (!correctionIssue) return
-    const payload = {
-      issueId: correctionIssue.id,
-      actor: currentUser,
-      ...correctionForm,
-    }
-    dispatch(createManualCorrection(payload))
-    toast.success('Correction group created')
-    setCorrectionIssue(null)
-  }
 
   const matchCandidateRows = useMemo(() => {
     if (!matchIssue) return []
@@ -939,7 +839,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             onChange={(e) => dispatch(setIssueTypeFilter(e.target.value))}
           >
             <option value="all">All Issue Types</option>
-            {ISSUE_TYPE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            {issueTypeOptions.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
           <select
             className="filter-select"
@@ -976,20 +876,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           issue={drawerIssue}
           open={drawerIsOpen}
           correctionGroups={drawerCorrectionGroups}
-          onCreateCorrection={reviewValidationRow ? null : handleOpenCorrection}
           onMatchSapRows={reviewValidationRow ? null : handleOpenSapMatch}
           onClose={() => {
             setReviewValidationRow(null)
             dispatch(closeDrawer())
           }}
-        />
-
-        <CorrectionModal
-          issue={correctionIssue}
-          form={correctionForm}
-          onChange={setCorrectionForm}
-          onClose={() => setCorrectionIssue(null)}
-          onSave={handleSaveCorrection}
         />
 
         <MatchSapRowsModal

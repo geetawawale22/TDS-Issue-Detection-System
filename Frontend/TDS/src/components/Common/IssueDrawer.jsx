@@ -1,10 +1,10 @@
-import { X, CheckCheck, FileText, Lightbulb, ClipboardList, PlusCircle } from 'lucide-react'
+import { X, CheckCheck, FileText, Lightbulb, ClipboardList } from 'lucide-react'
 import StatusBadge, { severityToTone, issueStatusToTone } from './StatusBadge'
 import { getDisplayIssueType, getRecommendedAction } from '@/data/issueTypes'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import './Common.css'
 
-export default function IssueDrawer({ issue, open, onClose, correctionGroups = [], onCreateCorrection, onMatchSapRows }) {
+export default function IssueDrawer({ issue, open, onClose, correctionGroups = [], onMatchSapRows }) {
   return (
     <div className={`issue-drawer-overlay ${open ? 'open' : ''}`} onClick={onClose}>
       <div
@@ -77,10 +77,10 @@ export default function IssueDrawer({ issue, open, onClose, correctionGroups = [
                       // The TDS Amount *is* the applied amount — not baseAmount × appliedRate,
                       // which can drift from the actual figure by rounding.
                       { label: 'Applied TDS Amount', value: formatCurrency(Math.abs(Number(issue.tdsAmount) || 0)), mono: true },
-                      { label: 'Expected Rate',  value: issue.expectedRate == null ? '—' : `${issue.expectedRate}%`, mono: true },
+                      { label: 'Expected Rate',  value: issue.expectedRate == null ? '—' : `${Number(issue.expectedRate).toFixed(2)}%`, mono: true },
                       { label: 'Expected TDS Amount',
                         value: (issue.expectedRate == null || issue.baseAmount == null) ? '—'
-                          : formatCurrency(issue.baseAmount * issue.expectedRate / 100), mono: true },
+                          : formatCurrency(Math.abs(issue.baseAmount * issue.expectedRate / 100)), mono: true },
                     ]
                     // Sits under the Applied/Expected TDS Amount column, not the rate column.
                     const taxImpactRow = [null, { label: 'Tax Impact', value: formatCurrency(Math.abs(Number(issue.taxImpact) || 0)), mono: true }]
@@ -118,14 +118,8 @@ export default function IssueDrawer({ issue, open, onClose, correctionGroups = [
                   ) : getRecommendedAction(issue)}
                 </div>
 
-                {issue.status !== 'resolved' && (onCreateCorrection || onMatchSapRows) && (
+                {issue.status !== 'resolved' && onMatchSapRows && (
                   <div className="issue-correction-actions">
-                    {onCreateCorrection && (
-                      <button className="issue-correction-primary" type="button" onClick={() => onCreateCorrection(issue)}>
-                        <PlusCircle size={14} />
-                        Create Draft Correction
-                      </button>
-                    )}
                     {onMatchSapRows && (
                       <button className="issue-correction-secondary" type="button" onClick={() => onMatchSapRows(issue)}>
                         <ClipboardList size={14} />

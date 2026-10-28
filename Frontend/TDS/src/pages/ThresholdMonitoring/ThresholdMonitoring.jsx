@@ -9,13 +9,14 @@ import ProgressBar from '@/components/Common/ProgressBar'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
   // selectThresholdVendors, // Vendor Threshold Tracker disabled
+  selectActiveValidationRows,
   selectIsLive,
   selectLdcUtilization,
 } from '@/redux/slices/issuesSlice'
 import { fetchLdcCertificates } from '@/services/ldcService'
 import { formatCurrency, formatDate } from '@/utils/utils'
 // formatStatusLabel was only used by the (disabled) Vendor Threshold Tracker.
-import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, LabelList, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import '@/components/Common/Common.css'
 import './ThresholdMonitoring.css'
 
@@ -36,7 +37,7 @@ const preferCertificateRow = (current, candidate) => {
 }
 const CRORE = 10000000
 const toCrore = (value) => roundToTwo(Number(value || 0) / CRORE)
-const TOP_LIMIT_BARS = 8
+const TOP_LIMIT_BARS = 5
 const TOP_TREND_LINES = 4
 const TREND_COLORS = ['#E01330', '#2563EB', '#10B981', '#F59E0B', '#64748B']
 // Worst-first ranking used to pick a PAN's overall utilization status.
@@ -50,6 +51,16 @@ function parseDateValue(value) {
   if (Number.isNaN(date.getTime())) return null
   date.setHours(0, 0, 0, 0)
   return date
+}
+
+// Chart order: active certificates first, then by amount used (highest
+// first), then by limit.
+function compareForCharts(a, b) {
+  const active = Number(b.validityLabel === 'Active') - Number(a.validityLabel === 'Active')
+  if (active) return active
+  const used = Number(b.used || 0) - Number(a.used || 0)
+  if (used) return used
+  return Number(b.limit || 0) - Number(a.limit || 0)
 }
 
 function certificateValidity(validFromValue, validToValue) {
@@ -69,6 +80,8 @@ export default function ThresholdMonitoring() {
   const [expandedLdcKey, setExpandedLdcKey] = useState(null)
   // const vendors = useSelector(selectThresholdVendors)
   const ldcUtilization = useSelector(selectLdcUtilization)
+  const validationRows = useSelector(selectActiveValidationRows)
+  const selectedCompanyCode = useSelector((state) => state.app.selectedCompanyCode)
   const isLive = useSelector(selectIsLive)
 
   useEffect(() => {
@@ -142,6 +155,53 @@ export default function ThresholdMonitoring() {
       .filter(Boolean)
   }, [ldcCertificateByKey, ldcUtilization])
 
+  // Certificates that are active today for a PAN (or, without a PAN, a vendor
+  // code) in the upload but have no usage in it yet. They are listed with
+  // ₹0 used so the tracker always shows the certificates that matter now.
+  const unusedActiveCertificates = useMemo(() => {
+    const pans = new Set(validationRows.map((row) => String(row.vendorPan || '').trim().toUpperCase()).filter((pan) => pan && pan !== '—'))
+    const vendorCodes = new Set(validationRows.map((row) => String(row.vendorId || '').trim()).filter((code) => code && code !== '—'))
+    const listed = new Set(currentLdcUtilization.map((row) => String(row.certificateNumber || '').trim()))
+    return [...ldcCertificateByKey.byCertificate.values()]
+      .filter((cert) => {
+        const certificateNumber = String(cert.certificateNumber || '').trim()
+        if (!certificateNumber || listed.has(certificateNumber)) return false
+        if (selectedCompanyCode && cert.companyCode && cert.companyCode !== selectedCompanyCode) return false
+        const pan = String(cert.pan || '').trim().toUpperCase()
+        const vendorCode = String(cert.vendorCode || '').trim()
+        if (!(pan ? pans.has(pan) : vendorCodes.has(vendorCode))) return false
+        return certificateValidity(cert.validFrom, cert.validTo)[1] === 'Active'
+      })
+      .map((cert) => {
+        const numericLimit = Number(cert.approvedLimit)
+        const hasLimit = Number.isFinite(numericLimit) && numericLimit > 0
+        const [validityTone, validityLabel] = certificateValidity(cert.validFrom, cert.validTo)
+        const [status, statusLabel] = ldcLimitStatus(hasLimit ? 0 : null)
+        return {
+          certificateNumber: cert.certificateNumber,
+          vendor: cert.vendorName || cert.vendorCode || 'Unknown vendor',
+          vendorId: cert.vendorCode || '—',
+          pan: cert.pan || '—',
+          companyCode: cert.companyCode || null,
+          section: cert.section,
+          approvedRate: cert.approvedRate,
+          used: 0,
+          transactions: 0,
+          vendors: [],
+          monthlyUsage: [],
+          limit: hasLimit ? numericLimit : null,
+          available: hasLimit ? numericLimit : null,
+          utilization: hasLimit ? 0 : null,
+          status,
+          statusLabel,
+          validFrom: cert.validFrom,
+          validTo: cert.validTo,
+          validityTone,
+          validityLabel,
+        }
+      })
+  }, [ldcCertificateByKey, currentLdcUtilization, validationRows, selectedCompanyCode])
+
   // ---- Vendor Threshold Tracker (disabled) ----
   // const exceeded = vendors.filter((v) => v.status === 'exceeded')
   // const near      = vendors.filter((v) => v.status === 'near')
@@ -156,7 +216,7 @@ export default function ThresholdMonitoring() {
   // when the row is expanded, and are searchable too.
   const filteredLdc = useMemo(() => {
     const needle = search.toLowerCase()
-    return currentLdcUtilization
+    return [...currentLdcUtilization, ...unusedActiveCertificates]
       .map((r) => ({ ...r, id: `${r.certificateNumber || ''}||${r.pan || ''}` }))
       .filter((r) =>
         (r.vendor || '').toLowerCase().includes(needle) ||
@@ -164,19 +224,35 @@ export default function ThresholdMonitoring() {
         (r.certificateNumber || '').toLowerCase().includes(needle) ||
         (r.vendors || []).some((v) => `${v.vendor} ${v.vendorId}`.toLowerCase().includes(needle))
       )
-  }, [currentLdcUtilization, search])
+  }, [currentLdcUtilization, unusedActiveCertificates, search])
 
   const ldcWarning = currentLdcUtilization.filter((r) => ['warning', 'high_warning'].includes(r.status))
   const ldcCritical = currentLdcUtilization.filter((r) => ['exhausted', 'over_utilized'].includes(r.status))
 
   const ldcLimitVsUsedData = useMemo(() => {
-    const rows = [...currentLdcUtilization]
-      .sort((a, b) => Number(b.used || 0) - Number(a.used || 0))
+    // One bar per PAN, like the tracker table: PANs holding an active
+    // certificate, by total used across their certificates, highest first.
+    const byPan = new Map()
+    for (const cert of [...currentLdcUtilization, ...unusedActiveCertificates]) {
+      const pan = cert.pan || '—'
+      if (!byPan.has(pan)) byPan.set(pan, { pan, vendor: cert.vendor, certificates: [], used: 0, limit: null, available: null, active: false })
+      const group = byPan.get(pan)
+      group.certificates.push(cert.certificateNumber)
+      group.used += Number(cert.used || 0)
+      if (cert.limit != null && Number.isFinite(Number(cert.limit))) {
+        group.limit = (group.limit || 0) + Number(cert.limit)
+        group.available = (group.available || 0) + Number(cert.available ?? 0)
+      }
+      if (cert.validityLabel === 'Active') group.active = true
+    }
+    const rows = [...byPan.values()]
+      .filter((group) => group.active)
+      .sort((a, b) => (b.used - a.used) || (Number(b.limit || 0) - Number(a.limit || 0)))
     const visible = rows.slice(0, TOP_LIMIT_BARS)
     const rest = rows.slice(TOP_LIMIT_BARS)
     const data = visible.map((row) => ({
-      certificate: row.certificateNumber || '—',
-      vendor: row.vendor || row.pan || '—',
+      certificate: row.pan,
+      vendor: `${row.vendor || '—'} · ${row.certificates.join(', ')}`,
       limit: toCrore(row.limit),
       used: toCrore(row.used),
       available: row.available == null ? null : toCrore(row.available),
@@ -184,21 +260,21 @@ export default function ThresholdMonitoring() {
     if (rest.length) {
       data.push({
         certificate: `Other (${rest.length})`,
-        vendor: 'Remaining certificates',
+        vendor: 'Remaining active PANs',
         limit: toCrore(rest.reduce((sum, row) => sum + (Number(row.limit) || 0), 0)),
         used: toCrore(rest.reduce((sum, row) => sum + (Number(row.used) || 0), 0)),
         available: toCrore(rest.reduce((sum, row) => sum + (Number(row.available) || 0), 0)),
       })
     }
     return data
-  }, [currentLdcUtilization])
+  }, [currentLdcUtilization, unusedActiveCertificates])
 
   const ldcTrendSeries = useMemo(() => {
     const rowsWithMonthlyUsage = currentLdcUtilization.filter((row) => Array.isArray(row.monthlyUsage) && row.monthlyUsage.length)
     if (!rowsWithMonthlyUsage.length) return { data: [], keys: [] }
 
     const topRows = [...rowsWithMonthlyUsage]
-      .sort((a, b) => Number(b.used || 0) - Number(a.used || 0))
+      .sort(compareForCharts)
       .slice(0, TOP_TREND_LINES)
     const topCertificates = new Set(topRows.map((row) => row.certificateNumber))
     const months = new Map()
@@ -293,23 +369,32 @@ export default function ThresholdMonitoring() {
         group.vendorMap.set(v.vendorId, vendor)
       })
     })
+    const isActive = (cert) => cert.validityLabel === 'Active'
+    // Active certificates are the ones that matter now: their PANs come first,
+    // and inside a PAN its active certificates are listed first.
     return [...byPan.values()].map(({ vendorMap, ...group }) => {
-      const certs = group.certificates
+      const certs = [...group.certificates].sort((a, b) => Number(isActive(b)) - Number(isActive(a)))
+      group.certificates = certs
       const worst = certs.reduce((a, b) => ((LDC_STATUS_RANK[b.status] ?? 0) > (LDC_STATUS_RANK[a.status] ?? 0) ? b : a))
       const active = certs.find((c) => c.validityLabel === 'Active')
       const latest = [...certs].sort((a, b) => String(b.validTo || '').localeCompare(String(a.validTo || '')))[0]
       const utilizations = certs.map((c) => c.utilization).filter((u) => u != null)
+      // Limit / balance add up only certificates that have a limit set.
+      const limited = certs.filter((c) => c.limit != null && Number.isFinite(Number(c.limit)))
       return {
         ...group,
         vendors: [...vendorMap.values()].sort((a, b) => b.used - a.used),
         used: certs.reduce((sum, c) => sum + Number(c.used || 0), 0),
+        limit: limited.length ? limited.reduce((sum, c) => sum + Number(c.limit), 0) : null,
+        available: limited.length ? limited.reduce((sum, c) => sum + Number(c.available ?? 0), 0) : null,
+        limitNotSet: certs.length - limited.length,
         status: worst.status,
         statusLabel: worst.statusLabel,
         validityLabel: (active || latest).validityLabel,
         validityTone: (active || latest).validityTone,
         utilization: utilizations.length ? Math.max(...utilizations) : null,
       }
-    })
+    }).sort((a, b) => Number(b.validityLabel === 'Active') - Number(a.validityLabel === 'Active'))
   }, [filteredLdc])
 
   function renderLdcPan(p) {
@@ -390,7 +475,20 @@ export default function ThresholdMonitoring() {
         </div>
       </div>
     )},
+    { key: 'limit', header: 'LDC Limit', sortValue: (p) => p.limit ?? -1, render: (p) => (
+      <div>
+        <span className="font-mono" style={{ fontSize: 11.5 }}>{p.limit == null ? 'Not set' : formatCurrency(p.limit)}</span>
+        {p.limit != null && p.limitNotSet > 0 && (
+          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{p.limitNotSet} of {p.certificates.length} not set</div>
+        )}
+      </div>
+    )},
     { key: 'used', header: 'Total Utilized', render: (p) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(p.used || 0)}</span> },
+    { key: 'available', header: 'Balance', sortValue: (p) => p.available ?? -Infinity, render: (p) => (
+      <span className="font-mono" style={{ fontSize: 11.5, color: p.available != null && p.available < 0 ? '#DC2626' : undefined }}>
+        {p.available == null ? '—' : formatCurrency(p.available)}
+      </span>
+    )},
     { key: 'validityStatus', header: 'Cert Status', sortValue: (p) => p.validityLabel || 'Validity Unknown', render: (p) => (
       <StatusBadge label={p.validityLabel || 'Validity Unknown'} tone={p.validityTone || 'neutral'} />
     )},
@@ -469,9 +567,14 @@ export default function ThresholdMonitoring() {
           <div className="chart-card-header">
             <div>
               <p className="chart-title">LDC Limit vs Used Amount</p>
-              <p className="chart-subtitle">Top certificates by utilized base, values in ₹ crore</p>
+              <p className="chart-subtitle">PANs with an active certificate · top 5 by used, highest first · ₹ crore</p>
             </div>
           </div>
+          {ldcLimitVsUsedData.length === 0 ? (
+            <div className="data-table-empty" style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              No active LDC certificates for the vendors in this upload
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={ldcLimitVsUsedData} margin={{ top: 2, right: 4, left: -10, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
@@ -488,15 +591,24 @@ export default function ThresholdMonitoring() {
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Bar dataKey="limit" fill="#CBD5E1" radius={[4, 4, 0, 0]} maxBarSize={24} name="Limit" />
-              <Bar dataKey="used" fill="#E01330" radius={[4, 4, 0, 0]} maxBarSize={24} name="Used" />
+              <Bar dataKey="used" fill="#E01330" radius={[4, 4, 0, 0]} maxBarSize={24} name="Used">
+                {/* Used is often tiny next to the limit, so print its value. */}
+                <LabelList
+                  dataKey="used"
+                  position="top"
+                  formatter={(value) => (Number(value) > 0 ? `₹${Number(value).toLocaleString('en-IN')} Cr` : '')}
+                  style={{ fontSize: 10, fill: '#E01330', fontWeight: 600 }}
+                />
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
+          )}
         </div>
         <div className="chart-card">
           <div className="chart-card-header">
             <div>
               <p className="chart-title">LDC Utilization Trend Over Time</p>
-              <p className="chart-subtitle">Cumulative used base by posting month, top certificates + other</p>
+              <p className="chart-subtitle">Cumulative used base by posting month · active first, highest used first</p>
             </div>
           </div>
           {ldcTrendSeries.data.length ? (

@@ -18,8 +18,10 @@ import { getFinancialYear } from '@/utils/utils'
 
 const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
 const LDC_UTILIZATION_STORAGE_KEY = 'tds_ldc_utilization_results'
-const CORRECTION_REGISTER_STORAGE_KEY = 'tds_correction_register'
-const LAST_UPLOAD_SCHEMA_VERSION = 5
+// Bumped to drop the old register (draft corrections, groups tied to reused issue ids).
+const CORRECTION_REGISTER_STORAGE_KEY = 'tds_correction_register_v2'
+const LEGACY_CORRECTION_REGISTER_KEYS = ['tds_correction_register']
+const LAST_UPLOAD_SCHEMA_VERSION = 6
 // localStorage holds ~5 MB per origin and an upload row serialises to 1–2 KB,
 // so anything past this many rows can never be saved. Skipping the attempt
 // avoids stringifying tens of MB on every upload and correction.
@@ -47,6 +49,7 @@ function nextCorrectionGroupId(existingGroups = []) {
 function readCorrectionGroups() {
   if (typeof window === 'undefined') return []
   try {
+    LEGACY_CORRECTION_REGISTER_KEYS.forEach((key) => window.localStorage.removeItem(key))
     const parsed = JSON.parse(window.localStorage.getItem(CORRECTION_REGISTER_STORAGE_KEY) || 'null')
     return Array.isArray(parsed?.correctionGroups) ? parsed.correctionGroups : []
   } catch {
@@ -63,6 +66,16 @@ function saveCorrectionGroups(correctionGroups = []) {
   }
 }
 
+// Cached issues may carry a correction from a register that no longer exists;
+// reopen those so only the current register decides what is resolved.
+function stripCorrection(issue) {
+  if (!issue.correctionGroupId) return issue
+  const {
+    correctionGroupId, correctionMethod, correctionStatus, isMatchedSapCorrection, ...rest
+  } = issue
+  return { ...rest, status: 'open' }
+}
+
 function applyCorrectionRegisterToIssues(issues = [], correctionGroups = []) {
   const groupsByOriginalDoc = new Map()
   const groupsByCorrectionDoc = new Map()
@@ -74,7 +87,8 @@ function applyCorrectionRegisterToIssues(issues = [], correctionGroups = []) {
       if (correctionDocNo) groupsByCorrectionDoc.set(correctionDocNo, group)
     }
   }
-  return issues.map((issue) => {
+  return issues.map((cachedIssue) => {
+    const issue = stripCorrection(cachedIssue)
     const docNo = String(issue.docNo || '')
     const originalGroup = groupsByOriginalDoc.get(docNo)
     if (originalGroup) {
@@ -198,9 +212,9 @@ const initialState = {
   drawerOpen:      false,
 
   dataSource: lastUpload ? 'upload' : 'empty',
-  uploadedIssues: applyCorrectionRegisterToIssues(lastUpload?.uploadedIssues || [], storedCorrectionGroups.length ? storedCorrectionGroups : lastUpload?.correctionGroups || []),
+  uploadedIssues: applyCorrectionRegisterToIssues(lastUpload?.uploadedIssues || [], storedCorrectionGroups),
   uploadMeta: lastUpload?.uploadMeta || null,
-  correctionGroups: storedCorrectionGroups.length ? storedCorrectionGroups : lastUpload?.correctionGroups || [],
+  correctionGroups: storedCorrectionGroups,
   uploadStatus: 'idle',
   uploadProgress: 0,
   uploadError: null,
@@ -459,7 +473,7 @@ const issuesSlice = createSlice({
     restoreLastUpload: (state, action) => {
       if (state.uploadMeta) return
       const cached = action.payload
-      const correctionGroups = state.correctionGroups?.length ? state.correctionGroups : cached.correctionGroups || []
+      const correctionGroups = state.correctionGroups || []
       state.dataSource = 'upload'
       state.uploadMeta = cached.uploadMeta
       state.correctionGroups = correctionGroups

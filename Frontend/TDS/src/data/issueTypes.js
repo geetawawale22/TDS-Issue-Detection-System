@@ -595,6 +595,27 @@ export function issueTypeFilterOptions() {
   ].map(({ label, categories }) => [categories.join(MULTI_CATEGORY_DELIMITER), label])
 }
 
+/**
+ * Issue Type filter options limited to the types present in `issues`, so the
+ * dropdown only offers choices that return rows. Categories with no named
+ * option are listed under their own name. Options in `selected` are kept so
+ * an active choice never disappears from the list.
+ */
+export function issueTypeFilterOptionsFor(issues = [], selected = 'all') {
+  const present = new Set(issues.flatMap((issue) => (
+    [getDisplayIssueType(issue), issue.category, issue.issueTypeLabel, issue.issueType].filter(Boolean)
+  )))
+  const keep = new Set(Array.isArray(selected) ? selected : selected && selected !== 'all' ? [selected] : [])
+  const options = issueTypeFilterOptions().filter(([value]) => (
+    keep.has(value) || value.split(MULTI_CATEGORY_DELIMITER).some((category) => present.has(category))
+  ))
+  const covered = new Set(issueTypeFilterOptions().flatMap(([value]) => value.split(MULTI_CATEGORY_DELIMITER)))
+  const extra = [...new Set(issues.map((issue) => issue.category).filter((category) => category && !covered.has(category)))]
+    .sort()
+    .map((category) => [category, category])
+  return [...options, ...extra]
+}
+
 /** 85% violations / 15% correctly-handled confirmations — an Issue Review feed should mostly surface exceptions. */
 export function pickWeightedScenario(rand) {
   const violations = RULE_SCENARIOS.filter((s) => s.isViolation)

@@ -471,14 +471,59 @@ def _ldc_limit_status(utilization_percent: float) -> tuple[str, str]:
     return "safe", "Within LDC Limit"
 
 
+# Rows that settle or move an amount already counted on its invoice.
+_LDC_NON_CONSUMING_EVENTS = {"PAYMENT", "CLEARING", "TRANSFER_POSTING", "TDS_PAYMENT"}
+
+
+def _ldc_consumption(txn) -> float | None:
+    """
+    How much of the certificate limit this row uses. SAP signs amounts by
+    debit/credit (an invoice's base is negative on the credit side), so the
+    amount's own sign says nothing about direction. Use the size of the base
+    and the debit/credit flag instead: credit-side rows (invoices) use the
+    limit, debit-side rows (credit memos, invoice reversals) give it back.
+    Advances are debit-side but still use the limit. Payments and clearings
+    are skipped (None) because their invoice already counted the amount.
+    """
+    event_type = classify_event(txn)
+    if event_type in _LDC_NON_CONSUMING_EVENTS:
+        return None
+    amount = abs(float(txn.basic_amount))
+    if event_type == "ADVANCE_PAYMENT":
+        return amount
+    side = (txn.debit_credit or "").strip().upper()
+    if side == "S":
+        return -amount
+    if side == "H":
+        return amount
+    return -amount if event_type == "CREDIT_MEMO" else amount
+
+
 def _build_ldc_utilization(transactions) -> list[dict[str, Any]]:
     by_certificate: dict[str, dict[str, Any]] = {}
+    counted_lines: set[tuple[Any, ...]] = set()
 
     for txn in transactions:
         if not txn.ldc_exemption_number:
             continue
         if txn.basic_amount is None:
             continue
+        # Rows posted outside the validity period carry the nearest
+        # certificate only so the expired / not-yet-valid issue can name it;
+        # the certificate did not apply to them, so they use none of its limit.
+        if txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from:
+            continue
+        if txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to:
+            continue
+        # The extract can repeat the same SAP line (same document, line item,
+        # withholding type and amounts); count it against the limit once.
+        line_key = (
+            txn.company_code, txn.fiscal_year, txn.doc_number, txn.line_item_number,
+            txn.withholding_tax_type, txn.withholding_tax_code, txn.basic_amount, txn.tds_deducted_amount,
+        )
+        if txn.line_item_number and line_key in counted_lines:
+            continue
+        counted_lines.add(line_key)
 
         key = txn.ldc_exemption_number
         row = by_certificate.setdefault(key, {
@@ -497,7 +542,9 @@ def _build_ldc_utilization(transactions) -> list[dict[str, Any]]:
             "_monthlyUsage": {},
             "_vendors": {},
         })
-        amount = float(txn.basic_amount)
+        amount = _ldc_consumption(txn)
+        if amount is None:
+            continue
         row["used"] += amount
         row["transactions"] += 1
         # One certificate covers every vendor code on the PAN; keep each
@@ -540,12 +587,15 @@ def _attach_ldc_limits(ldc_utilization: list[dict[str, Any]], db: Session) -> No
         return
 
     certificate_numbers = [row["certificateNumber"] for row in ldc_utilization]
-    certificates = {
-        row.certificate_number: row
-        for row in db.query(LDCCertificateMaster).filter(
-            LDCCertificateMaster.certificate_number.in_(certificate_numbers),
-        ).all()
-    }
+    # A certificate has one master row per vendor code, and some of those
+    # rows leave the limit blank; keep a row that carries the limit.
+    certificates: dict[str, LDCCertificateMaster] = {}
+    for cert in db.query(LDCCertificateMaster).filter(
+        LDCCertificateMaster.certificate_number.in_(certificate_numbers),
+    ).all():
+        current = certificates.get(cert.certificate_number)
+        if current is None or (current.approved_amount_limit is None and cert.approved_amount_limit is not None):
+            certificates[cert.certificate_number] = cert
 
     for row in ldc_utilization:
         cert = certificates.get(row["certificateNumber"])
@@ -1095,6 +1145,8 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     return {
         "id": f"UPL-{issue_id:06d}",
         "docNo": txn.doc_number or "—",
+        "lineItem": txn.line_item_number,
+        "assignmentNumber": txn.assignment_number,
         "docType": txn.doc_type or "—",
         "companyCode": txn.company_code or None,
         "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
@@ -1216,6 +1268,10 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int, t
         "status": status,
         "reason": reason,
         "docNo": txn.doc_number or "—",
+        "lineItem": txn.line_item_number,
+        "assignmentNumber": txn.assignment_number,
+        "withholdingTaxType": txn.withholding_tax_type,
+        "withholdingTaxCode": txn.withholding_tax_code,
         "poNo": txn.po_no or "—",
         "docType": txn.doc_type or "—",
         "companyCode": txn.company_code or None,
