@@ -663,3 +663,20 @@
   color: #DC2626;
   font-weight: 600;
 }
+
+/* Posting-date window opened from a Dashboard click; click to clear */
+.case-period-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--border-radius-sm);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}

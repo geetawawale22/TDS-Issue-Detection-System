@@ -16,6 +16,7 @@ import {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
   setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters, createMatchedSapCorrection,
   selectActiveIssues, selectActiveVendors, selectActiveSections, selectActiveValidationRows,
+  issueDateKey,
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
 import { issueTypeFilterOptionsFor, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
@@ -43,10 +44,34 @@ const VIEW_LABELS = {
   skipped: 'TDS Not Applicable',
   tds_deducted: 'TDS Deducted',
   tds_not_deducted: 'TDS Not Deducted',
+  passed_deducted: 'Passed - TDS Deducted',
+  issue_deducted: 'Issues - TDS Deducted',
+  passed_not_deducted: 'Passed - TDS Not Applicable',
+  issue_not_deducted: 'Issues - TDS Not Deducted',
 }
 
 function isRowTdsDeducted(row) {
   return Math.abs(Number(row?.tdsAmount || 0)) > 0
+}
+
+// Second-row cards split each TDS Deducted / Not Deducted bucket into Passed
+// (passed or not-applicable) and Issues (issue rows only). Insufficient Data
+// keeps its own card, so a bucket = Passed + Issues + its Insufficient rows.
+const BUCKET_VIEWS = {
+  passed_deducted: { deducted: true, statuses: ['passed', 'skipped'] },
+  issue_deducted: { deducted: true, statuses: ['issue'] },
+  passed_not_deducted: { deducted: false, statuses: ['passed', 'skipped'] },
+  issue_not_deducted: { deducted: false, statuses: ['issue'] },
+}
+
+const LINKABLE_VIEWS = ['all', 'issue', 'passed', 'insufficient', 'skipped', 'tds_deducted', 'tds_not_deducted', ...Object.keys(BUCKET_VIEWS)]
+
+// issueKeys: rows with status 'issue' only count when they still have an issue
+// after the Severity/Status/Issue Type filters, same as the Issues Found card.
+function rowInBucketView(row, view, issueKeys) {
+  const bucket = BUCKET_VIEWS[view]
+  if (!bucket || isRowTdsDeducted(row) !== bucket.deducted || !bucket.statuses.includes(row.status)) return false
+  return row.status !== 'issue' || issueKeys.has(issueRowKey(row))
 }
 
 function inferRateFromAmount(baseAmount, tdsAmount) {
@@ -182,12 +207,40 @@ function issueRowKey(row) {
   ].map((value) => String(value ?? '').trim().toUpperCase()).join('|')
 }
 
+// SAP exports can repeat an identical line (same doc, line item, vendor and
+// amounts). Such rows share an issueRowKey, so each one picks up every copy's
+// issues; list each issue type once per row so a row never shows doubles.
+function uniqueIssueTypes(rowIssues) {
+  const byLabel = new Map()
+  rowIssues.forEach((issue) => {
+    const label = getDisplayIssueType(issue)
+    if (!byLabel.has(label)) byLabel.set(label, { id: issue.id, label, severity: issue.severity })
+  })
+  return [...byLabel.values()]
+}
+
+// Posting-date window from a Dashboard click (a month or the Dashboard's dates).
+export function rowInDateRange(row, from, to) {
+  if (!from && !to) return true
+  const dateKey = issueDateKey(row)
+  if (from && (!dateKey || dateKey < from)) return false
+  if (to && (!dateKey || dateKey > to)) return false
+  return true
+}
+
+// Severity, Status and Issue Type only exist on issues, so while one is active
+// the matching rows are issue rows only and every card narrows to them.
+export function hasIssueLevelFilters({ severityFilter, statusFilter, issueTypeFilter }) {
+  return Boolean(selectedValues(severityFilter) || selectedValues(statusFilter) || selectedValues(issueTypeFilter))
+}
+
 // Filter predicates shared with TDS Analysis (TDSCaseBuilder), so its tab and
 // card counts are computed exactly like this page's summary cards.
 // `filters` = { searchQuery, vendorFilter, sectionFilter, docTypeFilter,
 //               severityFilter, statusFilter, issueTypeFilter }
 export function issueMatchesFilters(issue, filters) {
-  const { searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter } = filters
+  const { searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, dateFrom, dateTo } = filters
+  if (!rowInDateRange(issue, dateFrom, dateTo)) return false
   if (searchQuery) {
     const q = searchQuery.toLowerCase()
     if (
@@ -220,7 +273,8 @@ function allowedIssueTypes(issueTypeFilter) {
 }
 
 export function validationRowMatchesFilters(row, filters) {
-  const { searchQuery, vendorFilter, sectionFilter, docTypeFilter } = filters
+  const { searchQuery, vendorFilter, sectionFilter, docTypeFilter, dateFrom, dateTo } = filters
+  if (!rowInDateRange(row, dateFrom, dateTo)) return false
   const q = searchQuery.trim().toLowerCase()
   if (q) {
     const searchable = [
@@ -246,6 +300,13 @@ export function issueRowsMatchingIssues(validationRows, filteredIssues) {
   return validationRows.filter((row) => row.status === 'issue' && issueKeys.has(issueRowKey(row)))
 }
 
+// Rows behind the cards: everything matching the filter bar, narrowed to rows
+// with a matching issue while an issue-level filter is active.
+export function validationRowsMatchingFilters(validationRows, filteredIssues, filters) {
+  const rows = validationRows.filter((row) => validationRowMatchesFilters(row, filters))
+  return hasIssueLevelFilters(filters) ? issueRowsMatchingIssues(rows, filteredIssues) : rows
+}
+
 export default function Issues({ embedded = false, initialView = 'all', filtersFirst = false, beforeSummary = null, hideFilters = false, externalDocTypeFilter = null, onExternalDocTypeFilterChange = null, reviewOnly = false } = {}) {
   const dispatch = useDispatch()
   const [searchParams] = useSearchParams()
@@ -261,7 +322,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const setActiveDocTypeFilter = onExternalDocTypeFilterChange ?? setDocTypeFilter
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
-    issueTypeFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta, correctionGroups,
+    issueTypeFilter, issueDateFromFilter, issueDateToFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta, correctionGroups,
   } = useSelector((s) => s.issues)
   const currentUser = useSelector((s) => s.auth.user)
 
@@ -275,7 +336,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const sections = useSelector(selectActiveSections)
   useEffect(() => {
     if (embedded) {
-      setValidationView(['all', 'issue', 'passed', 'insufficient', 'skipped'].includes(initialView) ? initialView : 'all')
+      setValidationView(LINKABLE_VIEWS.includes(initialView) ? initialView : 'all')
       return
     }
 
@@ -344,7 +405,8 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const filterValues = useMemo(() => ({
     searchQuery, vendorFilter, sectionFilter, docTypeFilter: activeDocTypeFilter,
     severityFilter, statusFilter, issueTypeFilter,
-  }), [searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+    dateFrom: issueDateFromFilter, dateTo: issueDateToFilter,
+  }), [searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter, issueDateFromFilter, issueDateToFilter])
   const filtered = useMemo(() => issues.filter((issue) => issueMatchesFilters(issue, filterValues)), [issues, filterValues])
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
@@ -494,8 +556,8 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   }
 
   const filteredValidationRowsForSummary = useMemo(() => (
-    displayValidationRows.filter((row) => validationRowMatchesFilters(row, filterValues))
-  ), [displayValidationRows, filterValues])
+    validationRowsMatchingFilters(displayValidationRows, filtered, filterValues)
+  ), [displayValidationRows, filtered, filterValues])
 
   // Derived from the same filter bar inputs as the table, so the cards and
   // visible rows stay aligned when Vendor/Section/Doc Type/Search changes.
@@ -525,8 +587,24 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   // from the same filtered row set as the other summary cards.
   const tdsDeductionSummary = useMemo(() => {
     const deducted = filteredValidationRowsForSummary.filter(isRowTdsDeducted).length
-    return { deducted, notDeducted: filteredValidationRowsForSummary.length - deducted }
+    const insufficientRows = filteredValidationRowsForSummary.filter((row) => row.status === 'insufficient')
+    const insufficientDeducted = insufficientRows.filter(isRowTdsDeducted).length
+    return {
+      deducted,
+      notDeducted: filteredValidationRowsForSummary.length - deducted,
+      insufficientDeducted,
+      insufficientNotDeducted: insufficientRows.length - insufficientDeducted,
+    }
   }, [filteredValidationRowsForSummary])
+
+  const filteredIssueKeys = useMemo(() => new Set(filtered.map(issueRowKey)), [filtered])
+
+  const bucketRows = useMemo(() => Object.fromEntries(
+    Object.keys(BUCKET_VIEWS).map((view) => [
+      view,
+      filteredValidationRowsForSummary.filter((row) => rowInBucketView(row, view, filteredIssueKeys)),
+    ]),
+  ), [filteredValidationRowsForSummary, filteredIssueKeys])
 
   const docTypes = useMemo(() => {
     const values = [
@@ -565,11 +643,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
         const rowIssues = issueGroupsByRow.get(issueRowKey(row)) || []
         const primaryIssue = rowIssues[0]
         if (!primaryIssue) return null
-        const issueTypes = rowIssues.map((issue) => ({
-          id: issue.id,
-          label: getDisplayIssueType(issue),
-          severity: issue.severity,
-        }))
+        const issueTypes = uniqueIssueTypes(rowIssues)
         return {
           ...row,
           id: `issue-${index}-${row.id || row.docNo || 'row'}`,
@@ -616,6 +690,10 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       issue: { rows: issueValidationRows, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
       insufficient: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
       skipped: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'skipped'), columns: VALIDATION_CSV_COLUMNS, suffix: 'skipped' },
+      passed_deducted: { rows: bucketRows.passed_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'passed-tds-deducted' },
+      issue_deducted: { rows: bucketRows.issue_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'issues-tds-deducted' },
+      passed_not_deducted: { rows: bucketRows.passed_not_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'passed-tds-not-applicable' },
+      issue_not_deducted: { rows: bucketRows.issue_not_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'issues-tds-not-deducted' },
     }[kind]
     if (!exportSpec || exportSpec.rows.length === 0) {
       toast('No rows to export')
@@ -692,7 +770,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     { key: 'tdsAmount', header: 'TDS (₹)', render: (r) => <span className="font-mono" style={{ fontSize: 11.5 }}>{formatCurrency(r.tdsAmount)}</span> },
     // TDS Note is shown only in the "TDS Not Deducted" and
     // "Passed - TDS Not Applicable" views.
-    ...(['tds_not_deducted', 'skipped'].includes(validationView) ? [
+    ...(['tds_not_deducted', 'skipped', 'passed_not_deducted', 'issue_not_deducted'].includes(validationView) ? [
       { key: 'tdsNote', header: 'TDS Note', render: (r) => (
         r.tdsNote
           ? <span className="issues-tds-note" title={r.tdsNote}>{r.tdsNote}</span>
@@ -743,9 +821,8 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     )},
   ]
 
-  // Search/Vendor/Section apply here too (those fields exist on a validation
-  // row) — Severity/Issue Type/Status stay issue-table-only since a passed,
-  // insufficient-data, or skipped row has neither a severity nor a category.
+  // Search/Vendor/Section/period apply to every row. Severity/Issue Type/Status
+  // keep only rows with a matching issue, so the table matches the card counts.
   const validationTableRows = useMemo(() => {
     if (validationView === 'issue') {
       return issueValidationRows
@@ -755,7 +832,9 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     return displayValidationRows
       .filter((row) => {
         const matchingIssue = issueByRow.get(issueRowKey(row))
-        if (validationView === 'tds_deducted') {
+        if (BUCKET_VIEWS[validationView]) {
+          if (!rowInBucketView(row, validationView, filteredIssueKeys)) return false
+        } else if (validationView === 'tds_deducted') {
           if (!isRowTdsDeducted(row)) return false
         } else if (validationView === 'tds_not_deducted') {
           if (isRowTdsDeducted(row)) return false
@@ -774,25 +853,27 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
         if (!filterIncludes(vendorFilter, row.vendor)) return false
         if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [row.section, row.legacySection, row.ruleSection, row.newSection]))) return false
         if (!filterIncludes(activeDocTypeFilter, String(row.docType ?? '').toUpperCase())) return false
-        if (validationView === 'issue') {
-          if (!filterIncludes(severityFilter, matchingIssue?.severity)) return false
-          if (!filterIncludes(statusFilter, matchingIssue?.status)) return false
-          const allowedTypes = allowedIssueTypes(issueTypeFilter)
-          if (allowedTypes && (!matchingIssue || !allowedTypes.includes(getDisplayIssueType(matchingIssue)))) return false
-        }
+        if (!rowInDateRange(row, issueDateFromFilter, issueDateToFilter)) return false
+        if (hasIssueLevelFilters(filterValues) && (row.status !== 'issue' || !filteredIssueKeys.has(issueRowKey(row)))) return false
         return true
       })
       .map((row, index) => {
         const matchingIssue = issueByRow.get(issueRowKey(row))
+        const rowIssues = BUCKET_VIEWS[validationView] && row.status === 'issue'
+          ? filteredIssuesByRow.get(issueRowKey(row)) || []
+          : []
         return {
           ...row,
           id: `${validationView}-${index}-${row.id || row.docNo || 'row'}`,
           issueId: matchingIssue?.id,
           severity: matchingIssue?.severity,
           issueTypeLabel: matchingIssue ? getDisplayIssueType(matchingIssue) : null,
+          ...(rowIssues.length ? {
+            issueTypes: uniqueIssueTypes(rowIssues),
+          } : {}),
         }
       })
-  }, [displayValidationRows, issues, issueValidationRows, validationView, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+  }, [displayValidationRows, issues, issueValidationRows, filteredIssueKeys, filteredIssuesByRow, validationView, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, filterValues, issueDateFromFilter, issueDateToFilter])
 
   function handleResetFilters() {
     setActiveDocTypeFilter('all')
@@ -957,6 +1038,10 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             <div>
               <div className="issues-summary-value">{tdsDeductionSummary.deducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Deducted</div>
+              <div className="issues-summary-breakdown">
+                Passed {bucketRows.passed_deducted.length.toLocaleString()} · Issues {bucketRows.issue_deducted.length.toLocaleString()}
+                {tdsDeductionSummary.insufficientDeducted > 0 && ` · Insufficient Data ${tdsDeductionSummary.insufficientDeducted.toLocaleString()}`}
+              </div>
             </div>
           </button>
           {tdsDeductionSummary.deducted > 0 && (
@@ -971,6 +1056,10 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             <div>
               <div className="issues-summary-value">{tdsDeductionSummary.notDeducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Not Deducted</div>
+              <div className="issues-summary-breakdown">
+                Passed {bucketRows.passed_not_deducted.length.toLocaleString()} · Issues {bucketRows.issue_not_deducted.length.toLocaleString()}
+                {tdsDeductionSummary.insufficientNotDeducted > 0 && ` · Insufficient Data ${tdsDeductionSummary.insufficientNotDeducted.toLocaleString()}`}
+              </div>
             </div>
           </button>
           {tdsDeductionSummary.notDeducted > 0 && (
@@ -981,55 +1070,59 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
         </div>
       </div>
 
-      <div className="issues-summary-grid issues-summary-grid--five issues-summary-grid--four">
-        <div className={`issues-summary-card issues-summary-card--success ${validationView === 'passed' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed')}>
+      <div className="issues-summary-grid issues-summary-grid--five issues-summary-grid--split">
+        <div className={`issues-summary-card issues-summary-card--success ${validationView === 'passed_deducted' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed_deducted')}>
             <CheckCircle2 size={16} />
             <div>
-              <div className="issues-summary-value">{summary.passedRows.toLocaleString()}</div>
+              <div className="issues-summary-value">{bucketRows.passed_deducted.length.toLocaleString()}</div>
               <div className="issues-summary-label">Passed - TDS Deducted</div>
             </div>
           </button>
-          {summary.passedRows > 0 && (
-            <button
-              className="issues-summary-card-download"
-              type="button"
-              title="Download CSV of all Passed rows"
-              onClick={(e) => { e.stopPropagation(); handleExportKpi('passed') }}
-            >
+          {bucketRows.passed_deducted.length > 0 && (
+            <button className="issues-summary-card-download" type="button" title="Download CSV of Passed - TDS Deducted rows" aria-label="Download Passed - TDS Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_deducted') }}>
               <Download size={12} />
             </button>
           )}
         </div>
-        <div className={`issues-summary-card issues-summary-card--neutral ${validationView === 'skipped' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('skipped')}>
+        <div className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue_deducted' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('issue_deducted')}>
+            <AlertOctagon size={16} />
+            <div>
+              <div className="issues-summary-value">{bucketRows.issue_deducted.length.toLocaleString()}</div>
+              <div className="issues-summary-label">Issues - TDS Deducted</div>
+            </div>
+          </button>
+          {bucketRows.issue_deducted.length > 0 && (
+            <button className="issues-summary-card-download" type="button" title="Download CSV of Issues - TDS Deducted rows" aria-label="Download Issues - TDS Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('issue_deducted') }}>
+              <Download size={12} />
+            </button>
+          )}
+        </div>
+        <div className={`issues-summary-card issues-summary-card--neutral ${validationView === 'passed_not_deducted' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed_not_deducted')}>
             <CircleSlash size={16} />
             <div>
-              <div className="issues-summary-value">{summary.skippedRows.toLocaleString()}</div>
+              <div className="issues-summary-value">{bucketRows.passed_not_deducted.length.toLocaleString()}</div>
               <div className="issues-summary-label">Passed - TDS Not Applicable</div>
             </div>
           </button>
-          {summary.skippedRows > 0 && (
-            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Not Applicable rows" aria-label="Download TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('skipped') }}>
+          {bucketRows.passed_not_deducted.length > 0 && (
+            <button className="issues-summary-card-download" type="button" title="Download CSV of Passed - TDS Not Applicable rows" aria-label="Download Passed - TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_not_deducted') }}>
               <Download size={12} />
             </button>
           )}
         </div>
-        <div className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('issue')}>
+        <div className={`issues-summary-card issues-summary-card--danger ${validationView === 'issue_not_deducted' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('issue_not_deducted')}>
             <AlertOctagon size={16} />
             <div>
-              <div className="issues-summary-value">{summary.issueRows.toLocaleString()}</div>
-              <div className="issues-summary-label">Issues Found</div>
+              <div className="issues-summary-value">{bucketRows.issue_not_deducted.length.toLocaleString()}</div>
+              <div className="issues-summary-label">Issues - TDS Not Deducted</div>
             </div>
           </button>
-          {summary.issueRows > 0 && (
-            <button
-              className="issues-summary-card-download"
-              type="button"
-              title="Download CSV of all Issues Found rows"
-              onClick={(e) => { e.stopPropagation(); handleExportKpi('issue') }}
-            >
+          {bucketRows.issue_not_deducted.length > 0 && (
+            <button className="issues-summary-card-download" type="button" title="Download CSV of Issues - TDS Not Deducted rows" aria-label="Download Issues - TDS Not Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('issue_not_deducted') }}>
               <Download size={12} />
             </button>
           )}

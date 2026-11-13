@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import { useSearchParams } from 'react-router-dom'
 import { AlertTriangle, ChevronDown, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
-import Issues, { issueMatchesFilters, issueRowsMatchingIssues, validationRowMatchesFilters } from '@/pages/Issues/Issues'
+import Issues, { hasIssueLevelFilters, issueMatchesFilters, issueRowsMatchingIssues, rowInDateRange, validationRowsMatchingFilters } from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import StatusBadge, { severityToTone } from '@/components/Common/StatusBadge'
 import {
-  resetFilters, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter,
+  resetFilters, setIssueDateRange, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter,
   setStatusFilter, setVendorFilter, selectActiveIssues, selectActiveValidationRows,
   selectActiveCaseLedger, openDrawer,
 } from '@/redux/slices/issuesSlice'
 import { formatCurrency, formatDate } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiFilter'
-import { getDisplayIssueType, issueTypeFilterOptionsFor } from '@/data/issueTypes'
+import { getDisplayIssueType, issueTypeFilterOptionsFor, issueTypeFilterValuesFor } from '@/data/issueTypes'
 import { downloadCsv, ISSUE_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
 import './TDSCaseBuilder.css'
@@ -21,27 +22,13 @@ import './TDSCaseBuilder.css'
 const CASE_BUILDER_VIEW_STORAGE_KEY = 'tds_case_builder_view'
 const DEFAULT_CASE_BUILDER_VIEW = { activeTab: 'ledger', quickFilter: 'ledger-all' }
 const VALID_TABS = new Set(['ledger', 'issues', 'gl'])
-const TDS_ANALYSIS_ISSUE_TYPE_LABELS = new Set([
-  'Wrong Section Applied',
-  'TDS Rate Mismatch',
-  'Amount Mismatch (Short/Excess)',
-  '194J Rate Mismatch (Not 2% or 10%)',
-  'TDS Exceeds Full Invoice Amount',
-  'Possible Missed TDS Deduction',
-  'Missed TDS (Advance)',
-  'Missed TDS (Provision)',
-  'Missed TDS (Threshold Crossed)',
-  'Threshold Crossed — Short Deducted',
-  'PAN Missing (206AA)',
-  'Non-Filer Higher Rate (206AB)',
-  'Form 197 Rate Mismatch',
-  'LDC Not Yet Valid',
-  'LDC Expired',
-  'Premature 194Q Deduction',
-  'Wrongful TDS (Form 15G/15H)',
-  'Unnecessary TDS (Transporter)',
-  'Wrong Section (Non-Resident)',
-  'Wrong Section (Resident Misclassified)',
+// Issue Type filter lists every issue type present in the upload except the
+// "correctly handled" confirmations, which are not issues. An allow-list here
+// hid real issue types (e.g. TDS Section Missing, LDC limit warnings).
+const TDS_ANALYSIS_HIDDEN_ISSUE_TYPE_LABELS = new Set([
+  'TDS Not Applicable — Correctly Handled',
+  'LDC — Correctly Applied',
+  'PAN Missing/Invalid — Correctly Handled',
 ])
 
 function presentValue(value) {
@@ -53,6 +40,21 @@ function distinctValues(values, limit = 3) {
   const unique = [...new Set(values.map(presentValue).filter(Boolean))]
   if (unique.length <= limit) return unique.join(', ') || '—'
   return `${unique.slice(0, limit).join(', ')} +${unique.length - limit}`
+}
+
+// Date window from a Dashboard link: its month narrowed by any from/to dates.
+function linkedDateRange(params) {
+  let from = params.get('dateFrom') || ''
+  let to = params.get('dateTo') || ''
+  const month = params.get('month')
+  if (month) {
+    const [year, monthNumber] = month.split('-').map(Number)
+    const start = `${month}-01`
+    const end = `${month}-${String(new Date(year, monthNumber, 0).getDate()).padStart(2, '0')}`
+    if (!from || start > from) from = start
+    if (!to || end < to) to = end
+  }
+  return { from, to }
 }
 
 function readSavedCaseBuilderView() {
@@ -380,10 +382,10 @@ function MultiSelectFilter({ allLabel, options, value, disabled = false, disable
 
 const SEVERITY_OPTIONS = [['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]
 const STATUS_OPTIONS = [['open', 'Open'], ['in_review', 'In Review'], ['resolved', 'Resolved'], ['rejected', 'Rejected']]
-const ISSUES_TAB_ONLY = 'Only applies to the Issues tab'
 
 export default function TDSCaseBuilder() {
   const dispatch = useDispatch()
+  const [searchParams, setSearchParams] = useSearchParams()
   const savedView = useMemo(readSavedCaseBuilderView, [])
   const [activeTab, setActiveTab] = useState(savedView.activeTab)
   const [quickFilter, setQuickFilter] = useState(savedView.quickFilter)
@@ -392,7 +394,7 @@ export default function TDSCaseBuilder() {
   const [expandedLedgerKey, setExpandedLedgerKey] = useState(null)
   const [glModal, setGlModal] = useState(null)
   const uploadMeta = useSelector((state) => state.issues.uploadMeta)
-  const { searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter } = useSelector((state) => state.issues)
+  const { searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, issueDateFromFilter, issueDateToFilter } = useSelector((state) => state.issues)
 
   const filteredCaseLedger = useSelector(selectActiveCaseLedger)
   const issueRows = useSelector(selectActiveIssues)
@@ -406,19 +408,26 @@ export default function TDSCaseBuilder() {
   const filterValues = useMemo(() => ({
     searchQuery, vendorFilter, sectionFilter, docTypeFilter,
     severityFilter, statusFilter, issueTypeFilter,
-  }), [searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter])
+    dateFrom: issueDateFromFilter, dateTo: issueDateToFilter,
+  }), [searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, issueDateFromFilter, issueDateToFilter])
+  const filteredIssues = useMemo(() => issueRows.filter((issue) => issueMatchesFilters(issue, filterValues)), [issueRows, filterValues])
   const filteredValidationRows = useMemo(() => (
-    validationRows.filter((row) => validationRowMatchesFilters(row, filterValues))
-  ), [validationRows, filterValues])
+    validationRowsMatchingFilters(validationRows, filteredIssues, filterValues)
+  ), [validationRows, filteredIssues, filterValues])
+  // Documents with a matching issue while Severity/Status/Issue Type is active;
+  // ledger groups and GL lines narrow to these, so their cards follow too.
+  const matchingIssueDocNos = useMemo(() => (
+    hasIssueLevelFilters(filterValues) ? new Set(filteredIssues.map((issue) => String(issue.docNo))) : null
+  ), [filteredIssues, filterValues])
+  const eventMatchesPeriod = (event) => !event.postingDate || rowInDateRange({ date: event.postingDate }, issueDateFromFilter, issueDateToFilter)
   // Rows with at least one issue — a row failing two rules counts once, so this
   // matches the "Issues Found" card inside the Issues tab.
-  const issueRowCount = useMemo(() => {
-    const filteredIssues = issueRows.filter((issue) => issueMatchesFilters(issue, filterValues))
-    return issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
-  }, [issueRows, filteredValidationRows, filterValues])
+  const issueRowCount = useMemo(() => (
+    issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
+  ), [filteredValidationRows, filteredIssues])
   const issueTypeOptions = useMemo(
     () => issueTypeFilterOptionsFor(issueRows, issueTypeFilter)
-      .filter(([, label]) => TDS_ANALYSIS_ISSUE_TYPE_LABELS.has(label)),
+      .filter(([, label]) => !TDS_ANALYSIS_HIDDEN_ISSUE_TYPE_LABELS.has(label)),
     [issueRows, issueTypeFilter],
   )
   const vendorOptions = useMemo(() => {
@@ -445,6 +454,28 @@ export default function TDSCaseBuilder() {
     ].map((value) => String(value || '').trim().toUpperCase()).filter((value) => value && value !== '—')
     return [...new Set(values)].sort()
   }, [ledgerRows, issueRows, validationRows])
+
+  // A Dashboard click arrives as /issues?view=…&type=…: open the Issues tab with
+  // exactly those filters. A plain /issues keeps whatever is already selected.
+  useEffect(() => {
+    if (!searchParams.toString()) return
+    dispatch(resetFilters())
+    setDocTypeFilter('all')
+    const severity = searchParams.get('severity')
+    const status = searchParams.get('status')
+    const issueType = searchParams.get('type')
+    const section = searchParams.get('section')
+    const vendor = searchParams.get('vendor')
+    const search = searchParams.get('search')
+    if (severity) dispatch(setSeverityFilter(severity))
+    if (status) dispatch(setStatusFilter(status))
+    if (issueType) dispatch(setIssueTypeFilter(issueTypeFilterValuesFor(issueType)))
+    if (section) dispatch(setSectionFilter(section))
+    if (vendor) dispatch(setVendorFilter(vendor))
+    if (search) dispatch(setSearchQuery(search))
+    dispatch(setIssueDateRange(linkedDateRange(searchParams)))
+    applyQuickFilter('issues', 'issues-all')
+  }, [dispatch, searchParams])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -503,6 +534,8 @@ export default function TDSCaseBuilder() {
       if (!filterIncludes(vendorFilter, row.vendor)) return false
       if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, rowSections))) return false
       if (!filterMatchesAny(docTypeFilter, (docType) => rowDocTypes.includes(docType))) return false
+      if (!events.some(eventMatchesPeriod) && events.length) return false
+      if (matchingIssueDocNos && !events.some((event) => matchingIssueDocNos.has(String(event.docNo)))) return false
 
       if (!query) return true
       const searchable = [
@@ -525,7 +558,7 @@ export default function TDSCaseBuilder() {
       ].filter(Boolean).join(' ').toLowerCase()
       return searchable.includes(query)
     })
-  }, [ledgerRows, searchQuery, vendorFilter, sectionFilter, docTypeFilter])
+  }, [ledgerRows, searchQuery, vendorFilter, sectionFilter, docTypeFilter, issueDateFromFilter, issueDateToFilter, matchingIssueDocNos])
   const visibleRows = useMemo(() => {
     if (quickFilter === 'ledger-balanced') return filteredLedgerRows.filter((row) => row.status === 'BALANCED')
     if (quickFilter === 'ledger-open') return filteredLedgerRows.filter((row) => row.openItem || row.status === 'OPEN')
@@ -553,14 +586,13 @@ export default function TDSCaseBuilder() {
         events: (row.events || []).filter((event) => {
           if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [event.tdsSection].map(presentValue).filter(Boolean)))) return false
           if (!filterIncludes(docTypeFilter, String(event.docType || '').trim().toUpperCase())) return false
+          if (!eventMatchesPeriod(event)) return false
+          if (matchingIssueDocNos && !matchingIssueDocNos.has(String(event.docNo))) return false
           return true
         }),
       }))
-    const lineFilteredIssues = issueRows.filter((issue) => (
-      filterIncludes(vendorFilter, issue.vendor)
-      && filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [issue.section, issue.legacySection, issue.ruleSection, issue.newSection].map(presentValue).filter(Boolean)))
-      && filterIncludes(docTypeFilter, String(issue.docType || '').trim().toUpperCase())
-    ))
+    // Search is applied to the built groups below, not to each issue.
+    const lineFilteredIssues = issueRows.filter((issue) => issueMatchesFilters(issue, { ...filterValues, searchQuery: '' }))
     const query = searchQuery.trim().toLowerCase()
     return buildGlLedgerRows(lineFilteredLedgerRows, lineFilteredIssues).filter((group) => {
       if (!query) return true
@@ -582,7 +614,7 @@ export default function TDSCaseBuilder() {
       ].filter(Boolean).join(' ').toLowerCase()
       return searchable.includes(query)
     })
-  }, [ledgerRows, issueRows, vendorFilter, sectionFilter, docTypeFilter, searchQuery])
+  }, [ledgerRows, issueRows, vendorFilter, sectionFilter, docTypeFilter, searchQuery, filterValues, issueDateFromFilter, issueDateToFilter, matchingIssueDocNos])
 
   // Totals across the GL rows in view, shown above their columns.
   const glTotals = useMemo(() => glRows.reduce((totals, row) => ({
@@ -778,6 +810,7 @@ export default function TDSCaseBuilder() {
   function handleSharedFilterReset() {
     setDocTypeFilter('all')
     dispatch(resetFilters())
+    if (searchParams.toString()) setSearchParams({}, { replace: true })
   }
 
   function renderLedgerLines(row) {
@@ -914,24 +947,18 @@ export default function TDSCaseBuilder() {
           allLabel="All Severity"
           options={SEVERITY_OPTIONS}
           value={severityFilter}
-          disabled={activeTab !== 'issues'}
-          disabledTitle={ISSUES_TAB_ONLY}
           onChange={(next) => dispatch(setSeverityFilter(next))}
         />
         <MultiSelectFilter
           allLabel="All Issue Types"
           options={issueTypeOptions}
           value={issueTypeFilter}
-          disabled={activeTab !== 'issues'}
-          disabledTitle={ISSUES_TAB_ONLY}
           onChange={(next) => dispatch(setIssueTypeFilter(next))}
         />
         <MultiSelectFilter
           allLabel="All Status"
           options={STATUS_OPTIONS}
           value={statusFilter}
-          disabled={activeTab !== 'issues'}
-          disabledTitle={ISSUES_TAB_ONLY}
           onChange={(next) => dispatch(setStatusFilter(next))}
         />
         <MultiSelectFilter
@@ -940,6 +967,17 @@ export default function TDSCaseBuilder() {
           value={docTypeFilter}
           onChange={setDocTypeFilter}
         />
+        {(issueDateFromFilter || issueDateToFilter) && (
+          <button
+            className="case-period-chip"
+            type="button"
+            title="Clear period"
+            onClick={() => dispatch(setIssueDateRange({ from: '', to: '' }))}
+          >
+            Period: {issueDateFromFilter ? formatDate(issueDateFromFilter) : '…'} – {issueDateToFilter ? formatDate(issueDateToFilter) : '…'}
+            <X size={12} />
+          </button>
+        )}
         <button className="filter-reset-btn" type="button" onClick={handleSharedFilterReset}>
           <RotateCcw size={12} />Reset
         </button>
@@ -990,7 +1028,7 @@ export default function TDSCaseBuilder() {
       {sharedFilters}
 
       {activeTab === 'issues' ? (
-        <Issues embedded initialView="all" hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
+        <Issues embedded initialView={searchParams.get('view') || 'all'} hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
       ) : activeTab === 'gl' ? (
         <>
           {resultsTabsPanel}

@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx'
 import toast from 'react-hot-toast'
 import {
   AlertTriangle, Download, FileSpreadsheet, IdCard, Upload,
-  ShieldCheck, Search,
+  ShieldCheck, Search, RotateCcw,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge from '@/components/Common/StatusBadge'
@@ -30,6 +30,9 @@ const ldcPageCache = {
   rows: null,
   fileName: '',
   search: '',
+  supplierFilter: 'all',
+  vendorCodeFilter: 'all',
+  panFilter: 'all',
   quickFilter: 'all',
   uploadResult: null,
   uploadIssues: null,
@@ -484,6 +487,9 @@ export default function LDCCompliance() {
   const [rows, setRows] = useState(() => ldcPageCache.rows ?? [])
   const [fileName, setFileName] = useState(() => ldcPageCache.fileName)
   const [search, setSearch] = useState(() => ldcPageCache.search)
+  const [supplierFilter, setSupplierFilter] = useState(() => ldcPageCache.supplierFilter)
+  const [vendorCodeFilter, setVendorCodeFilter] = useState(() => ldcPageCache.vendorCodeFilter)
+  const [panFilter, setPanFilter] = useState(() => ldcPageCache.panFilter)
   const [quickFilter, setQuickFilter] = useState(() => ldcPageCache.quickFilter)
   const [uploadResult, setUploadResult] = useState(() => ldcPageCache.uploadResult)
   const [uploadIssues, setUploadIssues] = useState(() => ldcPageCache.uploadIssues ?? [])
@@ -497,10 +503,13 @@ export default function LDCCompliance() {
     }
     ldcPageCache.fileName = fileName
     ldcPageCache.search = search
+    ldcPageCache.supplierFilter = supplierFilter
+    ldcPageCache.vendorCodeFilter = vendorCodeFilter
+    ldcPageCache.panFilter = panFilter
     ldcPageCache.quickFilter = quickFilter
     ldcPageCache.uploadResult = uploadResult
     ldcPageCache.uploadIssues = uploadIssues
-  }, [rows, fileName, search, quickFilter, uploadResult, uploadIssues])
+  }, [rows, fileName, search, supplierFilter, vendorCodeFilter, panFilter, quickFilter, uploadResult, uploadIssues])
 
   useEffect(() => {
     const cacheHasCertificateRows = (ldcPageCache.rows ?? []).some((row) => !row.isIssueRow)
@@ -710,6 +719,9 @@ export default function LDCCompliance() {
       }
       if (quickFilter === 'active' && !isActiveCertificate(row)) return false
       if (quickFilter === 'expiring' && !isExpiringSoon(row)) return false
+      if (supplierFilter !== 'all' && row.vendorName !== supplierFilter) return false
+      if (vendorCodeFilter !== 'all' && row.vendorCode !== vendorCodeFilter) return false
+      if (panFilter !== 'all' && row.pan !== panFilter) return false
 
       return (
       row.certificateNumber.toLowerCase().includes(needle) ||
@@ -720,7 +732,30 @@ export default function LDCCompliance() {
       (row.issues ?? []).join(' ').toLowerCase().includes(needle)
       )
     })
-  }, [allowedRows, allowedIssueRows, search, quickFilter])
+  }, [allowedRows, allowedIssueRows, search, supplierFilter, vendorCodeFilter, panFilter, quickFilter])
+
+  // Each dropdown lists only values that still match the other two filters,
+  // so picking a Supplier narrows Vendor Codes and PANs (and vice versa).
+  const filterOptions = useMemo(() => {
+    const sourceRows = quickFilter === 'issues' ? allowedIssueRows : allowedRows
+    const selected = { vendorName: supplierFilter, vendorCode: vendorCodeFilter, pan: panFilter }
+    const distinct = (key) => [...new Set(
+      sourceRows
+        .filter((row) => Object.entries(selected).every(([field, value]) => field === key || value === 'all' || row[field] === value))
+        .map((row) => row[key])
+        .filter(Boolean),
+    )].sort((a, b) => a.localeCompare(b))
+    return { suppliers: distinct('vendorName'), vendorCodes: distinct('vendorCode'), pans: distinct('pan') }
+  }, [allowedRows, allowedIssueRows, quickFilter, supplierFilter, vendorCodeFilter, panFilter])
+
+  const hasActiveFilters = Boolean(search) || supplierFilter !== 'all' || vendorCodeFilter !== 'all' || panFilter !== 'all'
+
+  function handleResetFilters() {
+    setSearch('')
+    setSupplierFilter('all')
+    setVendorCodeFilter('all')
+    setPanFilter('all')
+  }
 
   const exportColumns = useMemo(() => ([
     { label: 'Supplier', value: (row) => row.vendorName || '—' },
@@ -879,13 +914,7 @@ export default function LDCCompliance() {
                   : `${quickFilterLabel} · ${filteredRows.length} rows shown`}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <button className="btn btn-outline btn-sm" type="button" onClick={() => handleExport('csv')}>
-                <Download size={13} />CSV
-              </button>
-              <button className="btn btn-outline btn-sm" type="button" onClick={() => handleExport('excel')}>
-                <FileSpreadsheet size={13} />Excel
-              </button>
+            <div className="ldc-toolbar">
               <div className="ldc-search-wrapper">
                 <Search size={14} />
                 <input
@@ -894,6 +923,31 @@ export default function LDCCompliance() {
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search LDC, PAN, vendor..."
                 />
+              </div>
+              <select className="filter-select ldc-filter-select" value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+                <option value="all">All Suppliers</option>
+                {filterOptions.suppliers.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+              <select className="filter-select ldc-filter-select" value={vendorCodeFilter} onChange={(e) => setVendorCodeFilter(e.target.value)}>
+                <option value="all">All Vendor Codes</option>
+                {filterOptions.vendorCodes.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+              <select className="filter-select ldc-filter-select" value={panFilter} onChange={(e) => setPanFilter(e.target.value)}>
+                <option value="all">All PANs</option>
+                {filterOptions.pans.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+              {hasActiveFilters && (
+                <button className="filter-reset-btn" type="button" onClick={handleResetFilters}>
+                  <RotateCcw size={12} />Reset
+                </button>
+              )}
+              <div className="ldc-toolbar-exports">
+                <button className="btn btn-outline btn-sm" type="button" onClick={() => handleExport('csv')}>
+                  <Download size={13} />CSV
+                </button>
+                <button className="btn btn-outline btn-sm" type="button" onClick={() => handleExport('excel')}>
+                  <FileSpreadsheet size={13} />Excel
+                </button>
               </div>
             </div>
           </div>

@@ -585,3 +585,16 @@
   line-height: 1.35;
   white-space: normal;
 }
+
+/* Second row: Passed/Issues split for TDS Deducted and TDS Not Deducted, plus Insufficient Data */
+.issues-summary-grid.issues-summary-grid--five.issues-summary-grid--split { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1199px) { .issues-summary-grid.issues-summary-grid--five.issues-summary-grid--split { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 767px)  { .issues-summary-grid.issues-summary-grid--five.issues-summary-grid--split { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 479px)  { .issues-summary-grid.issues-summary-grid--five.issues-summary-grid--split { grid-template-columns: 1fr; } }
+
+/* Top-row TDS Deducted / Not Deducted cards: what the card's total is made of */
+.issues-summary-breakdown {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}

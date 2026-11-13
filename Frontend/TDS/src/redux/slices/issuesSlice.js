@@ -200,6 +200,8 @@ const initialState = {
   severityFilter:  'all',
   statusFilter:    'all',
   issueTypeFilter: 'all',
+  issueDateFromFilter: '',
+  issueDateToFilter:   '',
   dashboardDateFromFilter:   '',
   dashboardDateToFilter:     '',
   dashboardMonthFilter:      '',
@@ -230,6 +232,10 @@ const issuesSlice = createSlice({
     setSeverityFilter: (state, action) => { state.severityFilter  = action.payload },
     setStatusFilter:   (state, action) => { state.statusFilter    = action.payload },
     setIssueTypeFilter:(state, action) => { state.issueTypeFilter = action.payload },
+    setIssueDateRange: (state, action) => {
+      state.issueDateFromFilter = action.payload.from
+      state.issueDateToFilter = action.payload.to
+    },
     setDashboardDateFromFilter:   (state, action) => { state.dashboardDateFromFilter   = action.payload },
     setDashboardDateToFilter:     (state, action) => { state.dashboardDateToFilter     = action.payload },
     setDashboardMonthFilter:      (state, action) => { state.dashboardMonthFilter      = action.payload },
@@ -244,6 +250,7 @@ const issuesSlice = createSlice({
       state.searchQuery = ''; state.vendorFilter = 'all'; state.sectionFilter = 'all';
       state.severityFilter = 'all'; state.statusFilter = 'all';
       state.issueTypeFilter = 'all';
+      state.issueDateFromFilter = ''; state.issueDateToFilter = '';
     },
     resetDashboardFilters: (state) => {
       state.dashboardDateFromFilter = ''
@@ -300,6 +307,8 @@ const issuesSlice = createSlice({
       state.severityFilter = 'all'
       state.statusFilter = 'all'
       state.issueTypeFilter = 'all'
+      state.issueDateFromFilter = ''
+      state.issueDateToFilter = ''
       state.dashboardDateFromFilter = ''
       state.dashboardDateToFilter = ''
       state.dashboardMonthFilter = ''
@@ -495,7 +504,7 @@ const issuesSlice = createSlice({
 
 export const {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, setDashboardDateFromFilter,
+  setStatusFilter, setIssueTypeFilter, setIssueDateRange, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardVendorCodeFilter,
   setDashboardVendorNameFilter, setDashboardSectionFilter, setDashboardIssueTypeFilter,
   setDashboardTdsDeductionFilter,
@@ -627,7 +636,7 @@ export function selectActiveVendorCodeOptions(state) {
     .sort((a, b) => a.vendorCode.localeCompare(b.vendorCode))
 }
 
-function issueDateKey(issue) {
+export function issueDateKey(issue) {
   if (!issue?.date) return ''
   const d = new Date(issue.date)
   if (Number.isNaN(d.getTime())) return String(issue.date).slice(0, 10)

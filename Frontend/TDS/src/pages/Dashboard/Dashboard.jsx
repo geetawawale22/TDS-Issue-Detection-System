@@ -15,7 +15,7 @@ import {
   resetDashboardFilters, selectActiveSections, selectActiveVendorCodeOptions,
   selectDashboardKpis, selectIsLive, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardSectionFilter,
-  setDashboardIssueTypeFilter, setDashboardVendorCodeFilter, setDashboardVendorNameFilter,
+  setDashboardVendorCodeFilter,
   setDashboardTdsDeductionFilter, selectDashboardTdsDeductionCounts,
 } from '@/redux/slices/issuesSlice'
 import '@/components/Common/Common.css'
@@ -52,10 +52,26 @@ export default function Dashboard() {
     || dashboardIssueTypeFilter !== 'all'
     || dashboardTdsDeductionFilter !== 'all'
   )
-  const navigateToIssues = (filters = {}) => {
-    const params = new URLSearchParams({ view: 'issue' })
-    Object.entries(filters).forEach(([key, value]) => {
-      if (value) params.set(key, value)
+  // Opens the Issues tab on the clicked item, carrying the Dashboard's own
+  // filters so the rows there are the ones this Dashboard view counted.
+  const navigateToIssues = ({ view = 'issue', ...filters } = {}) => {
+    const deducted = dashboardTdsDeductionFilter === 'deducted'
+    const deductionView = dashboardTdsDeductionFilter === 'all' ? view : {
+      all: deducted ? 'tds_deducted' : 'tds_not_deducted',
+      issue: deducted ? 'issue_deducted' : 'issue_not_deducted',
+    }[view]
+    const params = new URLSearchParams({ view: deductionView })
+    Object.entries({
+      section: dashboardSectionFilter,
+      vendor: dashboardVendorNameFilter,
+      search: dashboardVendorCodeFilter,
+      type: dashboardIssueTypeFilter,
+      month: dashboardMonthFilter,
+      dateFrom: dashboardDateFromFilter,
+      dateTo: dashboardDateToFilter,
+      ...filters,
+    }).forEach(([key, value]) => {
+      if (value && value !== 'all') params.set(key, value)
     })
     navigate(`/issues?${params.toString()}`)
   }
@@ -64,22 +80,22 @@ export default function Dashboard() {
     issuesType: {
       title: 'Issues by Type',
       subtitle: isLive ? 'From latest SAP upload' : 'Distribution by issue type',
-      render: (props = {}) => <IssuesByTypeChart {...props} onBarClick={(row) => dispatch(setDashboardIssueTypeFilter(row.type || 'all'))} />,
+      render: (props = {}) => <IssuesByTypeChart {...props} onBarClick={(row) => navigateToIssues({ type: row.type })} />,
     },
     sectionHealth: {
       title: 'Section-wise Compliance Health',
       subtitle: 'Issue count by TDS section',
-      render: (props = {}) => <SectionComplianceChart {...props} onSectionClick={(row) => dispatch(setDashboardSectionFilter(row.section || 'all'))} />,
+      render: (props = {}) => <SectionComplianceChart {...props} onSectionClick={(row) => navigateToIssues({ section: row.section })} />,
     },
     monthlyTrend: {
       title: 'Monthly Trend',
       subtitle: isLive ? 'Issues by posting month in upload' : 'Issues found vs. resolved',
-      render: (props = {}) => <MonthlyTrendChart {...props} onMonthClick={(row) => dispatch(setDashboardMonthFilter(row.monthKey || ''))} />,
+      render: (props = {}) => <MonthlyTrendChart {...props} onMonthClick={(row) => navigateToIssues({ month: row.monthKey })} />,
     },
     topVendors: {
       title: 'Top Vendors with Issues',
       subtitle: isLive ? 'Highest issue counts in this run' : 'Highest open issue counts',
-      render: (props = {}) => <TopVendorsChart {...props} onBarClick={(row) => dispatch(setDashboardVendorNameFilter(row.vendor || 'all'))} />,
+      render: (props = {}) => <TopVendorsChart {...props} onBarClick={(row) => navigateToIssues({ vendor: row.vendor })} />,
     },
   }
   const expandedChartConfig = expandedChart ? chartDefinitions[expandedChart] : null
@@ -116,7 +132,7 @@ export default function Dashboard() {
       up: true,
       icon: Activity,
       tone: 'default',
-      target: '/issues?view=all',
+      target: { view: 'all' },
     },
     {
       label: 'Issues Found',
@@ -125,7 +141,7 @@ export default function Dashboard() {
       up: true,
       icon: FileSearch,
       tone: 'warning',
-      target: '/issues?view=issue',
+      target: {},
     },
     {
       label: 'High Severity',
@@ -134,7 +150,7 @@ export default function Dashboard() {
       up: true,
       icon: AlertOctagon,
       tone: 'danger',
-      target: '/issues?view=issue&severity=high',
+      target: { severity: 'high' },
     },
     {
       label: 'Medium Severity',
@@ -143,7 +159,7 @@ export default function Dashboard() {
       up: false,
       icon: AlertTriangle,
       tone: 'warning',
-      target: '/issues?view=issue&severity=medium',
+      target: { severity: 'medium' },
     },
     {
       label: 'Resolved',
@@ -152,7 +168,7 @@ export default function Dashboard() {
       up: true,
       icon: CheckCircle2,
       tone: 'success',
-      target: '/issues?view=issue&status=resolved',
+      target: { status: 'resolved' },
     },
     {
       label: 'Pending',
@@ -161,7 +177,7 @@ export default function Dashboard() {
       up: false,
       icon: Clock,
       tone: 'default',
-      target: '/issues?view=issue&status=open',
+      target: { status: 'open' },
     },
   ]
 
@@ -323,7 +339,7 @@ export default function Dashboard() {
             key={k.label}
             className="kpi-card kpi-card-clickable"
             type="button"
-            onClick={() => navigate(k.target)}
+            onClick={() => navigateToIssues(k.target)}
             aria-label={`Open issues filtered by ${k.label}`}
           >
             <div className="kpi-icon-row">

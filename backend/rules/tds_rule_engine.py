@@ -564,7 +564,10 @@ def _tds_amount_matches(expected_amount: float, actual_amount: float) -> bool:
     actual = abs(actual_amount)
     if abs(actual - expected) <= TDS_ROW_AMOUNT_TOLERANCE:
         return True
-    return actual == math.ceil(round(expected, 2))
+    # Subtract a tiny epsilon instead of round(expected, 2): float noise can
+    # land 1459.005 at 1459.00499…, which round() drops to 1459.00 (ceil →
+    # 1459) though SAP posts 1460; the epsilon still keeps 180.0000001 at 180.
+    return actual == math.ceil(expected - 1e-6)
 
 
 def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
@@ -618,7 +621,7 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
             f"Expected rate is {expected_rate}%, which should give "
             f"₹{expected_amount:,.2f} on a base of ₹{abs(txn.basic_amount):,.2f}, "
             f"but ₹{actual_amount:,.2f} was actually deducted "
-            f"(implied rate: {implied_rate:.4f}%)."
+            f"(implied rate: {implied_rate:.2f}%)."
         ),
         severity="high",
         expected_rate=expected_rate,
@@ -771,6 +774,37 @@ def check_wrong_section_by_payment_type(txn: Transaction) -> Optional[TDSIssue]:
     )
 
 
+def ldc_decides_transaction(txn: Transaction) -> bool:
+    """
+    True when an LDC certificate covers this row's posting date and its
+    expected TDS can be worked out. The LDC check then runs first and its
+    result decides the row; no other transaction or batch check applies.
+    """
+    if txn.ldc_exemption_percent is None and txn.ldc_approved_rate is None:
+        return False
+    if txn.ldc_exempt_from and txn.posting_date < txn.ldc_exempt_from:
+        return False
+    if txn.ldc_exempt_to and txn.posting_date > txn.ldc_exempt_to:
+        return False
+    if txn.basic_amount is None:
+        return False
+    if txn.ldc_approved_rate is not None or txn.ldc_exemption_percent >= 100:
+        return True
+    # Partial exemption needs the normal statutory rate to compute the LDC rate.
+    return _get_statutory_rate(txn) is not None
+
+
+def _ldc_rate(txn: Transaction) -> tuple[float, str]:
+    """Certified TDS rate for an LDC row, with a short description of it."""
+    if txn.ldc_approved_rate is not None:
+        return txn.ldc_approved_rate, f"approved LDC rate {txn.ldc_approved_rate}%"
+    applicable_rate = _get_statutory_rate(txn) or 0.0
+    return (
+        applicable_rate * (1 - txn.ldc_exemption_percent / 100),
+        f"{txn.ldc_exemption_percent}% exemption",
+    )
+
+
 def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
     """
     Category: TDS Deducted as per LDC
@@ -802,13 +836,8 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
 
     if txn.basic_amount is None:
         return None  # certificate validity can be checked above; amount cannot
-    if txn.ldc_approved_rate is not None:
-        cert_rate = txn.ldc_approved_rate
-        rate_text = f"approved LDC rate {cert_rate}%"
-    else:
-        applicable_rate = _get_statutory_rate(txn) or 0.0
-        cert_rate = applicable_rate * (1 - txn.ldc_exemption_percent / 100)
-        rate_text = f"{txn.ldc_exemption_percent}% exemption"
+    applicable_rate = _get_statutory_rate(txn) or 0.0
+    cert_rate, rate_text = _ldc_rate(txn)
     # SAP posts base and TDS with independent signs (e.g. base on the credit
     # side, TDS positive), so compare magnitudes only.
     expected_tds = abs(txn.basic_amount * (cert_rate / 100))
@@ -826,9 +855,9 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
             message=(
                 f"LDC certificate {txn.ldc_exemption_number} is applicable for this PAN/section/date "
                 f"and allows {rate_text}.{statutory_rate_text} expected effective rate is "
-                f"{cert_rate:.4g}%, so expected TDS is ~₹{expected_tds:.2f}. "
+                f"{cert_rate:.2f}%, so expected TDS is ~₹{expected_tds:.2f}. "
                 f"Actual TDS deducted is ₹{actual_tds:.2f} "
-                f"(implied rate {actual_rate:.4f}%), hence the LDC amount is mismatched."
+                f"(implied rate {actual_rate:.2f}%), hence the LDC amount is mismatched."
             ),
             severity="high",
             expected_rate=cert_rate,
@@ -1113,6 +1142,14 @@ def run_all_checks(txn: Transaction) -> list[TDSIssue]:
     if _is_advance_clearing_adjustment(txn):
         return issues
 
+    # 0. LDC first: a certificate covering this posting date decides the row
+    # (correctly applied or mismatch), so the other checks are not run.
+    if ldc_decides_transaction(txn):
+        ldc_issue = check_lower_deduction_cert(txn)
+        if ldc_issue is not None:
+            issues.append(ldc_issue)
+            return issues
+
     missing_section_issue = check_missing_tds_section(txn)
     if missing_section_issue is not None:
         issues.append(missing_section_issue)
@@ -1253,17 +1290,13 @@ def _vendor_match_key(txn: Transaction) -> str:
     return f"VENDOR:{(txn.vendor_code or '').strip()}"
 
 
-def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
-    """Validate full/partial vendor advances against linked invoice balances.
+def link_advances_to_invoices(transactions: list[Transaction]) -> list[tuple[Transaction, list[Transaction]]]:
+    """Pair each RE/KR invoice with the advance payments made against it.
 
     Link order: REBZG/REBZJ/REBZZ first, then Assignment_Number/ZUONR.
-    Clearing documents can include ordinary invoice/payment lines, so they
-    are used for ledger grouping only, not for raising advance lifecycle issues.
-    For partial advances, required TDS is checked in two pieces:
-      1. advance amount at payment time
-      2. remaining invoice base at invoice time
+    Invoices without a linked advance are left out.
     """
-    issues: list[tuple[Transaction, TDSIssue]] = []
+    links: list[tuple[Transaction, list[Transaction]]] = []
     advances = [txn for txn in transactions if txn.is_advance_payment and not _is_advance_clearing_adjustment(txn)]
     invoices = [
         txn for txn in transactions
@@ -1306,8 +1339,68 @@ def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tup
                 or _advance_invoice_assignment_match(advance, invoice)
             ):
                 linked_advances.append(advance)
-        if not linked_advances:
-            continue
+        if linked_advances:
+            links.append((invoice, linked_advances))
+    return links
+
+
+def check_ldc_advance_chain(invoice: Transaction, advances: list[Transaction]) -> TDSIssue:
+    """
+    LDC check for an LDC-covered invoice that has advances against it.
+    TDS deducted on the advance counts towards the invoice, so the chain is
+    judged as a whole: each piece at its own rate (LDC rate when a certificate
+    covers that piece's posting date, else the normal rate), summed, against
+    advance TDS + invoice TDS. SAP rounds each row up to the rupee, so the
+    tolerance is ₹1 per row in the chain.
+    """
+    expected_total = 0.0
+    for txn in [*advances, invoice]:
+        rate = _ldc_rate(txn)[0] if ldc_decides_transaction(txn) else (_get_applicable_rate(txn) or 0.0)
+        expected_total += _txn_base(txn) * rate / 100
+    actual_advance = sum(abs(advance.tds_deducted_amount or 0.0) for advance in advances)
+    actual_invoice = abs(invoice.tds_deducted_amount or 0.0)
+    actual_total = actual_advance + actual_invoice
+    advance_docs = ", ".join(sorted({str(advance.doc_number) for advance in advances if advance.doc_number}))
+    cert_rate, rate_text = _ldc_rate(invoice)
+
+    if abs(actual_total - expected_total) > TDS_AMOUNT_ROUNDING_TOLERANCE * (len(advances) + 1):
+        return TDSIssue(
+            category="TDS Deducted as per LDC — Mismatch",
+            message=(
+                f"LDC certificate {invoice.ldc_exemption_number} ({rate_text}) covers this invoice, "
+                f"which has advance payment(s) {advance_docs or '—'} against it. Expected TDS across "
+                f"advance + invoice is ~₹{expected_total:,.2f}, but ₹{actual_total:,.2f} was deducted "
+                f"(advance ₹{actual_advance:,.2f} + invoice ₹{actual_invoice:,.2f}), "
+                "hence the LDC amount is mismatched."
+            ),
+            severity="high",
+            expected_rate=cert_rate,
+        )
+    return TDSIssue(
+        category="TDS Deducted as per LDC",
+        message=(
+            f"Correctly applied LDC certificate {invoice.ldc_exemption_number} ({rate_text}) "
+            f"across advance {advance_docs or '—'} + invoice."
+        ),
+        severity="low",
+        expected_rate=cert_rate,
+    )
+
+
+def check_advance_payment_lifecycle(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
+    """Validate full/partial vendor advances against linked invoice balances.
+
+    Link order: REBZG/REBZJ/REBZZ first, then Assignment_Number/ZUONR.
+    Clearing documents can include ordinary invoice/payment lines, so they
+    are used for ledger grouping only, not for raising advance lifecycle issues.
+    For partial advances, required TDS is checked in two pieces:
+      1. advance amount at payment time
+      2. remaining invoice base at invoice time
+    """
+    issues: list[tuple[Transaction, TDSIssue]] = []
+    for invoice, linked_advances in link_advances_to_invoices(transactions):
+        if ldc_decides_transaction(invoice):
+            continue  # LDC-covered chains are checked by check_ldc_advance_chain
 
         section_rate = _get_applicable_rate(invoice)
         if section_rate is None:

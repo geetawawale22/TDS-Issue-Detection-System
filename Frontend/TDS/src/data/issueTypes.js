@@ -548,10 +548,11 @@ export const MULTI_CATEGORY_DELIMITER = '||'
  * distinguishes them on the wire:
  *   - "PAN Missing (206AA)" covers both the "nothing deducted" and
  *     "fallback rate deducted" PAN-missing outcomes.
- *   - "Amount Mismatch (Short/Excess)" is its own option, not folded into
- *     "TDS Rate Mismatch": check_amount_consistency is a ₹-math cross-check
- *     (stated rate vs. actual deducted amount), not a rate lookup, and in
- *     practice is one of the most common categories on real SAP uploads.
+ *   - "Short Deducted (Amount Mismatch)" and "Excess Deducted (Amount
+ *     Mismatch)" are their own options, not folded into "TDS Rate Mismatch":
+ *     check_amount_consistency is a ₹-math cross-check (stated rate vs.
+ *     actual deducted amount), not a rate lookup, and in practice is one of
+ *     the most common categories on real SAP uploads.
  *   - "TDS Not Applicable — Correctly Handled" is one option covering
  *     three different clean confirmations (GL exclusion, Form 15G/15H,
  *     Transporter exemption) — the backend reports all three as the exact
@@ -586,13 +587,27 @@ export function issueTypeFilterOptions() {
     { label: 'TDS Rate Mismatch', categories: ['Wrong TDS Rate'] },
     { label: 'Wrong Section Applied', categories: ['Wrong Section Applied'] },
     { label: '194J Rate Mismatch (Not 2% or 10%)', categories: ['Short/Excess TDS Deducted'] },
-    { label: 'Amount Mismatch (Short/Excess)', categories: ['Short TDS Deducted — Amount Mismatch', 'Excess TDS Deducted — Amount Mismatch'] },
+    { label: 'Short Deducted (Amount Mismatch)', categories: ['Short TDS Deducted — Amount Mismatch'] },
+    { label: 'Excess Deducted (Amount Mismatch)', categories: ['Excess TDS Deducted — Amount Mismatch'] },
     { label: 'TDS Exceeds Full Invoice Amount', categories: ['Excess TDS Deducted — Exceeds Invoice Amount'] },
     { label: 'Unnecessary TDS (Transporter)', categories: ['TDS Not Applicable — Violation (Transporter Exemption)'] },
     { label: 'Wrong Section (Non-Resident)', categories: ['Wrong Section Applied — Non-Resident'] },
     { label: 'Wrong Section (Resident Misclassified)', categories: ['Wrong Section Applied — Resident'] },
     { label: 'Possible Missed TDS Deduction', categories: ['Possible Missed TDS Deduction'] },
   ].map(({ label, categories }) => [categories.join(MULTI_CATEGORY_DELIMITER), label])
+}
+
+/**
+ * Filter option value(s) for one issue type name as charts show it (a backend
+ * category or display label), so a dashboard click ticks the same dropdown
+ * entries a user would pick by hand. Unnamed types are their own option.
+ */
+export function issueTypeFilterValuesFor(type) {
+  const categories = [type, ...Object.keys(ISSUE_DISPLAY_LABELS).filter((category) => ISSUE_DISPLAY_LABELS[category] === type)]
+  const values = issueTypeFilterOptions()
+    .map(([value]) => value)
+    .filter((value) => value.split(MULTI_CATEGORY_DELIMITER).some((category) => categories.includes(category)))
+  return values.length ? values : [type]
 }
 
 /**

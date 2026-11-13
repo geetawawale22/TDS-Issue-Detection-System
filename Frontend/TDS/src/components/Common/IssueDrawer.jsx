@@ -73,7 +73,7 @@ export default function IssueDrawer({ issue, open, onClose, correctionGroups = [
                       ] : []),
                     ]
                     const rateFields = [
-                      { label: 'Applied Rate',   value: issue.appliedRate == null ? '—' : `${issue.appliedRate}%`, mono: true },
+                      { label: 'Applied Rate',   value: issue.appliedRate == null ? '—' : `${Number(issue.appliedRate).toFixed(2)}%`, mono: true },
                       // The TDS Amount *is* the applied amount — not baseAmount × appliedRate,
                       // which can drift from the actual figure by rounding.
                       { label: 'Applied TDS Amount', value: formatCurrency(Math.abs(Number(issue.tdsAmount) || 0)), mono: true },

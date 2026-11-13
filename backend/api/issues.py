@@ -44,6 +44,9 @@ from rules.tds_rule_engine import (
     _get_financial_year,
     _is_advance_clearing_adjustment,
     run_all_checks,
+    ldc_decides_transaction,
+    link_advances_to_invoices,
+    check_ldc_advance_chain,
     check_threshold_breach,
     check_missing_deduction,
     check_advance_payment_lifecycle,
@@ -1379,6 +1382,51 @@ def _is_zero_base_invoice_without_tds(txn) -> bool:
     )
 
 
+def _ldc_advance_chains(transactions):
+    """LDC-covered invoices that have advances against them.
+
+    Returns ({id(invoice): (invoice, advances)}, ids of every invoice and
+    advance in those chains). The chain is judged once, on the invoice.
+    """
+    chains = {
+        id(invoice): (invoice, advances)
+        for invoice, advances in link_advances_to_invoices(transactions)
+        if ldc_decides_transaction(invoice)
+    }
+    members = {id(invoice) for invoice, _ in chains.values()}
+    members.update(id(advance) for _, advances in chains.values() for advance in advances)
+    return chains, members
+
+
+def _row_checks(txn, ldc_chains, ldc_chain_members):
+    """Per-row checks as a decision flow:
+
+    LDC covers the invoice → with advances: judge advance + invoice together;
+                             without: judge the invoice alone (run_all_checks
+                             runs LDC first and stops there).
+    Advance inside an LDC chain → nothing here; judged with its invoice.
+    Otherwise → the normal checks.
+    """
+    if id(txn) in ldc_chains:
+        return [check_ldc_advance_chain(*ldc_chains[id(txn)])]
+    if id(txn) in ldc_chain_members:
+        return []
+    return run_all_checks(txn)
+
+
+def _skip_ldc_decided(results, ldc_chain_members=frozenset()):
+    """Drop batch-check results for rows the LDC check already decided.
+
+    Batch checks still see every row (threshold totals need them all); only
+    their findings on LDC-covered rows, or on rows in an LDC advance chain,
+    are dropped, since LDC runs first.
+    """
+    return [
+        (txn, rule_issue) for txn, rule_issue in results
+        if not ldc_decides_transaction(txn) and id(txn) not in ldc_chain_members
+    ]
+
+
 def _missing_deduction_candidates(transactions, issue_eligible_transactions) -> list[Any]:
     eligible_ids = {id(txn) for txn in issue_eligible_transactions}
     return issue_eligible_transactions + [
@@ -1662,8 +1710,9 @@ async def upload_sap_file(
         if not _is_skipped_non_tds_document_without_tds_amounts(txn)
         and not _has_zero_base_amount(txn)
     ]
+    ldc_chains, ldc_chain_members = _ldc_advance_chains(issue_eligible_transactions)
     for txn in issue_eligible_transactions:
-        for rule_issue in run_all_checks(txn):
+        for rule_issue in _row_checks(txn, ldc_chains, ldc_chain_members):
             if include_informational or rule_issue.severity != "low":
                 issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
                 issue_transaction_ids.add(id(txn))
@@ -1671,20 +1720,20 @@ async def upload_sap_file(
 
     # Threshold checks operate across transactions, so each result carries a
     # representative transaction from its own vendor/section/FY group.
-    for txn, rule_issue in check_threshold_breach(issue_eligible_transactions):
+    for txn, rule_issue in _skip_ldc_decided(check_threshold_breach(issue_eligible_transactions), ldc_chain_members):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
             issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
 
-    for txn, rule_issue in check_missing_deduction(_missing_deduction_candidates(transactions, issue_eligible_transactions)):
+    for txn, rule_issue in _skip_ldc_decided(check_missing_deduction(_missing_deduction_candidates(transactions, issue_eligible_transactions)), ldc_chain_members):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
             issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
-    for txn, rule_issue in check_advance_payment_lifecycle(issue_eligible_transactions):
+    for txn, rule_issue in _skip_ldc_decided(check_advance_payment_lifecycle(issue_eligible_transactions), ldc_chain_members):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
@@ -1853,23 +1902,24 @@ async def upload_case_source_files(
         and not _has_zero_base_amount(txn)
     ]
 
+    ldc_chains, ldc_chain_members = _ldc_advance_chains(issue_eligible_transactions)
     for txn in issue_eligible_transactions:
-        for rule_issue in run_all_checks(txn):
+        for rule_issue in _row_checks(txn, ldc_chains, ldc_chain_members):
             if rule_issue.severity != "low":
                 issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
                 issue_transaction_ids.add(id(txn))
 
-    for txn, rule_issue in check_threshold_breach(issue_eligible_transactions):
+    for txn, rule_issue in _skip_ldc_decided(check_threshold_breach(issue_eligible_transactions), ldc_chain_members):
         if rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
 
-    for txn, rule_issue in check_missing_deduction(_missing_deduction_candidates(transactions, issue_eligible_transactions)):
+    for txn, rule_issue in _skip_ldc_decided(check_missing_deduction(_missing_deduction_candidates(transactions, issue_eligible_transactions)), ldc_chain_members):
         if rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
 
-    for txn, rule_issue in check_advance_payment_lifecycle(issue_eligible_transactions):
+    for txn, rule_issue in _skip_ldc_decided(check_advance_payment_lifecycle(issue_eligible_transactions), ldc_chain_members):
         if rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
             issue_transaction_ids.add(id(txn))
