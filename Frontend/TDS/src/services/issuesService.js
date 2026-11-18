@@ -29,6 +29,37 @@ const issuesService = {
     return data
   },
 
+  /** One page of saved issues across runs (status: open | resolved | all). */
+  async getTrackedIssues({ status = 'open', search = '', resolutionType = '', run = '', tds = '', severity = '', partial = false, page = 1, pageSize = 50 } = {}) {
+    const { data } = await api.get('/tracked-issues', {
+      params: { status, search, resolution_type: resolutionType, run, tds, severity, partial, page, page_size: pageSize },
+    })
+    return data
+  },
+
+  /** Every saved issue (compact), for Dashboard totals and charts across runs. */
+  async getAllTrackedIssues() {
+    const { data } = await api.get('/tracked-issues/all')
+    return data
+  },
+
+  /** Issue book across every run (each issue once) plus the latest run's counts. */
+  async getTrackedIssueSummary() {
+    const { data } = await api.get('/tracked-issues/summary')
+    return data
+  },
+
+  /** Mark a saved issue resolved by hand; later runs keep it resolved. */
+  async resolveTrackedIssue({ issueKey, note, correctionDocs }) {
+    const { data } = await api.post('/tracked-issues/resolve', { issueKey, note, correctionDocs })
+    return data
+  },
+
+  async getRuleRuns(limit = 20) {
+    const { data } = await api.get('/tracked-issues/runs', { params: { limit } })
+    return data
+  },
+
   async downloadTemplate() {
     const { data } = await api.get('/issues/template', { responseType: 'blob' })
     const url = window.URL.createObjectURL(new Blob([data], { type: 'text/csv' }))

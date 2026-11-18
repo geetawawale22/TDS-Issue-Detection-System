@@ -345,7 +345,7 @@
 
 .case-ledger-line {
   display: grid;
-  grid-template-columns: 52px minmax(110px, 1fr) minmax(110px, 1fr) 130px 100px 52px 120px 120px 120px 70px 110px minmax(220px, 2fr) minmax(110px, 1fr);
+  grid-template-columns: 52px minmax(110px, 1fr) minmax(110px, 1fr) 130px 100px 100px 52px 120px 120px 120px 70px 110px minmax(220px, 2fr) minmax(110px, 1fr);
   gap: 8px;
   align-items: center;
   min-height: 30px;
@@ -384,6 +384,23 @@
   margin-top: 4px;
   font-size: 12px;
   color: var(--color-text-muted);
+}
+
+.case-run-line {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.case-run-line strong {
+  color: var(--color-text);
+}
+
+.case-run-line-total {
+  color: var(--color-danger, #c0392b);
 }
 
 .case-empty-source {
@@ -668,7 +685,11 @@
 .case-period-chip {
   display: inline-flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
+  grid-column: span 2;
+  min-width: 0;
+  overflow: hidden;
   height: 32px;
   padding: 0 10px;
   border: 1px solid var(--color-primary);
@@ -680,3 +701,14 @@
   white-space: nowrap;
   cursor: pointer;
 }
+
+.case-stored-pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.case-stored-pager > div { display: flex; align-items: center; gap: 8px; }

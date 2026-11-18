@@ -253,3 +253,191 @@ class PanVerification(Base):
     checked_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     checked_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ============================================================
+# RULE RUNS + TRACKED ISSUES
+# Each rule-engine run (a file upload today, a daily API pull later) is
+# recorded in rule_runs. Every issue it finds is kept in tracked_issues
+# under a stable key, so the next run can tell new issues from recurring
+# ones and mark earlier issues resolved once a correction is posted.
+# ============================================================
+
+class RuleRun(Base):
+    __tablename__ = "rule_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String(20), nullable=False, default="upload")
+    # "upload" (manual file) | "api" (scheduled SAP/GCP pull, later)
+    file_name = Column(Text, nullable=True)
+    company_codes = Column(String(255), nullable=True)
+    # comma-separated company codes present in the run
+    period_from = Column(Date, nullable=True)
+    period_to = Column(Date, nullable=True)
+    transactions = Column(Integer, nullable=False, default=0)
+    issues_found = Column(Integer, nullable=False, default=0)
+    new_issues = Column(Integer, nullable=False, default=0)
+    recurring_issues = Column(Integer, nullable=False, default=0)
+    reopened_issues = Column(Integer, nullable=False, default=0)
+    resolved_issues = Column(Integer, nullable=False, default=0)
+    partially_corrected = Column(Integer, nullable=False, default=0)
+    run_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class TrackedIssue(Base):
+    __tablename__ = "tracked_issues"
+
+    id = Column(Integer, primary_key=True, index=True)
+    issue_key = Column(String(64), unique=True, nullable=False, index=True)
+    # sha1 of company code | fiscal year | doc no | line item | wtax type | wtax code | category
+
+    company_code = Column(String(10), nullable=False, default="", index=True)
+    fiscal_year = Column(String(10), nullable=False, default="")
+    doc_no = Column(String(50), nullable=False, index=True)
+    line_item = Column(String(20), nullable=False, default="")
+    doc_type = Column(String(10), nullable=True)
+    category = Column(String(150), nullable=False)
+    issue_type = Column(String(60), nullable=True)
+    severity = Column(String(10), nullable=True)
+    vendor_code = Column(String(50), nullable=True, index=True)
+    vendor_name = Column(String(255), nullable=True)
+    vendor_pan = Column(String(20), nullable=True)
+    section = Column(String(50), nullable=True)
+    posting_date = Column(Date, nullable=True)
+    base_amount = Column(Numeric(18, 2), nullable=True)
+    tds_amount = Column(Numeric(18, 2), nullable=True)
+    applied_rate = Column(Numeric(9, 4), nullable=True)
+    expected_rate = Column(Numeric(9, 4), nullable=True)
+    tax_impact = Column(Numeric(18, 2), nullable=True)
+    # Original document's amount and side (S/H): a later credit memo or reversal
+    # on the other side is measured against these.
+    document_amount = Column(Numeric(18, 2), nullable=True)
+    debit_credit = Column(String(1), nullable=True)
+    profit_center = Column(String(50), nullable=True)
+    description = Column(Text, nullable=True)
+
+    status = Column(String(20), nullable=False, default="open", index=True)
+    # open | resolved
+    resolution_type = Column(String(30), nullable=True)
+    # REVERSED          — the original document was reversed (STBLG link)
+    # CORRECTION_POSTED — later document(s) referencing it bring TDS to the expected amount
+    # NO_LONGER_FLAGGED — the document was re-checked and the rule no longer raises it
+    # MANUAL            — a user matched SAP rows / resolved it by hand
+    resolution_note = Column(Text, nullable=True)
+    correction_docs = Column(Text, nullable=True)
+    # JSON list of {docNo, docType, postingDate, tdsAmount, link}
+    corrected_tds = Column(Numeric(18, 2), nullable=True)
+    remaining_shortfall = Column(Numeric(18, 2), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_run_id = Column(Integer, ForeignKey("rule_runs.id"), nullable=True)
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    first_seen_run_id = Column(Integer, ForeignKey("rule_runs.id"), nullable=True)
+    last_seen_run_id = Column(Integer, ForeignKey("rule_runs.id"), nullable=True)
+    first_seen_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now())
+    times_seen = Column(Integer, nullable=False, default=1)
+    reopened_count = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_tracked_issues_status_company", "status", "company_code"),
+        Index("ix_tracked_issues_company_doc", "company_code", "doc_no"),
+    )
+
+
+class LedgerLine(Base):
+    """One SAP line item kept across runs, so the Document / GL Ledger can join
+    an invoice from one day with its payment or clearing from a later day.
+
+    Identity is company + fiscal year + document + line item: a line sent again
+    (e.g. now carrying its clearing document) updates the saved one.
+    """
+    __tablename__ = "ledger_lines"
+
+    id = Column(Integer, primary_key=True)
+    company_code = Column(String(10), nullable=False, default="")
+    fiscal_year = Column(String(10), nullable=False, default="")
+    doc_no = Column(String(50), nullable=False)
+    line_item = Column(String(20), nullable=False, default="")
+
+    group_key = Column(String(200), nullable=False, index=True)
+    clearing_document = Column(String(50), nullable=True)
+    clearing_fiscal_year = Column(String(10), nullable=True)
+    # Clearing taken from a later line that references this one (REBZG) when
+    # SAP did not send this line again with its own clearing document.
+    inferred_clearing_document = Column(String(50), nullable=True)
+    inferred_clearing_fiscal_year = Column(String(10), nullable=True)
+    reference_document = Column(String(50), nullable=True)
+    assignment_number = Column(String(100), nullable=True)
+
+    vendor_code = Column(String(50), nullable=True)
+    vendor_name = Column(String(255), nullable=True)
+    vendor_pan = Column(String(20), nullable=True)
+    doc_type = Column(String(10), nullable=True)
+    event_type = Column(String(30), nullable=True)
+    posting_date = Column(Date, nullable=True, index=True)
+    gl_account = Column(String(30), nullable=True)
+    profit_center = Column(String(50), nullable=True)
+    section = Column(String(100), nullable=True)
+    section_label = Column(String(150), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False, default=0)
+    base_amount = Column(Numeric(18, 2), nullable=True)
+    tds_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    sap_rate = Column(Numeric(9, 4), nullable=True)
+    ldc_certificate = Column(String(100), nullable=True)
+    ldc_rate = Column(Numeric(9, 4), nullable=True)
+    ldc_expected_rate = Column(Numeric(9, 4), nullable=True)
+    rate_check_na = Column(Boolean, nullable=False, default=False)
+    self_clearing = Column(Boolean, nullable=False, default=False)
+    has_open_issue = Column(Boolean, nullable=False, default=False)
+    event = Column(Text, nullable=False)  # JSON: the line as the ledger UI shows it
+
+    first_run_id = Column(Integer, ForeignKey("rule_runs.id"), nullable=True)
+    last_run_id = Column(Integer, ForeignKey("rule_runs.id"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("company_code", "fiscal_year", "doc_no", "line_item", name="uq_ledger_lines_identity"),
+        Index("ix_ledger_lines_company_doc", "company_code", "doc_no"),
+        Index("ix_ledger_lines_company_reference", "company_code", "reference_document"),
+    )
+
+
+class LedgerGroup(Base):
+    """Document Ledger group (clearing / reference / assignment / document) over saved lines."""
+    __tablename__ = "ledger_groups"
+
+    id = Column(Integer, primary_key=True)
+    group_key = Column(String(200), nullable=False, unique=True)
+    company_code = Column(String(10), nullable=False, default="", index=True)
+    fiscal_year = Column(String(10), nullable=False, default="")
+    anchor_doc = Column(String(100), nullable=False)
+    group_type = Column(String(30), nullable=False)
+    open_item = Column(Boolean, nullable=False, default=False)
+    clearing_document = Column(String(50), nullable=True)
+    assignment_number = Column(String(100), nullable=True)
+    vendor_name = Column(String(255), nullable=True)
+    vendor_code = Column(String(50), nullable=True)
+    vendor_pan = Column(String(20), nullable=True)
+    section = Column(String(100), nullable=True)
+    invoice_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    advance_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    payment_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    base_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    adjustment_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    debit_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    credit_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    net_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    open_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    tds_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    event_count = Column(Integer, nullable=False, default=0)
+    # Lines of documents other than the anchor (clearing) document. A clearing
+    # group with none holds only the clearing entry: the documents it settles
+    # are not in the data, so it is CLEARING_ONLY, not balanced.
+    linked_count = Column(Integer, nullable=False, default=0)
+    issue_count = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="OPEN", index=True)
+    min_posting_date = Column(Date, nullable=True)
+    max_posting_date = Column(Date, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -4,7 +4,11 @@ import { getDisplayIssueType, getRecommendedAction } from '@/data/issueTypes'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import './Common.css'
 
-export default function IssueDrawer({ issue, open, onClose, correctionGroups = [], onMatchSapRows }) {
+/**
+ * `resolvedNote` replaces the default "corrected" banner text (e.g. how a later
+ * run resolved the issue); `children` adds sections under the action column.
+ */
+export default function IssueDrawer({ issue, open, onClose, correctionGroups = [], onMatchSapRows, resolvedNote = null, children = null }) {
   return (
     <div className={`issue-drawer-overlay ${open ? 'open' : ''}`} onClick={onClose}>
       <div
@@ -108,13 +112,13 @@ export default function IssueDrawer({ issue, open, onClose, correctionGroups = [
                 {issue.status === 'resolved' && (
                   <div className="corrected-banner">
                     <CheckCheck size={14} />
-                    This issue has been corrected. A reversal and corrected entry have been posted in the GL for this document.
+                    {resolvedNote || 'This issue has been corrected. A reversal and corrected entry have been posted in the GL for this document.'}
                   </div>
                 )}
                 <div className="issue-drawer-section-title"><Lightbulb size={13} />Recommended Action</div>
                 <div className="issue-drawer-desc" style={{ borderColor: 'var(--color-success-border)', background: 'var(--color-success-bg)' }}>
                   {issue.status === 'resolved' ? (
-                    <em>No action needed — correction is recorded in the manual correction register.</em>
+                    <em>{resolvedNote ? 'No action needed — the issue was resolved by the entries listed below.' : 'No action needed — correction is recorded in the manual correction register.'}</em>
                   ) : getRecommendedAction(issue)}
                 </div>
 
@@ -161,6 +165,7 @@ export default function IssueDrawer({ issue, open, onClose, correctionGroups = [
                     ))}
                   </div>
                 )}
+                {children}
               </div>
             </div>
           </>

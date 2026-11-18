@@ -40,7 +40,16 @@ export function sectionAliases(value) {
   return aliases
 }
 
+// Filter value for rows whose upload has no TDS section (shown as "—").
+export const NO_SECTION = 'No Section'
+
+export function hasSection(value) {
+  const text = normalizeSection(value)
+  return Boolean(text) && text !== '—' && text !== '-'
+}
+
 export function sectionMatches(selectedSection, values) {
+  if (selectedSection === NO_SECTION) return !values.some(hasSection)
   const selectedAliases = sectionAliases(selectedSection)
   if (!selectedAliases.size) return true
 

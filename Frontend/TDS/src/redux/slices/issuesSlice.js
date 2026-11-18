@@ -10,6 +10,7 @@ import {
   deriveThresholdSectionBreakdown,
   deriveGlCorrections,
   deriveMonthlyTrend,
+  deriveSectionMonthlyTrend,
   deriveThresholdConsumptionTrend,
   deriveMonthlyComparison,
   deriveVendorMonthlyTrend,
@@ -200,6 +201,7 @@ const initialState = {
   severityFilter:  'all',
   statusFilter:    'all',
   issueTypeFilter: 'all',
+  profitCenterFilter: 'all',
   issueDateFromFilter: '',
   issueDateToFilter:   '',
   dashboardDateFromFilter:   '',
@@ -210,6 +212,9 @@ const initialState = {
   dashboardSectionFilter:    'all',
   dashboardIssueTypeFilter:  'all',
   dashboardTdsDeductionFilter: 'all',
+  // Every saved issue across runs (tracked_issues), for the Dashboard. null
+  // until loaded; the Dashboard then falls back to the latest upload's issues.
+  trackedIssues: null,
   selectedIssueId: null,
   drawerOpen:      false,
 
@@ -226,12 +231,14 @@ const issuesSlice = createSlice({
   name: 'issues',
   initialState,
   reducers: {
+    setTrackedIssues: (state, action) => { state.trackedIssues = action.payload },
     setSearchQuery:    (state, action) => { state.searchQuery     = action.payload },
     setVendorFilter:   (state, action) => { state.vendorFilter    = action.payload },
     setSectionFilter:  (state, action) => { state.sectionFilter   = action.payload },
     setSeverityFilter: (state, action) => { state.severityFilter  = action.payload },
     setStatusFilter:   (state, action) => { state.statusFilter    = action.payload },
     setIssueTypeFilter:(state, action) => { state.issueTypeFilter = action.payload },
+    setProfitCenterFilter: (state, action) => { state.profitCenterFilter = action.payload },
     setIssueDateRange: (state, action) => {
       state.issueDateFromFilter = action.payload.from
       state.issueDateToFilter = action.payload.to
@@ -251,6 +258,7 @@ const issuesSlice = createSlice({
       state.severityFilter = 'all'; state.statusFilter = 'all';
       state.issueTypeFilter = 'all';
       state.issueDateFromFilter = ''; state.issueDateToFilter = '';
+      state.profitCenterFilter = 'all';
     },
     resetDashboardFilters: (state) => {
       state.dashboardDateFromFilter = ''
@@ -295,6 +303,8 @@ const issuesSlice = createSlice({
         validationRows: payload.validationRows || [],
         unrecognizedColumns: payload.unrecognizedColumns || [],
         errors: payload.errors || [],
+        // Comparison with earlier runs (new / resolved since last run), see tracked_issues.
+        tracking: payload.tracking || null,
       }
       state.uploadStatus = 'ready'
       state.uploadProgress = 100
@@ -309,6 +319,7 @@ const issuesSlice = createSlice({
       state.issueTypeFilter = 'all'
       state.issueDateFromFilter = ''
       state.issueDateToFilter = ''
+      state.profitCenterFilter = 'all'
       state.dashboardDateFromFilter = ''
       state.dashboardDateToFilter = ''
       state.dashboardMonthFilter = ''
@@ -503,8 +514,9 @@ const issuesSlice = createSlice({
 })
 
 export const {
+  setTrackedIssues,
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, setIssueDateRange, setDashboardDateFromFilter,
+  setStatusFilter, setIssueTypeFilter, setIssueDateRange, setProfitCenterFilter, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardVendorCodeFilter,
   setDashboardVendorNameFilter, setDashboardSectionFilter, setDashboardIssueTypeFilter,
   setDashboardTdsDeductionFilter,
@@ -620,8 +632,12 @@ export function selectActiveVendorCodes(state) {
 }
 
 export function selectActiveVendorCodeOptions(state) {
+  return vendorCodeOptionsFrom(selectActiveIssues(state))
+}
+
+function vendorCodeOptionsFrom(issues) {
   const byCode = new Map()
-  for (const issue of selectActiveIssues(state)) {
+  for (const issue of issues) {
     if (!issue.vendorId) continue
     if (!byCode.has(issue.vendorId)) byCode.set(issue.vendorId, new Set())
     if (issue.vendor) byCode.get(issue.vendorId).add(issue.vendor)
@@ -666,6 +682,28 @@ function matchesTdsDeductionFilter(row, filter) {
   return true
 }
 
+/**
+ * Issues the Dashboard counts: every saved issue across runs (each once, open
+ * and resolved) once loaded, so yesterday's and today's issues add up; until
+ * then, the latest upload's issues.
+ */
+export function selectDashboardSourceIssues(state) {
+  const tracked = state.issues.trackedIssues
+  return tracked ? scopeToCompanyAndFY(tracked, state) : selectActiveIssues(state)
+}
+
+export function selectUsesTrackedIssues(state) {
+  return Boolean(state.issues.trackedIssues)
+}
+
+export function selectDashboardSections(state) {
+  return [...new Set(selectDashboardSourceIssues(state).map((i) => i.section).filter(Boolean))].sort()
+}
+
+export function selectDashboardVendorCodeOptions(state) {
+  return vendorCodeOptionsFrom(selectDashboardSourceIssues(state))
+}
+
 export function selectDashboardIssues(state) {
   const {
     dashboardDateFromFilter,
@@ -678,7 +716,7 @@ export function selectDashboardIssues(state) {
     dashboardTdsDeductionFilter,
   } = state.issues
 
-  return selectActiveIssues(state).filter((issue) => {
+  return selectDashboardSourceIssues(state).filter((issue) => {
     if (!matchesTdsDeductionFilter(issue, dashboardTdsDeductionFilter)) return false
     const dateKey = issueDateKey(issue)
     if (dashboardDateFromFilter && (!dateKey || dateKey < dashboardDateFromFilter)) return false
@@ -727,6 +765,16 @@ export function selectDashboardTdsDeductionCounts(state) {
 
 export function selectDashboardKpis(state) {
   const issues = selectDashboardIssues(state)
+  if (state.issues.trackedIssues) {
+    // Issue counts cover every run; transactions are only known for the latest file.
+    const kpis = deriveDashboardKpis(issues, null)
+    return {
+      ...kpis,
+      transactions: state.issues.uploadMeta?.stats?.transactionsBuilt ?? state.issues.uploadMeta?.stats?.rowsRead ?? 0,
+      partlyCorrected: issues.filter((i) => i.partlyCorrected).length,
+      isLive: true,
+    }
+  }
   // The upload's transactionsBuilt total covers the WHOLE file — only a
   // valid denominator for compliance-style math when Company/FY scoping
   // or dashboard filters haven't narrowed the issue set down from that total.
@@ -758,6 +806,10 @@ export function selectComplianceHealth(state) {
 
 export function selectMonthlyTrend(state) {
   return deriveMonthlyTrend(selectDashboardIssues(state))
+}
+
+export function selectSectionMonthlyTrend(state) {
+  return deriveSectionMonthlyTrend(selectDashboardIssues(state))
 }
 
 export function selectMonthlyComparison(state) {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -11,9 +11,10 @@ import SectionComplianceChart from '@/components/Charts/SectionComplianceChart'
 import MonthlyTrendChart from '@/components/Charts/MonthlyTrendChart'
 import TopVendorsChart from '@/components/Charts/TopVendorsChart'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
+import issuesService from '@/services/issuesService'
 import {
-  resetDashboardFilters, selectActiveSections, selectActiveVendorCodeOptions,
-  selectDashboardKpis, selectIsLive, setDashboardDateFromFilter,
+  resetDashboardFilters, selectDashboardSections, selectDashboardVendorCodeOptions,
+  selectDashboardKpis, selectIsLive, selectUsesTrackedIssues, setTrackedIssues, setDashboardDateFromFilter,
   setDashboardDateToFilter, setDashboardMonthFilter, setDashboardSectionFilter,
   setDashboardVendorCodeFilter,
   setDashboardTdsDeductionFilter, selectDashboardTdsDeductionCounts,
@@ -28,9 +29,23 @@ export default function Dashboard() {
   const { financialYear, lastSyncTime, dataSource } = useSelector((s) => s.app)
   const firstName = useSelector((s) => s.auth.user?.name?.split(' ')[0]) ?? 'there'
   const kpisLive = useSelector(selectDashboardKpis)
-  const isLive = useSelector(selectIsLive)
-  const sections = useSelector(selectActiveSections)
-  const vendorCodeOptions = useSelector(selectActiveVendorCodeOptions)
+  const uploadIsLive = useSelector(selectIsLive)
+  const usesTrackedIssues = useSelector(selectUsesTrackedIssues)
+  // Saved issues are real data too, even before a file is uploaded in this browser.
+  const isLive = uploadIsLive || usesTrackedIssues
+  const sections = useSelector(selectDashboardSections)
+  const vendorCodeOptions = useSelector(selectDashboardVendorCodeOptions)
+  const trackingRunId = useSelector((s) => s.issues.uploadMeta?.tracking?.runId ?? null)
+
+  // Every issue saved across runs: yesterday's and today's add up, each counted once.
+  // Reloaded after each analysed file (new run).
+  useEffect(() => {
+    let cancelled = false
+    issuesService.getAllTrackedIssues()
+      .then((data) => { if (!cancelled) dispatch(setTrackedIssues(data.items || [])) })
+      .catch(() => { /* keep the latest upload's issues as the fallback */ })
+    return () => { cancelled = true }
+  }, [dispatch, trackingRunId])
   const tdsDeductionCounts = useSelector(selectDashboardTdsDeductionCounts)
   const {
     dashboardDateFromFilter,
@@ -79,7 +94,7 @@ export default function Dashboard() {
   const chartDefinitions = {
     issuesType: {
       title: 'Issues by Type',
-      subtitle: isLive ? 'From latest SAP upload' : 'Distribution by issue type',
+      subtitle: usesTrackedIssues ? 'All runs · open and resolved' : isLive ? 'From latest SAP upload' : 'Distribution by issue type',
       render: (props = {}) => <IssuesByTypeChart {...props} onBarClick={(row) => navigateToIssues({ type: row.type })} />,
     },
     sectionHealth: {
@@ -89,12 +104,12 @@ export default function Dashboard() {
     },
     monthlyTrend: {
       title: 'Monthly Trend',
-      subtitle: isLive ? 'Issues by posting month in upload' : 'Issues found vs. resolved',
-      render: (props = {}) => <MonthlyTrendChart {...props} onMonthClick={(row) => navigateToIssues({ month: row.monthKey })} />,
+      subtitle: isLive ? 'Issues by posting month (Apr → Mar), total or by section' : 'Issues found vs. resolved',
+      render: (props = {}) => <MonthlyTrendChart {...props} onMonthClick={(row) => navigateToIssues(row.section ? { month: row.monthKey, section: row.section } : { month: row.monthKey })} />,
     },
     topVendors: {
       title: 'Top Vendors with Issues',
-      subtitle: isLive ? 'Highest issue counts in this run' : 'Highest open issue counts',
+      subtitle: usesTrackedIssues ? 'Highest issue counts across all runs' : isLive ? 'Highest issue counts in this run' : 'Highest open issue counts',
       render: (props = {}) => <TopVendorsChart {...props} onBarClick={(row) => navigateToIssues({ vendor: row.vendor })} />,
     },
   }
@@ -127,6 +142,7 @@ export default function Dashboard() {
   const kpis = [
     {
       label: 'Transactions',
+      note: usesTrackedIssues ? 'Latest file' : null,
       value: Number(kpisLive.transactions).toLocaleString('en-IN'),
       change: isLive ? null : 4.2,
       up: true,
@@ -188,7 +204,7 @@ export default function Dashboard() {
       filter: 'deducted',
       icon: BadgeCheck,
       tone: 'success',
-      description: 'Rows with TDS amount',
+      description: usesTrackedIssues ? 'Latest file · rows with TDS amount' : 'Rows with TDS amount',
     },
     {
       label: 'TDS Not Deducted',
@@ -196,7 +212,7 @@ export default function Dashboard() {
       filter: 'not_deducted',
       icon: BadgeX,
       tone: 'danger',
-      description: 'Rows with no TDS amount',
+      description: usesTrackedIssues ? 'Latest file · rows with no TDS amount' : 'Rows with no TDS amount',
     },
   ]
 
@@ -225,7 +241,9 @@ export default function Dashboard() {
             <p className="dashboard-banner-greeting">Welcome back, {firstName}</p>
             <p className="dashboard-banner-sub">
               {isLive
-                ? 'Showing compliance metrics from your latest SAP upload.'
+                ? (usesTrackedIssues
+                  ? 'Issues from every run (each counted once); transaction counts from your latest SAP upload.'
+                  : 'Showing compliance metrics from your latest SAP upload.')
                 : 'Compliance tracking for your organization'}
             </p>
           </div>
@@ -356,7 +374,9 @@ export default function Dashboard() {
               </span>
             )}
             {isLive && k.change == null && (
-              <span className="kpi-trend" style={{ color: 'var(--color-text-muted)' }}>From SAP run</span>
+              <span className="kpi-trend" style={{ color: 'var(--color-text-muted)' }}>
+                {k.note || (usesTrackedIssues ? 'All runs' : 'From SAP run')}
+              </span>
             )}
           </button>
         ))}

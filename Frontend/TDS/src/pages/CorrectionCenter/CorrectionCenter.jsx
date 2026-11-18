@@ -3,6 +3,7 @@ import { Download, ChevronDown, ChevronRight, Circle, Undo2, CheckCircle2, Clipb
 import { useState } from 'react'
 import DataTable from '@/components/Common/DataTable'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
+import IssueHistory from './IssueHistory'
 import { selectActiveIssues, selectCorrectionGroups, selectGlCorrections, selectIsLive } from '@/redux/slices/issuesSlice'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import '@/components/Common/Common.css'
@@ -219,6 +220,8 @@ export default function CorrectionCenter() {
           }
         />
       </div>
+
+      <IssueHistory mode="resolved" />
 
       {/* GL Correction Audit Trail temporarily hidden. */}
     </div>

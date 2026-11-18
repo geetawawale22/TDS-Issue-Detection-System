@@ -1,3 +1,4 @@
+import { NO_SECTION, hasSection } from '@/utils/sectionAliases'
 /**
  * Derive page-level analytics from the active issue list
  * (sample mock or live SAP upload).
@@ -312,16 +313,53 @@ export function deriveMonthlyTrend(issues) {
     if (Number.isNaN(d.getTime())) continue
     const label = d.toLocaleString('en-IN', { month: 'short' })
     const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    if (!byMonth.has(monthKey)) byMonth.set(monthKey, { month: label, monthKey, issues: 0, resolved: 0, _order: d.getMonth() })
+    if (!byMonth.has(monthKey)) byMonth.set(monthKey, { month: label, monthKey, issues: 0, resolved: 0 })
     const row = byMonth.get(monthKey)
     row.issues += 1
     if (issue.status === 'resolved') row.resolved += 1
   }
-  const rows = [...byMonth.values()].sort((a, b) => a._order - b._order)
+  // Year-month keys sort chronologically, so an FY upload runs Apr → Mar.
+  const rows = [...byMonth.values()].sort((a, b) => a.monthKey.localeCompare(b.monthKey))
   if (rows.length === 0) {
     return [{ month: 'Current', monthKey: null, issues: issues.length, resolved: issues.filter((i) => i.status === 'resolved').length }]
   }
   return rows.map(({ month, monthKey, issues: iss, resolved }) => ({ month, monthKey, issues: iss, resolved }))
+}
+
+export const SECTION_TREND_OTHERS = 'Others'
+
+/**
+ * Issue counts per posting month split by TDS section, for the stacked
+ * "By Section" and "Compare" views of the Monthly Trend chart. The top
+ * `limit` sections keep their own series; the rest are grouped as Others.
+ * Months are chronological (Apr → Mar for an FY upload).
+ */
+export function deriveSectionMonthlyTrend(issues, limit = 5) {
+  const sectionOf = (issue) => (hasSection(issue.section) ? String(issue.section).trim().toUpperCase() : NO_SECTION)
+  const totals = countBy(issues.filter((i) => i.date), sectionOf)
+  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([section]) => section)
+  const sections = ranked.slice(0, limit)
+  const kept = new Set(sections)
+  if (ranked.length > limit) sections.push(SECTION_TREND_OTHERS)
+
+  const byMonth = new Map()
+  for (const issue of issues) {
+    if (!issue.date) continue
+    const d = new Date(issue.date)
+    if (Number.isNaN(d.getTime())) continue
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    if (!byMonth.has(monthKey)) {
+      const row = { month: d.toLocaleString('en-IN', { month: 'short' }), monthKey, total: 0 }
+      sections.forEach((section) => { row[section] = 0 })
+      byMonth.set(monthKey, row)
+    }
+    const row = byMonth.get(monthKey)
+    const section = sectionOf(issue)
+    row[kept.has(section) ? section : SECTION_TREND_OTHERS] += 1
+    row.total += 1
+  }
+  const months = [...byMonth.values()].sort((a, b) => a.monthKey.localeCompare(b.monthKey))
+  return { sections, months }
 }
 
 /** Month-on-month totals with severity mix and % change vs. the prior month. */

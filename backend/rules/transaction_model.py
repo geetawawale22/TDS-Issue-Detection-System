@@ -34,6 +34,7 @@ class Transaction(BaseModel):
 
     # --- GL / Nature of Transaction ---
     gl_account: Optional[str] = None
+    profit_center: Optional[str] = None  # PRCTR, per line item
     gl_description: Optional[str] = None
     hsn_sac_code: Optional[str] = None            # not yet confirmed by Mahindra
     expected_tds_section: Optional[str] = None     # derived from GL mapping when available
@@ -51,6 +52,8 @@ class Transaction(BaseModel):
     invoice_reference_document: Optional[str] = None  # REBZG
     invoice_reference_fiscal_year: Optional[str] = None  # REBZJ
     invoice_reference_line_item: Optional[str] = None  # REBZZ
+    reversal_document: Optional[str] = None  # STBLG — the paired reversal / reversed document
+    reversal_fiscal_year: Optional[str] = None  # STJAH
 
     # --- Flags (POC-derived logic, populated during ingestion or later confirmed by Mahindra) ---
     is_advance_payment: Optional[bool] = None      # True if doc_type indicates advance (e.g. KZ)

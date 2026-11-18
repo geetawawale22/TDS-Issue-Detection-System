@@ -25,6 +25,7 @@ COLUMN_ALIASES = {
         "EBELN",
     ),
     "gl_account": ("GL", "GL_Account"),
+    "profit_center": ("Profit_Center", "Profit Center", "ProfitCenter", "Profit_Centre", "PRCTR"),
     "gl_description": ("GL_Description", "GLDescription", "GL_Desc"),
     "description": ("Description",),
     "bill_amount": ("Bill_Amount", "bill_amount", "Document_Amount", "Local_Amount", "Amount", "Amount_Document_Currency", "Amount_Local_Currency"),
@@ -97,7 +98,28 @@ COLUMN_ALIASES = {
     "invoice_reference_document": ("Reference_Document_Number", "REBZG", "Invoice_Reference_Document"),
     "invoice_reference_fiscal_year": ("Reference_Fiscal_Year", "REBZJ", "Invoice_Reference_Fiscal_Year"),
     "invoice_reference_line_item": ("Reference_Line_Item", "REBZZ", "Invoice_Reference_Line_Item"),
+    # BKPF-STBLG/STJAH: set on both the reversed document and its reversal,
+    # each pointing at the other. Lets a later run link a reversal back to an
+    # earlier issue.
+    "reversal_document": ("Reversal_Document", "Reversal_Document_Number", "Reversed_With", "STBLG"),
+    "reversal_fiscal_year": ("Reversal_Fiscal_Year", "STJAH"),
 }
+
+
+def _doc_ref(value: Any) -> str | None:
+    """Document number from a link column. Pandas reads a numeric column with
+    blank cells as floats, so 5100000001 arrives as 5100000001.0; drop that."""
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d+\.0+", text):
+        text = text.split(".", 1)[0]
+    return text or None
+
+
+def _doc_number(value: Any) -> str | None:
+    """A link to another document (REBZG / STBLG). Placeholder text such as "V"
+    (seen on warranty credit notes) is not a document number, so it is dropped."""
+    text = _doc_ref(value)
+    return text if text and any(char.isdigit() for char in text) else None
 
 
 def _normalise_header_name(value: Any) -> str:
@@ -151,6 +173,15 @@ def _normalise_section_and_advance(
     return section, is_advance
 
 _BLANK_VALUES = frozenset(("", "nan", "None"))
+
+
+def _code_text(value: Any) -> Optional[str]:
+    """An SAP code (e.g. Profit Center) as text; pandas reads 1001000 as 1001000.0."""
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip() or None
 
 
 def _get(row: dict, field: str) -> Any:
@@ -402,12 +433,13 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
             line_item_number=str(get("line_item_number") or "").strip() or None,
             doc_type=doc_type,
             transaction_kind=transaction_kind,
-            assignment_number=str(get("assignment_number") or "").strip() or None,
+            assignment_number=_doc_ref(get("assignment_number")),
             posting_date=_parse_date(get("posting_date")),
             bill_date=_parse_date(get("bill_date")),
             bill_no=str(get("bill_no") or "").strip() or None,
             po_no=str(get("po_no") or "").strip() or None,
             company_code=str(get("company_code") or "").strip() or None,
+            profit_center=_code_text(get("profit_center")),
             fiscal_year=str(get("fiscal_year") or "").strip() or None,
 
             vendor_code=str(get("vendor_code") or ""),
@@ -423,12 +455,14 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
             bill_amount=float(get("bill_amount") or 0),
             basic_amount=float(get("basic_amount") or 0),
             debit_credit=str(get("debit_credit") or "").strip() or None,
-            clearing_document=str(get("clearing_document") or "").strip() or None,
+            clearing_document=_doc_ref(get("clearing_document")),
             clearing_fiscal_year=str(get("clearing_fiscal_year") or "").strip() or None,
             clearing_date=_parse_date(get("clearing_date")),
-            invoice_reference_document=str(get("invoice_reference_document") or "").strip() or None,
+            invoice_reference_document=_doc_number(get("invoice_reference_document")),
             invoice_reference_fiscal_year=str(get("invoice_reference_fiscal_year") or "").strip() or None,
             invoice_reference_line_item=str(get("invoice_reference_line_item") or "").strip() or None,
+            reversal_document=_doc_number(get("reversal_document")),
+            reversal_fiscal_year=str(get("reversal_fiscal_year") or "").strip() or None,
             is_advance_payment=is_advance_payment,
 
             tds_raw_section=descriptive_text or section_value,
@@ -521,12 +555,13 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             line_item_number=str(get("line_item_number") or "").strip() or None,
             doc_type=doc_type,
             transaction_kind=transaction_kind,
-            assignment_number=str(get("assignment_number") or "").strip() or None,
+            assignment_number=_doc_ref(get("assignment_number")),
             posting_date=_parse_date(get("posting_date")),
             bill_date=_parse_date(get("bill_date")),
             bill_no=str(get("bill_no") or "").strip() or None,
             po_no=str(get("po_no") or "").strip() or None,
             company_code=str(get("company_code") or "").strip() or None,
+            profit_center=_code_text(get("profit_center")),
             fiscal_year=str(get("fiscal_year") or "").strip() or None,
 
             vendor_code=str(get("vendor_code") or ""),
@@ -541,12 +576,14 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             bill_amount=_safe_float(get("bill_amount")) or 0.0,
             basic_amount=_safe_float(get("basic_amount")),  # None if blank — do NOT fall back to bill_amount (GST-inclusive), that produces false positives
             debit_credit=str(get("debit_credit") or "").strip() or None,
-            clearing_document=str(get("clearing_document") or "").strip() or None,
+            clearing_document=_doc_ref(get("clearing_document")),
             clearing_fiscal_year=str(get("clearing_fiscal_year") or "").strip() or None,
             clearing_date=_parse_date(get("clearing_date")),
-            invoice_reference_document=str(get("invoice_reference_document") or "").strip() or None,
+            invoice_reference_document=_doc_number(get("invoice_reference_document")),
             invoice_reference_fiscal_year=str(get("invoice_reference_fiscal_year") or "").strip() or None,
             invoice_reference_line_item=str(get("invoice_reference_line_item") or "").strip() or None,
+            reversal_document=_doc_number(get("reversal_document")),
+            reversal_fiscal_year=str(get("reversal_fiscal_year") or "").strip() or None,
             is_advance_payment=is_advance_payment,
 
             tds_raw_section=raw_section_text,

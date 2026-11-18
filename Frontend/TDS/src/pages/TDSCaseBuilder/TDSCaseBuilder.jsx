@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useSearchParams } from 'react-router-dom'
-import { AlertTriangle, ChevronDown, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
-import Issues, { hasIssueLevelFilters, issueMatchesFilters, issueRowsMatchingIssues, rowInDateRange, validationRowsMatchingFilters } from '@/pages/Issues/Issues'
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
+import Issues, { issueMatchesFilters, issueRowsMatchingIssues, validationRowsMatchingFilters } from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
+import IssueHistory from '@/pages/CorrectionCenter/IssueHistory'
+import issuesService from '@/services/issuesService'
+import ledgerService from '@/services/ledgerService'
 import StatusBadge, { severityToTone } from '@/components/Common/StatusBadge'
 import {
-  resetFilters, setIssueDateRange, setIssueTypeFilter, setSearchQuery, setSectionFilter, setSeverityFilter,
+  resetFilters, setIssueDateRange, setIssueTypeFilter, setProfitCenterFilter, setSearchQuery, setSectionFilter, setSeverityFilter,
   setStatusFilter, setVendorFilter, selectActiveIssues, selectActiveValidationRows,
-  selectActiveCaseLedger, openDrawer,
+  selectActiveCaseLedger,
 } from '@/redux/slices/issuesSlice'
 import { formatCurrency, formatDate } from '@/utils/utils'
-import { sectionMatches } from '@/utils/sectionAliases'
-import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiFilter'
+import { NO_SECTION, hasSection } from '@/utils/sectionAliases'
+import { selectedValues } from '@/utils/multiFilter'
 import { getDisplayIssueType, issueTypeFilterOptionsFor, issueTypeFilterValuesFor } from '@/data/issueTypes'
 import { downloadCsv, ISSUE_CSV_COLUMNS } from '@/utils/csvExport'
 import '@/components/Common/Common.css'
@@ -21,7 +24,16 @@ import './TDSCaseBuilder.css'
 
 const CASE_BUILDER_VIEW_STORAGE_KEY = 'tds_case_builder_view'
 const DEFAULT_CASE_BUILDER_VIEW = { activeTab: 'ledger', quickFilter: 'ledger-all' }
-const VALID_TABS = new Set(['ledger', 'issues', 'gl'])
+const STORED_PAGE_SIZE = 100
+const STORED_STATUS_BY_FILTER = { 'ledger-balanced': 'balanced', 'ledger-open': 'open', 'ledger-issue': 'issue' }
+// Group statuses as shown. CLEARING_ONLY: only the clearing entry's own lines
+// are known (they always net to zero); the documents it settles are not in the data.
+const GROUP_STATUS_LABELS = { CLEARING_ONLY: 'CLEARING ONLY' }
+const GROUP_STATUS_TITLES = {
+  CLEARING_ONLY: 'Only the clearing entry is in the data. The documents it settles were not found (posted earlier, or not sent yet), so this group is not counted as balanced.',
+  BALANCED: 'The group nets to zero and includes the documents being cleared.',
+}
+const VALID_TABS = new Set(['ledger', 'issues', 'open-issues', 'gl'])
 // Issue Type filter lists every issue type present in the upload except the
 // "correctly handled" confirmations, which are not issues. An allow-list here
 // hid real issue types (e.g. TDS Section Missing, LDC limit warnings).
@@ -151,20 +163,6 @@ function eventRateStatus(event) {
   return Math.abs(expectedTds - Math.abs(Number(event.tdsAmount || 0))) <= 1 ? 'matched' : 'mismatched'
 }
 
-function rowCalculatedRate(events) {
-  const rateLines = events.filter((event) => !isRateCheckSkipped(event))
-  const baseAmount = rateLines.reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0)
-  const tdsAmount = rateLines.reduce((total, event) => total + Math.abs(Number(event.tdsAmount || 0)), 0)
-  return baseAmount > 0 ? (tdsAmount / baseAmount) * 100 : null
-}
-
-// A GL row is red if any of its lines is, green only when every checkable line matches.
-function rowRateStatus(events) {
-  const statuses = events.map(eventRateStatus)
-  if (statuses.includes('mismatched')) return 'mismatched'
-  return statuses.includes('matched') ? 'matched' : null
-}
-
 const RATE_STATUS_CLASS = { matched: 'case-rate-matched', mismatched: 'case-rate-mismatched' }
 
 function formatRate(value) {
@@ -175,32 +173,6 @@ function formatRate(value) {
 function formatGroupType(row) {
   if (row.openItem) return 'Open Item'
   return String(row.groupType || 'DOCUMENT').replace(/^OPEN_/, 'Open ').replace(/_/g, ' ')
-}
-
-function isEventTdsDeducted(event) {
-  return Math.abs(Number(event.tdsAmount || 0)) > 0
-}
-
-// Flattens every transaction line from the document ledger and regroups the
-// lines by company code + GL account number.
-// "Old section / new section", e.g. "194C / 393(1)6(i)".
-function sectionPairLabel(legacySection, newSection) {
-  const oldSection = presentValue(legacySection)
-  const nextSection = presentValue(newSection)
-  if (oldSection && nextSection && oldSection !== nextSection) return `${oldSection} / ${nextSection}`
-  return oldSection || nextSection || 'No Section'
-}
-
-function eventSectionLabel(event) {
-  // Older cached uploads have no legacy/new split on events; fall back to tdsSection.
-  if (event.legacySection === undefined && event.newSection === undefined) {
-    return presentValue(event.tdsSection) || 'No Section'
-  }
-  return sectionPairLabel(event.legacySection, event.newSection)
-}
-
-function glSectionKey(companyCode, glAccount, sectionLabel) {
-  return `${presentValue(companyCode) || '—'}||${presentValue(glAccount) || 'No GL'}||${sectionLabel}`
 }
 
 // SAP-reported rate rounded to two decimals so 1 / 1.0 / 1.00 share a row;
@@ -224,83 +196,6 @@ function eventLdc(event) {
   const exemptionRate = roundedRate(event.ldcRate)
   if (!certificate || exemptionRate == null) return null
   return { certificate, exemptionRate, expectedRate: roundedRate(event.ldcExpectedRate) }
-}
-
-// One GL Ledger row per company + GL account + section + SAP rate + LDC
-// certificate/rate, so e.g. 194C lines at 1% and at 2%, or under two
-// different LDC certificates, on the same GL appear as separate rows.
-function buildGlLedgerRows(ledgerRows, issues = []) {
-  const groups = new Map()
-  // Issues carry no SAP rate, so each one joins the row holding its document.
-  const groupKeyByDocument = new Map()
-  const firstGroupKeyBySection = new Map()
-  ledgerRows.forEach((ledgerRow) => {
-    (ledgerRow.events || []).forEach((event) => {
-      const companyCode = presentValue(ledgerRow.companyCode) || '—'
-      const glAccount = presentValue(event.glAccount) || 'No GL'
-      const section = eventSectionLabel(event)
-      const rate = eventSapRate(event)
-      const ldc = eventLdc(event)
-      const sectionKey = glSectionKey(companyCode, glAccount, section)
-      const ldcKey = ldc ? `${ldc.certificate}|${ldc.exemptionRate}|${ldc.expectedRate ?? ''}` : 'no-ldc'
-      const key = `${sectionKey}||${rate ?? 'none'}||${ldcKey}`
-      if (!groups.has(key)) {
-        groups.set(key, { id: `GL-${key}`, glKey: key, companyCode, glAccount, section, rate, ldc, events: [] })
-      }
-      const documentKey = `${sectionKey}||${presentValue(event.docNo) || ''}`
-      if (!groupKeyByDocument.has(documentKey)) groupKeyByDocument.set(documentKey, key)
-      if (!firstGroupKeyBySection.has(sectionKey)) firstGroupKeyBySection.set(sectionKey, key)
-      groups.get(key).events.push({
-        ...event,
-        id: `${key}-${groups.get(key).events.length}`,
-        vendor: ledgerRow.vendor,
-        vendorId: ledgerRow.vendorId,
-        pan: ledgerRow.pan,
-      })
-    })
-  })
-
-  const issuesByGlKey = new Map()
-  issues.forEach((issue) => {
-    const sectionKey = glSectionKey(issue.companyCode, issue.glAccount, sectionPairLabel(issue.legacySection, issue.newSection))
-    const key = groupKeyByDocument.get(`${sectionKey}||${presentValue(issue.docNo) || ''}`)
-      || firstGroupKeyBySection.get(sectionKey)
-    if (!key) return
-    if (!issuesByGlKey.has(key)) issuesByGlKey.set(key, [])
-    issuesByGlKey.get(key).push(issue)
-  })
-
-  return [...groups.values()]
-    .map((group) => {
-      const deductedRows = group.events.filter(isEventTdsDeducted).length
-      const baseAmount = group.events.reduce((total, event) => total + Math.abs(Number(event.baseAmount || 0)), 0)
-      const tdsAmount = group.events.reduce((total, event) => total + Math.abs(Number(event.tdsAmount || 0)), 0)
-      return {
-        ...group,
-        rowCount: group.events.length,
-        baseAmount,
-        tdsAmount,
-        // Effective rate actually deducted across the row: TDS ÷ base over the
-        // same lines the popup checks, so ₹0 adjustment lines don't dilute it.
-        calculatedRate: rowCalculatedRate(group.events),
-        rateStatus: rowRateStatus(group.events),
-        deductedRows,
-        notDeductedRows: group.events.length - deductedRows,
-        issues: issuesByGlKey.get(group.glKey) || [],
-        issueRows: (issuesByGlKey.get(group.glKey) || []).length,
-      }
-    })
-    .sort((a, b) => (
-      a.companyCode.localeCompare(b.companyCode)
-      || a.glAccount.localeCompare(b.glAccount)
-      || (a.section === 'No Section') - (b.section === 'No Section')
-      || a.section.localeCompare(b.section)
-      || (a.rate == null) - (b.rate == null)
-      || (a.rate ?? 0) - (b.rate ?? 0)
-      || (a.ldc != null) - (b.ldc != null)
-      || (a.ldc?.certificate || '').localeCompare(b.ldc?.certificate || '')
-      || (a.ldc?.exemptionRate ?? 0) - (b.ldc?.exemptionRate ?? 0)
-    ))
 }
 
 // Checkbox dropdown used by every TDS Analysis filter. `value` is 'all' or an
@@ -394,7 +289,7 @@ export default function TDSCaseBuilder() {
   const [expandedLedgerKey, setExpandedLedgerKey] = useState(null)
   const [glModal, setGlModal] = useState(null)
   const uploadMeta = useSelector((state) => state.issues.uploadMeta)
-  const { searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, issueDateFromFilter, issueDateToFilter } = useSelector((state) => state.issues)
+  const { searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter, issueTypeFilter, profitCenterFilter, issueDateFromFilter, issueDateToFilter } = useSelector((state) => state.issues)
 
   const filteredCaseLedger = useSelector(selectActiveCaseLedger)
   const issueRows = useSelector(selectActiveIssues)
@@ -403,23 +298,86 @@ export default function TDSCaseBuilder() {
     filteredCaseLedger.map((row) => ({ ...row, id: row.caseId }))
   ), [filteredCaseLedger])
   const hasUpload = Boolean(uploadMeta)
+  // Issue book across every run (daily feed / uploads): each issue counted once.
+  const trackingRunId = uploadMeta?.tracking?.runId ?? null
+  const [openSummary, setOpenSummary] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    issuesService.getTrackedIssueSummary()
+      .then((data) => { if (!cancelled) setOpenSummary(data) })
+      .catch(() => { if (!cancelled) setOpenSummary(null) })
+    return () => { cancelled = true }
+  }, [trackingRunId])
+  // ── Document / GL Ledger: always every saved line across runs. A clearing
+  // only makes sense against earlier days, so one file alone is never shown. ──
+  const selectedCompanyCode = useSelector((state) => state.app.selectedCompanyCode)
+  const financialYear = useSelector((state) => state.app.financialYear)
+  const [storedOptions, setStoredOptions] = useState(null)
+  const [storedGroups, setStoredGroups] = useState({ items: [], total: 0, counts: null })
+  const [storedGl, setStoredGl] = useState([])
+  const [storedPage, setStoredPage] = useState(1)
+  const [storedLoading, setStoredLoading] = useState(false)
+  const [storedError, setStoredError] = useState('')
+  const [glModalData, setGlModalData] = useState(null)
+  const [debouncedSearch, setDebouncedSearch] = useState(searchQuery)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+  const storedFilters = useMemo(() => ({
+    company_code: selectedCompanyCode || '',
+    financial_year: financialYear || '',
+    vendor: selectedValues(vendorFilter) || [],
+    section: selectedValues(sectionFilter) || [],
+    doc_type: selectedValues(docTypeFilter) || [],
+    profit_center: selectedValues(profitCenterFilter) || [],
+    severity: selectedValues(severityFilter) || [],
+    issue_type: selectedValues(issueTypeFilter) || [],
+    issue_status: selectedValues(statusFilter) || [],
+    date_from: issueDateFromFilter || undefined,
+    date_to: issueDateToFilter || undefined,
+    search: debouncedSearch,
+  }), [selectedCompanyCode, financialYear, vendorFilter, sectionFilter, docTypeFilter, profitCenterFilter, severityFilter, issueTypeFilter, statusFilter, issueDateFromFilter, issueDateToFilter, debouncedSearch])
+  const storedStatus = STORED_STATUS_BY_FILTER[quickFilter] || 'all'
+  const storedFilterKey = JSON.stringify([storedFilters, storedStatus])
+  useEffect(() => { setStoredPage(1) }, [storedFilterKey])
+  useEffect(() => {
+    let cancelled = false
+    ledgerService.getOptions({ companyCode: selectedCompanyCode || '', financialYear: financialYear || '' })
+      .then((data) => { if (!cancelled) setStoredOptions(data) })
+      .catch(() => { if (!cancelled) setStoredOptions(null) })
+    return () => { cancelled = true }
+  }, [selectedCompanyCode, financialYear, trackingRunId])
+  useEffect(() => {
+    let cancelled = false
+    setStoredLoading(true)
+    setStoredError('')
+    ledgerService.getGroups({ filters: storedFilters, status: storedStatus, page: storedPage, pageSize: STORED_PAGE_SIZE })
+      .then((data) => { if (!cancelled) setStoredGroups(data) })
+      .catch((err) => { if (!cancelled) setStoredError(err.message || 'Could not load the saved ledger') })
+      .finally(() => { if (!cancelled) setStoredLoading(false) })
+    return () => { cancelled = true }
+  }, [storedFilters, storedStatus, storedPage, trackingRunId])
+  useEffect(() => {
+    if (activeTab !== 'gl') return undefined
+    let cancelled = false
+    ledgerService.getGlRows({ filters: storedFilters })
+      .then((data) => { if (!cancelled) setStoredGl(data.items || []) })
+      .catch(() => { if (!cancelled) setStoredGl([]) })
+    return () => { cancelled = true }
+  }, [activeTab, storedFilters, trackingRunId])
+
   // Counts follow the shared filter bar, using the Issues page's own
   // predicates so tab/card numbers match the cards inside the Issues tab.
   const filterValues = useMemo(() => ({
     searchQuery, vendorFilter, sectionFilter, docTypeFilter,
     severityFilter, statusFilter, issueTypeFilter,
-    dateFrom: issueDateFromFilter, dateTo: issueDateToFilter,
-  }), [searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, issueDateFromFilter, issueDateToFilter])
+    profitCenterFilter, dateFrom: issueDateFromFilter, dateTo: issueDateToFilter,
+  }), [searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, profitCenterFilter, issueDateFromFilter, issueDateToFilter])
   const filteredIssues = useMemo(() => issueRows.filter((issue) => issueMatchesFilters(issue, filterValues)), [issueRows, filterValues])
   const filteredValidationRows = useMemo(() => (
     validationRowsMatchingFilters(validationRows, filteredIssues, filterValues)
   ), [validationRows, filteredIssues, filterValues])
-  // Documents with a matching issue while Severity/Status/Issue Type is active;
-  // ledger groups and GL lines narrow to these, so their cards follow too.
-  const matchingIssueDocNos = useMemo(() => (
-    hasIssueLevelFilters(filterValues) ? new Set(filteredIssues.map((issue) => String(issue.docNo))) : null
-  ), [filteredIssues, filterValues])
-  const eventMatchesPeriod = (event) => !event.postingDate || rowInDateRange({ date: event.postingDate }, issueDateFromFilter, issueDateToFilter)
   // Rows with at least one issue — a row failing two rules counts once, so this
   // matches the "Issues Found" card inside the Issues tab.
   const issueRowCount = useMemo(() => (
@@ -438,13 +396,25 @@ export default function TDSCaseBuilder() {
     ].map(presentValue).filter(Boolean)
     return [...new Set(values)].sort()
   }, [ledgerRows, issueRows, validationRows])
+  // Profit Center is per SAP line; uploads without the column have none, and
+  // the filter is then disabled.
+  const profitCenterOptions = useMemo(() => {
+    const values = [
+      ...ledgerRows.flatMap((row) => (row.events || []).map((event) => event.profitCenter)),
+      ...validationRows.map((row) => row.profitCenter),
+    ].map(presentValue).filter(Boolean)
+    return [...new Set(values)].sort()
+  }, [ledgerRows, validationRows])
   const sectionOptions = useMemo(() => {
     const values = [
       ...ledgerRows.flatMap((row) => [row.section, row.legacySection, row.newSection, ...(row.events || []).map((event) => event.tdsSection)]),
       ...issueRows.map((row) => row.section),
       ...validationRows.map((row) => row.section),
     ].map(presentValue).filter(Boolean)
-    return [...new Set(values)].sort()
+    const options = [...new Set(values)].sort()
+    // Lets the Dashboard's "No Section" bars open their issues here.
+    if ([...issueRows, ...validationRows].some((row) => !hasSection(row.section))) options.push(NO_SECTION)
+    return options
   }, [ledgerRows, issueRows, validationRows])
   const docTypeOptions = useMemo(() => {
     const values = [
@@ -502,125 +472,46 @@ export default function TDSCaseBuilder() {
       </div>
     )},
     { key: 'section', header: 'Section', render: renderSection },
+    { key: 'profitCenter', header: 'Profit Center', sortValue: (row) => distinctValues((row.events || []).map((event) => event.profitCenter)), render: (row) => (
+      <span className="font-mono">{distinctValues((row.events || []).map((event) => event.profitCenter))}</span>
+    )},
     { key: 'assignmentNumber', header: 'Assignment No.', render: (row) => <span className="font-mono case-strong">{row.assignmentNumber || '—'}</span> },
     { key: 'invoiceAmount', header: 'Invoice', render: (row) => <span className="font-mono">{formatCurrency(row.invoiceAmount)}</span> },
     { key: 'baseAmount', header: 'Base Amount', render: (row) => <span className="font-mono">{formatCurrency(ledgerBaseAmount(row))}</span> },
     { key: 'advanceAmount', header: 'Advance', render: (row) => <span className="font-mono">{formatCurrency(row.advanceAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
     { key: 'issueCount', header: 'Issues', render: (row) => <span className="font-mono">{row.issueCount}</span> },
-    { key: 'status', header: 'Status', sortValue: (row) => row.status, render: (row) => <StatusBadge label={row.status} tone={row.status === 'ISSUE' ? 'danger' : row.status === 'BALANCED' ? 'success' : 'warning'} /> },
+    { key: 'status', header: 'Status', sortValue: (row) => row.status, render: (row) => (
+      <span title={GROUP_STATUS_TITLES[row.status]}>
+        <StatusBadge label={GROUP_STATUS_LABELS[row.status] || row.status} tone={row.status === 'ISSUE' ? 'danger' : row.status === 'BALANCED' ? 'success' : 'warning'} />
+      </span>
+    ) },
   ]
 
-  // Ledger groups matching the filter bar; drives the tab count, the ledger
-  // summary cards and (after the quick filter) the table.
-  const filteredLedgerRows = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase()
-    return ledgerRows.filter((row) => {
-      const events = row.events || []
-      const eventText = events.map((event) => [
-        event.docNo,
-        event.docType,
-        event.assignmentNumber,
-        event.eventType,
-        event.glAccount,
-        event.tdsSection,
-        event.referenceDoc,
-      ].join(' ')).join(' ')
-      const rowSections = [row.section, row.legacySection, row.newSection, ...events.map((event) => event.tdsSection)]
-        .map(presentValue)
-        .filter(Boolean)
-      const rowDocTypes = events.map((event) => String(event.docType || '').trim().toUpperCase()).filter(Boolean)
-
-      if (!filterIncludes(vendorFilter, row.vendor)) return false
-      if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, rowSections))) return false
-      if (!filterMatchesAny(docTypeFilter, (docType) => rowDocTypes.includes(docType))) return false
-      if (!events.some(eventMatchesPeriod) && events.length) return false
-      if (matchingIssueDocNos && !events.some((event) => matchingIssueDocNos.has(String(event.docNo)))) return false
-
-      if (!query) return true
-      const searchable = [
-        row.anchorDocNo,
-        row.groupType,
-        row.vendor,
-        row.vendorId,
-        row.pan,
-        row.section,
-        row.assignmentNumber,
-        row.clearingDocument,
-        row.status,
-        row.docNo,
-        row.category,
-        row.issueTypeLabel,
-        row.description,
-        row.plainEnglish,
-        row.severity,
-        eventText,
-      ].filter(Boolean).join(' ').toLowerCase()
-      return searchable.includes(query)
-    })
-  }, [ledgerRows, searchQuery, vendorFilter, sectionFilter, docTypeFilter, issueDateFromFilter, issueDateToFilter, matchingIssueDocNos])
-  const visibleRows = useMemo(() => {
-    if (quickFilter === 'ledger-balanced') return filteredLedgerRows.filter((row) => row.status === 'BALANCED')
-    if (quickFilter === 'ledger-open') return filteredLedgerRows.filter((row) => row.openItem || row.status === 'OPEN')
-    if (quickFilter === 'ledger-issue') return filteredLedgerRows.filter((row) => row.status === 'ISSUE')
-    return filteredLedgerRows
-  }, [quickFilter, filteredLedgerRows])
-
+  const storedCounts = storedGroups.counts || {}
+  const ledgerGroupCount = storedCounts.groups ?? 0
+  const clearingOnlyCount = storedCounts.clearingOnly ?? 0
+  const balancedNote = clearingOnlyCount
+    ? `Net zero, with the documents cleared · ${clearingOnlyCount.toLocaleString()} clearing-only not counted`
+    : 'Net zero, with the documents cleared'
   const summaryCards = useMemo(() => [
-    { label: 'Transactions', value: filteredValidationRows.length, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Transactions in the selected Company/FY scope and filters' },
-    { label: 'Document Groups', value: filteredLedgerRows.length, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference' },
-    { label: 'Balanced Groups', value: filteredLedgerRows.filter((row) => row.status === 'BALANCED').length, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: 'Net amount is zero' },
-    { label: 'Open Items', value: filteredLedgerRows.filter((row) => row.openItem || row.status === 'OPEN').length, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found' },
-    { label: 'Issue Groups', value: filteredLedgerRows.filter((row) => row.status === 'ISSUE').length, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Ledger groups with issue' },
-    { label: 'Issues', value: issueRowCount, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
-  ], [filteredValidationRows, filteredLedgerRows, issueRowCount])
+    { label: 'Transactions', value: storedCounts.transactions ?? 0, icon: FileSpreadsheet, tone: 'info', tab: 'ledger', filter: 'ledger-all', description: 'Saved SAP lines, all runs, in the Company/FY scope and filters' },
+    { label: 'Document Groups', value: storedCounts.groups ?? 0, icon: ListTree, tone: 'success', tab: 'ledger', filter: 'ledger-all', description: 'Grouped by clearing / reference across days' },
+    { label: 'Balanced Groups', value: storedCounts.balanced ?? 0, icon: GitBranch, tone: 'success', tab: 'ledger', filter: 'ledger-balanced', description: balancedNote },
+    { label: 'Open Items', value: storedCounts.open ?? 0, icon: AlertTriangle, tone: 'warning', tab: 'ledger', filter: 'ledger-open', description: 'No clearing document found yet' },
+    { label: 'Issue Groups', value: storedCounts.issue ?? 0, icon: ShieldAlert, tone: 'danger', tab: 'ledger', filter: 'ledger-issue', description: 'Groups with an open issue' },
+    openSummary
+      ? { label: 'Open Issues', value: openSummary.open, icon: ShieldAlert, tone: 'danger', tab: 'open-issues', filter: 'open-issues', description: `All runs · ${issueRowCount.toLocaleString()} in this upload` }
+      : { label: 'Issues', value: issueRowCount, icon: ShieldAlert, tone: 'danger', tab: 'issues', filter: 'issues-all', description: 'Rows failing TDS rules' },
+  ], [storedCounts, issueRowCount, openSummary, balancedNote])
   const canExpand = activeTab === 'ledger'
 
-  // GL tab: vendor/section/doc type filters apply per transaction line before
-  // grouping, so group totals reflect only the matching lines.
-  const glRows = useMemo(() => {
-    const lineFilteredLedgerRows = ledgerRows
-      .filter((row) => filterIncludes(vendorFilter, row.vendor))
-      .map((row) => ({
-        ...row,
-        events: (row.events || []).filter((event) => {
-          if (!filterMatchesAny(sectionFilter, (section) => sectionMatches(section, [event.tdsSection].map(presentValue).filter(Boolean)))) return false
-          if (!filterIncludes(docTypeFilter, String(event.docType || '').trim().toUpperCase())) return false
-          if (!eventMatchesPeriod(event)) return false
-          if (matchingIssueDocNos && !matchingIssueDocNos.has(String(event.docNo))) return false
-          return true
-        }),
-      }))
-    // Search is applied to the built groups below, not to each issue.
-    const lineFilteredIssues = issueRows.filter((issue) => issueMatchesFilters(issue, { ...filterValues, searchQuery: '' }))
-    const query = searchQuery.trim().toLowerCase()
-    return buildGlLedgerRows(lineFilteredLedgerRows, lineFilteredIssues).filter((group) => {
-      if (!query) return true
-      const searchable = [
-        group.companyCode,
-        group.glAccount,
-        group.section,
-        ...group.events.map((event) => [
-          event.docNo,
-          event.docType,
-          event.vendor,
-          event.vendorId,
-          event.pan,
-          event.tdsSection,
-          event.eventType,
-          event.referenceDoc,
-          ...(event.issues || []),
-        ].join(' ')),
-      ].filter(Boolean).join(' ').toLowerCase()
-      return searchable.includes(query)
-    })
-  }, [ledgerRows, issueRows, vendorFilter, sectionFilter, docTypeFilter, searchQuery, filterValues, issueDateFromFilter, issueDateToFilter, matchingIssueDocNos])
-
+  const glTableRows = storedGl
   // Totals across the GL rows in view, shown above their columns.
-  const glTotals = useMemo(() => glRows.reduce((totals, row) => ({
+  const glTotals = useMemo(() => glTableRows.reduce((totals, row) => ({
     baseAmount: totals.baseAmount + (Number(row.baseAmount) || 0),
     tdsAmount: totals.tdsAmount + (Number(row.tdsAmount) || 0),
-  }), { baseAmount: 0, tdsAmount: 0 }), [glRows])
+  }), { baseAmount: 0, tdsAmount: 0 }), [glTableRows])
 
   const glColumns = [
     { key: 'glAccount', header: 'GL Account', render: (row) => (
@@ -631,6 +522,9 @@ export default function TDSCaseBuilder() {
     )},
     { key: 'section', header: 'Section (Old / New)', render: (row) => (
       <span className={`font-mono ${row.section === 'No Section' ? 'case-muted' : ''}`}>{row.section}</span>
+    )},
+    { key: 'profitCenter', header: 'Profit Center', sortValue: (row) => row.profitCenterLabel ?? distinctValues(row.events.map((event) => event.profitCenter)), render: (row) => (
+      <span className="font-mono">{row.profitCenterLabel ?? distinctValues(row.events.map((event) => event.profitCenter))}</span>
     )},
     { key: 'baseAmount', header: 'Base Amount', render: (row) => <span className="font-mono">{formatCurrency(row.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (row) => <span className="font-mono">{formatCurrency(row.tdsAmount)}</span> },
@@ -702,6 +596,7 @@ export default function TDSCaseBuilder() {
       </div>
     )},
     { key: 'postingDate', header: 'Posting Date', sortValue: (event) => event.postingDate, render: (event) => <span className="font-mono">{formatDate(event.postingDate)}</span> },
+    { key: 'profitCenter', header: 'Profit Center', render: (event) => <span className="font-mono">{presentValue(event.profitCenter) || '—'}</span> },
     { key: 'eventType', header: 'Event', render: (event) => event.eventType },
     { key: 'debitCredit', header: 'D/C', render: (event) => <span className="font-mono">{event.debitCredit}</span> },
     { key: 'amount', header: 'Document Amount', render: (event) => <span className="font-mono">{formatCurrency(event.amount)}</span> },
@@ -755,23 +650,19 @@ export default function TDSCaseBuilder() {
       </div>
     )},
     { key: 'section', header: 'Section', render: (issue) => <span className="font-mono">{issue.section}</span> },
+    { key: 'profitCenter', header: 'Profit Center', render: (issue) => <span className="font-mono">{presentValue(issue.profitCenter) || '—'}</span> },
     { key: 'baseAmount', header: 'Base Amount', render: (issue) => <span className="font-mono">{formatCurrency(issue.baseAmount)}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (issue) => <span className="font-mono">{formatCurrency(issue.tdsAmount)}</span> },
     { key: 'category', header: 'Issue Type', sortValue: (issue) => getDisplayIssueType(issue), render: (issue) => getDisplayIssueType(issue) },
     { key: 'severity', header: 'Severity', render: (issue) => <StatusBadge label={issue.severity} tone={severityToTone(issue.severity)} /> },
     { key: 'description', header: 'Details', render: (issue) => <span className="case-tds-note case-gl-modal-note" title={issue.description || ''}>{issue.description || '—'}</span> },
-    { header: '', render: (issue) => (
-      <button
-        type="button"
-        className="issues-review-btn"
-        onClick={(event) => { event.stopPropagation(); dispatch(openDrawer(issue.id)) }}
-      >
-        Review
-      </button>
-    )},
   ]
 
-  function downloadGlIssues(row) {
+  async function downloadGlIssues(row) {
+    if (!row.issues?.length && row.issueRows) {
+      const data = await ledgerService.getGlLines({ glKey: row.glKey, filters: storedFilters })
+      row = { ...row, issues: data.issues || [] }
+    }
     const fileBase = (uploadMeta?.fileName || 'tds-analysis').replace(/\.[^.]+$/, '')
     downloadCsv(
       `${fileBase}-GL-${row.glAccount}-${row.section.replace(/[^A-Za-z0-9]+/g, '_')}-${row.rate != null ? `${row.rate}pct` : 'no_rate'}${row.ldc ? `-LDC_${row.ldc.certificate}` : ''}-${row.companyCode}-issues.csv`,
@@ -789,7 +680,20 @@ export default function TDSCaseBuilder() {
     )
   }
 
-  const activeGlModalRow = glModal ? glRows.find((row) => row.glKey === glModal.key) : null
+  // All data: the GL pop-up loads its lines and issues from the server.
+  useEffect(() => {
+    if (!glModal) { setGlModalData(null); return undefined }
+    let cancelled = false
+    setGlModalData({ key: glModal.key, loading: true, events: [], issues: [] })
+    ledgerService.getGlLines({ glKey: glModal.key, filters: storedFilters })
+      .then((data) => { if (!cancelled) setGlModalData({ key: glModal.key, loading: false, ...data }) })
+      .catch(() => { if (!cancelled) setGlModalData({ key: glModal.key, loading: false, events: [], issues: [] }) })
+    return () => { cancelled = true }
+  }, [glModal?.key, storedFilters])
+  const glModalBaseRow = glModal ? glTableRows.find((row) => row.glKey === glModal.key) : null
+  const activeGlModalRow = glModalBaseRow
+    ? { ...glModalBaseRow, events: glModalData?.events || [], issues: glModalData?.issues || [] }
+    : null
 
   useEffect(() => {
     if (!glModal) return undefined
@@ -826,6 +730,7 @@ export default function TDSCaseBuilder() {
         <span className="font-mono">{event.assignmentNumber}</span>
         <span>{event.eventType}</span>
         <span className="font-mono">{event.glAccount}</span>
+        <span className="font-mono">{presentValue(event.profitCenter) || '—'}</span>
         <span className="font-mono">{event.debitCredit}</span>
         <span className="font-mono">{formatCurrency(event.amount)}</span>
         <span className="font-mono">{formatCurrency(event.baseAmount)}</span>
@@ -862,6 +767,7 @@ export default function TDSCaseBuilder() {
           <span>Assignment</span>
           <span>Event</span>
           <span>GL</span>
+          <span>Profit Center</span>
           <span>D/C</span>
           <span>Document Amount</span>
           <span>Base Amount</span>
@@ -885,6 +791,7 @@ export default function TDSCaseBuilder() {
               <span>Assignment</span>
               <span>Event</span>
               <span>GL</span>
+              <span>Profit Center</span>
               <span>D/C</span>
               <span>Document Amount</span>
               <span>Base Amount</span>
@@ -905,13 +812,16 @@ export default function TDSCaseBuilder() {
     <div className="case-tabs-panel">
       <div className="case-tabs" role="tablist" aria-label="TDS analysis results">
         <button type="button" className={`case-tab ${activeTab === 'ledger' ? 'active' : ''}`} onClick={() => applyQuickFilter('ledger', 'ledger-all')}>
-          Document Ledger ({filteredLedgerRows.length.toLocaleString()})
+          Document Ledger ({ledgerGroupCount.toLocaleString()})
         </button>
         <button type="button" className={`case-tab ${activeTab === 'issues' ? 'active' : ''}`} onClick={() => applyQuickFilter('issues', 'issues-all')}>
-          Issues ({issueRowCount.toLocaleString()})
+          Issues · This Upload ({issueRowCount.toLocaleString()})
+        </button>
+        <button type="button" className={`case-tab ${activeTab === 'open-issues' ? 'active' : ''}`} onClick={() => applyQuickFilter('open-issues', 'open-issues')}>
+          Open Issues · All Runs ({(openSummary?.open ?? 0).toLocaleString()})
         </button>
         <button type="button" className={`case-tab ${activeTab === 'gl' ? 'active' : ''}`} onClick={() => applyQuickFilter('gl', 'gl-all')}>
-          GL Ledger ({glRows.length.toLocaleString()})
+          GL Ledger ({activeTab !== 'gl' ? '…' : glTableRows.length.toLocaleString()})
         </button>
       </div>
     </div>
@@ -933,15 +843,23 @@ export default function TDSCaseBuilder() {
       <div className="filter-bar-controls">
         <MultiSelectFilter
           allLabel="All Vendors"
-          options={vendorOptions.map((vendor) => [vendor, vendor])}
+          options={(storedOptions ? storedOptions.vendors : vendorOptions).map((vendor) => [vendor, vendor])}
           value={vendorFilter}
           onChange={(next) => dispatch(setVendorFilter(next))}
         />
         <MultiSelectFilter
           allLabel="All Sections"
-          options={sectionOptions.map((section) => [section, section])}
+          options={(storedOptions ? [...storedOptions.sections, NO_SECTION] : sectionOptions).map((section) => [section, section])}
           value={sectionFilter}
           onChange={(next) => dispatch(setSectionFilter(next))}
+        />
+        <MultiSelectFilter
+          allLabel="All Profit Centers"
+          options={(storedOptions ? storedOptions.profitCenters : profitCenterOptions).map((profitCenter) => [profitCenter, profitCenter])}
+          value={profitCenterFilter}
+          disabled={!(storedOptions ? storedOptions.profitCenters : profitCenterOptions).length}
+          disabledTitle="This upload has no Profit Center column"
+          onChange={(next) => dispatch(setProfitCenterFilter(next))}
         />
         <MultiSelectFilter
           allLabel="All Severity"
@@ -963,7 +881,7 @@ export default function TDSCaseBuilder() {
         />
         <MultiSelectFilter
           allLabel="All Doc Types"
-          options={docTypeOptions.map((docType) => [docType, docType])}
+          options={(storedOptions ? storedOptions.docTypes : docTypeOptions).map((docType) => [docType, docType])}
           value={docTypeFilter}
           onChange={setDocTypeFilter}
         />
@@ -995,6 +913,21 @@ export default function TDSCaseBuilder() {
           </div>
           <h1 className="page-title">TDS Analysis</h1>
           {hasUpload && <div className="case-source-line">Using latest Issues upload: <span className="font-mono">{uploadMeta.fileName}</span></div>}
+          {openSummary?.latestRun && (
+            <div className="case-run-line">
+              <span>
+                Latest run: {openSummary.latestRun.issuesFound.toLocaleString()} issues found ·{' '}
+                <strong>{openSummary.latestRun.newIssues.toLocaleString()}</strong> new ·{' '}
+                <strong>{openSummary.latestRun.resolvedIssues.toLocaleString()}</strong> resolved
+                {openSummary.latestRun.reopenedIssues ? ` · ${openSummary.latestRun.reopenedIssues.toLocaleString()} reopened` : ''}
+              </span>
+              <span className="case-run-line-total">
+                Open across all runs: <strong>{openSummary.open.toLocaleString()}</strong>
+                {openSummary.partlyCorrected ? ` (${openSummary.partlyCorrected.toLocaleString()} partly corrected)` : ''}
+                {' '}· tax impact {formatCurrency(openSummary.openTaxImpact)}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1025,9 +958,14 @@ export default function TDSCaseBuilder() {
       </div>
 
 
-      {sharedFilters}
+      {activeTab !== 'open-issues' && sharedFilters}
 
-      {activeTab === 'issues' ? (
+      {activeTab === 'open-issues' ? (
+        <>
+          {resultsTabsPanel}
+          <IssueHistory mode="open" showCards refreshKey={trackingRunId} />
+        </>
+      ) : activeTab === 'issues' ? (
         <Issues embedded initialView={searchParams.get('view') || 'all'} hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
       ) : activeTab === 'gl' ? (
         <>
@@ -1037,11 +975,11 @@ export default function TDSCaseBuilder() {
           <div className="table-card">
           <DataTable
             columns={glColumns}
-            data={glRows}
+            data={glTableRows}
             pageSize={200}
             renderPreHeaderCell={(col) => (
               col.key === 'baseAmount' || col.key === 'tdsAmount' ? (
-                <span className="font-mono case-strong" title={`Total ${col.header} across ${glRows.length.toLocaleString()} GL rows`}>
+                <span className="font-mono case-strong" title={`Total ${col.header} across ${glTableRows.length.toLocaleString()} GL rows`}>
                   {formatCurrency(glTotals[col.key])}
                 </span>
               ) : col.key === 'glAccount' ? <span className="case-muted">Total</span> : null
@@ -1088,7 +1026,9 @@ export default function TDSCaseBuilder() {
                   </div>
                 </div>
                 <div className="case-gl-modal-body">
-                  {glModal.type === 'issues' ? (
+                  {glModalData?.loading ? (
+                    <div className="data-table-empty">Loading…</div>
+                  ) : glModal.type === 'issues' ? (
                     <DataTable
                       key={`gl-issues-${activeGlModalRow.glKey}`}
                       columns={glIssueColumns}
@@ -1116,13 +1056,27 @@ export default function TDSCaseBuilder() {
           <div className="table-card">
           <DataTable
             columns={ledgerColumns}
-            data={visibleRows}
-            pageSize={200}
+            data={storedGroups.items}
+            pageSize={STORED_PAGE_SIZE}
             expandedRowKey={canExpand ? expandedLedgerKey : null}
             onRowClick={canExpand ? (row) => setExpandedLedgerKey((key) => key === row.id ? null : row.id) : undefined}
             renderExpandedRow={canExpand ? renderLedgerLines : undefined}
-            emptyState={<div className="data-table-empty">No rows found for this view</div>}
+            emptyState={<div className="data-table-empty">{storedLoading ? 'Loading…' : storedError || (storedOptions && !storedOptions.hasData ? 'No saved SAP lines yet for this company / FY. Analyse a file to start the saved ledger.' : 'No rows found for this view')}</div>}
           />
+          <div className="case-stored-pager">
+            <span>
+              {storedLoading ? 'Loading…' : `${storedGroups.total.toLocaleString()} groups · all runs`}
+            </span>
+            <div>
+              <button className="table-page-btn" type="button" disabled={storedPage <= 1 || storedLoading} onClick={() => setStoredPage((page) => page - 1)}>
+                <ChevronLeft size={13} />
+              </button>
+              <span>Page {storedPage} of {Math.max(1, Math.ceil(storedGroups.total / STORED_PAGE_SIZE)).toLocaleString()}</span>
+              <button className="table-page-btn" type="button" disabled={storedPage >= Math.ceil(storedGroups.total / STORED_PAGE_SIZE) || storedLoading} onClick={() => setStoredPage((page) => page + 1)}>
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          </div>
           </div>
         </>
       )}

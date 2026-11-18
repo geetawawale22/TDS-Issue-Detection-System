@@ -1,8 +1,8 @@
 """SAP file-upload endpoints for running the TDS rule engine.
 
-The API deliberately does not persist an uploaded file or its results.  It
-analyses the file supplied by the authenticated user and returns a UI-shaped
-result for the current browser session.
+The uploaded file itself is not stored. Its full result is returned to the
+browser; only the issues are saved (services/issue_tracker.py) so later runs
+can tell which earlier issues were reversed or corrected.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 import json
+import logging
 import math
 from io import BytesIO
 from pathlib import Path
@@ -21,13 +22,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
-from sqlalchemy import or_
+from sqlalchemy import or_, tuple_
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 from core.dependencies import get_current_user, get_user_company_codes
 from db.database import get_db
-from db.models import LDCCertificateMaster, PanVerification, User, VendorMaster
+from db.models import LDCCertificateMaster, PanVerification, TrackedIssue, User, VendorMaster
 from ingestion.sap_translator import (
     COLUMN_ALIASES,
     build_transactions_from_sap_export,
@@ -52,9 +53,12 @@ from rules.tds_rule_engine import (
     check_advance_payment_lifecycle,
 )
 from services.tds_case_builder import build_tds_cases, classify_event
+from services.issue_tracker import build_issue_key, fiscal_year_for, references_other_document, track_rule_run
+from services.ledger_store import save_run_lines
 
 
 router = APIRouter(prefix="/issues", tags=["Issues"])
+logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".xlsm"}
@@ -869,6 +873,50 @@ def _build_case_ledger(joined_rows: list[dict[str, Any]], issues: list[dict[str,
 
 
 
+def ledger_event(txn, event_type: str, tds_note: str | None) -> dict[str, Any]:
+    """One transaction line as shown in the Document / GL Ledger (issues added by the caller)."""
+    tds_base_amount = txn.basic_amount
+    applied_rate = _effective_applied_rate(tds_base_amount, txn.tds_deducted_amount)
+    if applied_rate is None:
+        applied_rate = txn.tds_deducted_rate
+    ldc_exemption_rate = _ldc_exemption_for_posting(txn)
+    return {
+        "docNo": (txn.doc_number or "").strip() or "—",
+        "lineItem": txn.line_item_number or "—",
+        "docType": txn.doc_type or "—",
+        "assignmentNumber": txn.assignment_number or "—",
+        "eventType": event_type,
+        "postingDate": txn.posting_date.isoformat() if txn.posting_date else "—",
+        "glAccount": txn.gl_account or "—",
+        "profitCenter": txn.profit_center or "—",
+        "debitCredit": txn.debit_credit or "—",
+        "amount": float(txn.bill_amount or 0.0),
+        "baseAmount": tds_base_amount,
+        "tdsSection": txn.tds_new_section or txn.tds_legacy_section or txn.tds_deducted_section or "—",
+        "legacySection": txn.tds_legacy_section or txn.tds_deducted_section,
+        "newSection": txn.tds_new_section,
+        "tdsRate": applied_rate,
+        # Rate exactly as SAP reported it (rate column / TDS description), never derived.
+        "sapRate": txn.tds_deducted_rate,
+        # LDC exemption % from the certificate (None outside its validity).
+        "ldcRate": ldc_exemption_rate,
+        # Rate the rules expect once that exemption is applied (statutory
+        # rate × (100 − exemption)/100, or an explicit approved rate).
+        "ldcExpectedRate": _get_applicable_rate(txn) if ldc_exemption_rate is not None else None,
+        "ldcCertificate": txn.ldc_exemption_number,
+        "tdsAmount": abs(float(txn.tds_deducted_amount or 0.0)),
+        "tdsNote": tds_note,
+        # No TDS is due on this line itself, so the UI skips its rate check:
+        # an advance adjustment (TDS was taken when the advance was paid), a
+        # clearing entry (AB) or a transfer posting (TP/TM).
+        "rateCheckNotApplicable": bool(
+            _is_advance_clearing_adjustment(txn)
+            or (txn.doc_type or "").strip().upper() in {"AB", "TP", "TM"}
+        ),
+        "referenceDoc": txn.invoice_reference_document or txn.advance_document_reference or "—",
+    }
+
+
 def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, Any]], tds_notes: dict[int, str] | None = None) -> list[dict[str, Any]]:
     issues_by_doc: dict[str, list[dict[str, Any]]] = {}
     for issue in issues:
@@ -939,46 +987,11 @@ def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, An
         tds_base_amount = txn.basic_amount
         if event_type in {"INVOICE", "ADVANCE_PAYMENT"} and tds_base_amount is not None:
             ledger["baseAmount"] += abs(float(tds_base_amount))
-        applied_rate = _effective_applied_rate(tds_base_amount, txn.tds_deducted_amount)
-        if applied_rate is None:
-            applied_rate = txn.tds_deducted_rate
-        ldc_exemption_rate = _ldc_exemption_for_posting(txn)
         ledger["tdsAmount"] += tds_amount
         ledger["eventCount"] += 1
         ledger["issueCount"] += len(doc_issues)
         ledger["events"].append({
-            "docNo": doc_no or "—",
-            "lineItem": txn.line_item_number or "—",
-            "docType": txn.doc_type or "—",
-            "assignmentNumber": txn.assignment_number or "—",
-            "eventType": event_type,
-            "postingDate": txn.posting_date.isoformat() if txn.posting_date else "—",
-            "glAccount": txn.gl_account or "—",
-            "debitCredit": txn.debit_credit or "—",
-            "amount": signed_amount,
-            "baseAmount": tds_base_amount,
-            "tdsSection": txn.tds_new_section or txn.tds_legacy_section or txn.tds_deducted_section or "—",
-            "legacySection": txn.tds_legacy_section or txn.tds_deducted_section,
-            "newSection": txn.tds_new_section,
-            "tdsRate": applied_rate,
-            # Rate exactly as SAP reported it (rate column / TDS description), never derived.
-            "sapRate": txn.tds_deducted_rate,
-            # LDC exemption % from the certificate (None outside its validity).
-            "ldcRate": ldc_exemption_rate,
-            # Rate the rules expect once that exemption is applied (statutory
-            # rate × (100 − exemption)/100, or an explicit approved rate).
-            "ldcExpectedRate": _get_applicable_rate(txn) if ldc_exemption_rate is not None else None,
-            "ldcCertificate": txn.ldc_exemption_number,
-            "tdsAmount": tds_amount,
-            "tdsNote": (tds_notes or {}).get(id(txn)),
-            # No TDS is due on this line itself, so the UI skips its rate check:
-            # an advance adjustment (TDS was taken when the advance was paid), a
-            # clearing entry (AB) or a transfer posting (TP/TM).
-            "rateCheckNotApplicable": bool(
-                _is_advance_clearing_adjustment(txn)
-                or (txn.doc_type or "").strip().upper() in {"AB", "TP", "TM"}
-            ),
-            "referenceDoc": txn.invoice_reference_document or txn.advance_document_reference or "—",
+            **ledger_event(txn, event_type, (tds_notes or {}).get(id(txn))),
             "issues": [issue.get("category") for issue in doc_issues],
         })
 
@@ -986,7 +999,17 @@ def _build_case_ledger_from_transactions(transactions, issues: list[dict[str, An
     for ledger in ledgers.values():
         ledger["openAmount"] = round(ledger["invoiceAmount"] + ledger["advanceAmount"] - ledger["paymentAmount"] - ledger["adjustmentAmount"], 2)
         ledger["netAmount"] = round(ledger["netAmount"], 2)
-        ledger["status"] = "ISSUE" if ledger["issueCount"] else "OPEN" if ledger.get("openItem") else "BALANCED" if abs(ledger["netAmount"]) <= 1 else "OPEN"
+        # A clearing group holding only the clearing document's own lines nets to
+        # zero by itself; what it settles is not in this file, so it is not balanced.
+        clearing_only = ledger["groupType"] == "CLEARING" and not any(
+            event["docNo"] != ledger["anchorDocNo"] for event in ledger["events"]
+        )
+        ledger["status"] = (
+            "ISSUE" if ledger["issueCount"]
+            else "CLEARING_ONLY" if clearing_only
+            else "OPEN" if ledger.get("openItem")
+            else "BALANCED" if abs(ledger["netAmount"]) <= 1 else "OPEN"
+        )
         case_ledgers.append(ledger)
 
     return sorted(case_ledgers, key=lambda item: (item.get("status") != "ISSUE", item.get("anchorDocNo") or ""))
@@ -1094,14 +1117,114 @@ def _effective_applied_rate(base_amount: float | None, tds_amount: float | None)
     if base_amount is None:
         return None
     try:
-        base = float(base_amount)
+        # Invoices are on the credit side, so SAP gives their base as a negative amount.
+        base = abs(float(base_amount))
     except (TypeError, ValueError):
         return None
-    if base <= 0:
+    if base == 0:
         return None
 
     tds = abs(float(tds_amount or 0.0))
     return round((tds / base) * 100, 4)
+
+
+CORRECTION_MISMATCH_CATEGORY = "Correction Entry — TDS Mismatch"
+
+
+def _check_correction_lines(correction_lines, issue_txns, db: Session) -> tuple[dict[int, tuple[str, Any]], set[tuple[str, str]]]:
+    """Own-TDS check for correction entries, which the single-row rules skip.
+
+    Returns (results, flagged_docs): results maps id(txn) -> ("passed" | "skipped",
+    reason) or ("issue", TDSIssue); flagged_docs holds (company, doc) of
+    documents with an issue in this run or an earlier one.
+
+    * no TDS on the entry (e.g. a credit memo cancelling an invoice): nothing of
+      its own to check; its effect is applied to the original's issue;
+    * TDS = base x expected rate (within Rs 1): passed;
+    * TDS differs, but the original document has its own issue (this run or an
+      earlier one): the entry follows the original and is explained there;
+    * TDS differs with nothing to explain it: an issue on the entry itself.
+    """
+    flagged_docs = {
+        ((txn.company_code or "").strip(), (txn.doc_number or "").strip()) for txn in issue_txns
+    }
+    references = list({
+        ((txn.company_code or "").strip(), str(txn.invoice_reference_document).strip()) for txn in correction_lines
+    })
+    for start in range(0, len(references), 500):
+        rows = db.query(TrackedIssue.company_code, TrackedIssue.doc_no).filter(
+            tuple_(TrackedIssue.company_code, TrackedIssue.doc_no).in_(references[start:start + 500])
+        )
+        flagged_docs.update((row.company_code, row.doc_no) for row in rows)
+
+    results: dict[int, tuple[str, Any]] = {}
+    for txn in correction_lines:
+        reference = str(txn.invoice_reference_document).strip()
+        tds = abs(float(txn.tds_deducted_amount or 0.0))
+        base = abs(float(_get_tds_base_amount(txn) or 0.0))
+        rate = _get_applicable_rate(txn)
+        original_flagged = ((txn.company_code or "").strip(), reference) in flagged_docs
+        if tds <= 0:
+            results[id(txn)] = ("skipped", (
+                f"Correction entry for document {reference} with no TDS of its own; "
+                f"its effect is applied to {reference}'s issue."
+            ) if original_flagged else (
+                f"Correction entry (credit note / reversal) for document {reference} with no TDS on it. "
+                f"No TDS issue is recorded for {reference}, and whether its TDS should be reversed by this entry is not checked."
+            ))
+            continue
+        if not base or rate is None:
+            results[id(txn)] = ("skipped", (
+                f"Correction entry for document {reference}; no base amount or expected rate to check its TDS against."
+            ))
+            continue
+        expected = base * rate / 100
+        if abs(expected - tds) <= 1:
+            results[id(txn)] = ("passed", (
+                f"Correction entry for document {reference}: TDS {tds:,.2f} at {rate:g}% on base "
+                f"{base:,.2f} matches the expected rate."
+            ))
+        elif original_flagged:
+            results[id(txn)] = ("skipped", (
+                f"Correction entry for document {reference}: its TDS ({tds:,.2f}) follows {reference}, "
+                f"which has its own issue; checked there."
+            ))
+        else:
+            results[id(txn)] = ("issue", TDSIssue(
+                category=CORRECTION_MISMATCH_CATEGORY,
+                message=(
+                    f"Correction entry for document {reference} carries TDS {tds:,.2f} on base {base:,.2f}; "
+                    f"at the expected {rate:g}% it should be {expected:,.2f}."
+                ),
+                severity="medium",
+                expected_rate=rate,
+            ))
+    return results, flagged_docs
+
+
+def _mark_corrected_rows(issues, issue_txns, transactions, validation_rows) -> int:
+    """Turn 'issue' rows into 'corrected' when every issue on them is resolved."""
+    resolved: dict[int, list[dict[str, Any]]] = {}
+    still_open: set[int] = set()
+    for issue, txn in zip(issues, issue_txns):
+        if issue.get("status") == "resolved":
+            resolved.setdefault(id(txn), []).append(issue)
+        else:
+            still_open.add(id(txn))
+    rows_by_txn = {id(txn): row for txn, row in zip(transactions, validation_rows)}
+    count = 0
+    for txn_id, row_issues in resolved.items():
+        row = rows_by_txn.get(txn_id)
+        if txn_id in still_open or row is None or row["status"] != "issue":
+            continue
+        first = row_issues[0]
+        row["status"] = "corrected"
+        row["originalReason"] = row["reason"]
+        row["reason"] = first.get("resolutionNote") or "Resolved in the issue history."
+        row["resolutionType"] = first.get("resolutionType")
+        row["correctionDocs"] = first.get("correctionDocs")
+        count += 1
+    return count
 
 
 def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
@@ -1147,6 +1270,10 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
     )
     return {
         "id": f"UPL-{issue_id:06d}",
+        # Same value in every run for the same issue on the same SAP line;
+        # the issue history (tracked_issues) is keyed on it.
+        "issueKey": build_issue_key(txn, category),
+        "fiscalYear": fiscal_year_for(txn),
         "docNo": txn.doc_number or "—",
         "lineItem": txn.line_item_number,
         "assignmentNumber": txn.assignment_number,
@@ -1162,6 +1289,7 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         "legacySection": txn.tds_legacy_section or txn.tds_deducted_section,
         "ruleSection": rule_issue.expected_section or txn.expected_tds_section or txn.tds_deducted_section,
         "glAccount": txn.gl_account,
+        "profitCenter": txn.profit_center,
         "source": "GL" if txn.expected_tds_section or txn.gl_tds_applicability else "SAP",
         "baseAmount": base_amount,
         "tdsAmount": txn.tds_deducted_amount or 0.0,
@@ -1281,6 +1409,7 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int, t
         "vendor": txn.vendor_name or txn.vendor_code or "Unknown vendor",
         "vendorId": txn.vendor_code or "—",
         "vendorPan": txn.vendor_pan or "—",
+        "profitCenter": txn.profit_center,
         "section": _threshold_section_for_transaction(txn),
         "billAmount": txn.bill_amount,
         "baseAmount": base_amount,
@@ -1703,6 +1832,7 @@ async def upload_sap_file(
     _attach_ldc_limits(ldc_utilization, db)
 
     issues: list[dict[str, Any]] = []
+    issue_txns: list[Any] = []  # transaction behind issues[i], for issue tracking
     issue_reasons_by_transaction_id: dict[int, str] = {}
     issue_transaction_ids: set[int] = set()
     issue_eligible_transactions = [
@@ -1711,10 +1841,17 @@ async def upload_sap_file(
         and not _has_zero_base_amount(txn)
     ]
     ldc_chains, ldc_chain_members = _ldc_advance_chains(issue_eligible_transactions)
-    for txn in issue_eligible_transactions:
+    # A credit memo, reversal or TDS top-up that references another document
+    # is checked through that document's issue (see services/issue_tracker),
+    # not on its own: alone it would look like an invoice with TDS missing.
+    correction_lines = [txn for txn in transactions if references_other_document(txn)]
+    correction_line_ids = {id(txn) for txn in correction_lines}
+    row_check_transactions = [txn for txn in issue_eligible_transactions if id(txn) not in correction_line_ids]
+    for txn in row_check_transactions:
         for rule_issue in _row_checks(txn, ldc_chains, ldc_chain_members):
             if include_informational or rule_issue.severity != "low":
                 issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+                issue_txns.append(txn)
                 issue_transaction_ids.add(id(txn))
                 issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
@@ -1723,26 +1860,43 @@ async def upload_sap_file(
     for txn, rule_issue in _skip_ldc_decided(check_threshold_breach(issue_eligible_transactions), ldc_chain_members):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_txns.append(txn)
             issue_transaction_ids.add(id(txn))
             issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
 
-    for txn, rule_issue in _skip_ldc_decided(check_missing_deduction(_missing_deduction_candidates(transactions, issue_eligible_transactions)), ldc_chain_members):
+    for txn, rule_issue in _skip_ldc_decided(check_missing_deduction([txn for txn in _missing_deduction_candidates(transactions, issue_eligible_transactions) if id(txn) not in correction_line_ids]), ldc_chain_members):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_txns.append(txn)
             issue_transaction_ids.add(id(txn))
             issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
     for txn, rule_issue in _skip_ldc_decided(check_advance_payment_lifecycle(issue_eligible_transactions), ldc_chain_members):
         if include_informational or rule_issue.severity != "low":
             issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_txns.append(txn)
             issue_transaction_ids.add(id(txn))
             issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
     for txn, rule_issue in _check_ldc_limit_breach(issue_eligible_transactions, ldc_utilization):
         issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+        issue_txns.append(txn)
         issue_transaction_ids.add(id(txn))
         issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+
+    # Correction entries (credit memo / reversal / TDS top-up pointing at another
+    # document) skip the single-row rules above, but their own TDS is still
+    # checked against the expected rate. See _check_correction_lines.
+    correction_results, correction_flagged_docs = _check_correction_lines(correction_lines, issue_txns, db)
+    for txn in correction_lines:
+        outcome = correction_results.get(id(txn))
+        if outcome and outcome[0] == "issue":
+            rule_issue = outcome[1]
+            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
+            issue_txns.append(txn)
+            issue_transaction_ids.add(id(txn))
+            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
 
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
@@ -1774,6 +1928,16 @@ async def upload_sap_file(
                 row_index,
                 tds_notes.get(txn_id),
             ))
+        elif txn_id in correction_line_ids:
+            status, reason = correction_results.get(txn_id, ("skipped", ""))
+            row = _transaction_validation_row(txn, status, reason, row_index, tds_notes.get(txn_id))
+            row["rowKind"] = "correction"
+            row["correctionOf"] = txn.invoice_reference_document
+            # Whether the original document has its own issue (this run or earlier).
+            row["correctionOriginalFlagged"] = (
+                (txn.company_code or "").strip(), str(txn.invoice_reference_document).strip()
+            ) in correction_flagged_docs
+            validation_rows.append(row)
         elif _is_skipped_non_tds_document_without_tds_amounts(txn):
             validation_rows.append(_transaction_validation_row(
                 txn,
@@ -1838,6 +2002,52 @@ async def upload_sap_file(
         "low": sum(issue["severity"] == "low" for issue in issues),
     }
 
+    # Compare with earlier runs: new / recurring / reopened issues, and earlier
+    # issues now resolved by a reversal or correction posted since. Issues
+    # resolved here come back with status "resolved". A database problem only
+    # costs the history; the analysis itself is still returned.
+    try:
+        tracking = track_rule_run(
+            db,
+            issues=issues,
+            issue_txns=issue_txns,
+            transactions=transactions,
+            user_id=current_user.id,
+            source="upload",
+            file_name=filename,
+            include_informational=include_informational,
+        )
+    except Exception as exc:  # noqa: BLE001 - history must never block analysis
+        db.rollback()
+        logger.exception("Issue tracking failed for upload %s", filename)
+        tracking = {"error": "Issue history could not be updated for this run."}
+
+    # Rows whose issues the issue history already counts as resolved (a
+    # correction or reversal posted in this run or an earlier one) are shown as
+    # corrected, not as open issues, so this upload's counts match Open Issues.
+    if not tracking.get("error"):
+        corrected = _mark_corrected_rows(issues, issue_txns, transactions, validation_rows)
+        if corrected:
+            stats["issueRows"] = sum(row["status"] == "issue" for row in validation_rows)
+            stats["correctedRows"] = corrected
+            stats["validatedRows"] = stats["passedRows"] + stats["issueRows"] + corrected
+            stats["openIssues"] = sum(issue.get("status") != "resolved" for issue in issues)
+
+    # Save this run's lines so the Document / GL Ledger can join them with
+    # earlier and later days (services/ledger_store.py). Like the issue
+    # history, a failure here must not block the analysis.
+    if tracking.get("runId"):
+        try:
+            tracking["ledger"] = save_run_lines(db, tracking["runId"], [
+                (txn, event_type, ledger_event(txn, event_type, tds_notes.get(id(txn))))
+                for txn in transactions
+                for event_type in (classify_event(txn),)
+            ])
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("Saving ledger lines failed for upload %s", filename)
+            tracking["ledgerError"] = "Ledger lines could not be saved for this run."
+
     # Returned as a response object (not a dict) so FastAPI does not run its
     # slow jsonable_encoder over the whole payload first.
     return _FastJSONResponse({
@@ -1859,6 +2069,7 @@ async def upload_sap_file(
         "validationRows": validation_rows,
         "unrecognizedColumns": [],
         "errors": [],
+        "tracking": tracking,
     })
 
 
@@ -1990,12 +2201,12 @@ def download_upload_template(current_user: User = Depends(get_current_user)):
     columns = [
         "Company_Code", "Vendor_Code", "Vendor_Name", "PAN", "Posting_Date",
         "Document_Type", "Document_No", "Bill_Amount", "Basic_Amount", "GL",
-        "GL_Description", "TDS_Section", "TDS_Rate", "TDS_Amount",
+        "GL_Description", "TDS_Section", "TDS_Rate", "TDS_Amount", "Profit_Center",
     ]
     example = [
         "1001", "V0001", "Example Vendor", "ABCDE1234F", "2026-04-01",
         "KR", "1900000001", "100000", "100000", "500100",
-        "Professional fees", "194J", "10", "10000",
+        "Professional fees", "194J", "10", "10000", "PC1001",
     ]
     csv = ",".join(columns) + "\n" + ",".join(example) + "\n"
     return StreamingResponse(

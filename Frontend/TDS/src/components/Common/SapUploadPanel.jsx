@@ -139,10 +139,15 @@ export default function SapUploadPanel({
           : 'SAP upload — live extract',
       ))
       const stats = result.stats || {}
+      const tracking = result.tracking
+      const trackingText = tracking && !tracking.error
+        ? ` · ${tracking.newIssues.toLocaleString()} new · ${tracking.resolvedIssues.toLocaleString()} resolved since last run`
+        : ''
       toast.success(
-        `Processed ${stats.transactionsBuilt?.toLocaleString?.() ?? stats.transactionsBuilt} transactions · ${stats.issuesFound?.toLocaleString?.() ?? stats.issuesFound} issues found`,
+        `Processed ${stats.transactionsBuilt?.toLocaleString?.() ?? stats.transactionsBuilt} transactions · ${stats.issuesFound?.toLocaleString?.() ?? stats.issuesFound} issues found${trackingText}`,
         { duration: 5000 },
       )
+      if (tracking?.error) toast.error(tracking.error)
     } catch (err) {
       dispatch(uploadFailed(err.message || 'Upload failed'))
       toast.error(err.message || 'Upload failed')
