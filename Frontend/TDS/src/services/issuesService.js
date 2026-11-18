@@ -30,9 +30,9 @@ const issuesService = {
   },
 
   /** One page of saved issues across runs (status: open | resolved | all). */
-  async getTrackedIssues({ status = 'open', search = '', resolutionType = '', run = '', tds = '', severity = '', partial = false, page = 1, pageSize = 50 } = {}) {
+  async getTrackedIssues({ status = 'open', search = '', resolutionType = '', run = '', tds = '', severity = '', partial = false, page = 1, pageSize = 50, companyCode = '', financialYear = '' } = {}) {
     const { data } = await api.get('/tracked-issues', {
-      params: { status, search, resolution_type: resolutionType, run, tds, severity, partial, page, page_size: pageSize },
+      params: { status, search, resolution_type: resolutionType, run, tds, severity, partial, page, page_size: pageSize, company_code: companyCode || '', financial_year: financialYear || '' },
     })
     return data
   },
@@ -43,15 +43,11 @@ const issuesService = {
     return data
   },
 
-  /** Issue book across every run (each issue once) plus the latest run's counts. */
-  async getTrackedIssueSummary() {
-    const { data } = await api.get('/tracked-issues/summary')
-    return data
-  },
-
-  /** Mark a saved issue resolved by hand; later runs keep it resolved. */
-  async resolveTrackedIssue({ issueKey, note, correctionDocs }) {
-    const { data } = await api.post('/tracked-issues/resolve', { issueKey, note, correctionDocs })
+  /** Issue book across every run (each issue once) plus the latest run's counts, for the selected company / FY. */
+  async getTrackedIssueSummary({ companyCode = '', financialYear = '' } = {}) {
+    const { data } = await api.get('/tracked-issues/summary', {
+      params: { company_code: companyCode || '', financial_year: financialYear || '' },
+    })
     return data
   },
 

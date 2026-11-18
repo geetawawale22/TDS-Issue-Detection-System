@@ -26,6 +26,12 @@ const ledgerService = {
     return data
   },
 
+  /** Transactions saved across every run (each SAP line once), split by TDS deducted, for the Dashboard. */
+  async getTransactionCounts(params) {
+    const { data } = await api.get('/ledger/transaction-counts', { params, skipGlobalLoader: true })
+    return data
+  },
+
   async getOptions({ companyCode = '', financialYear = '' } = {}) {
     const { data } = await api.get('/ledger/options', {
       params: { company_code: companyCode, financial_year: financialYear },

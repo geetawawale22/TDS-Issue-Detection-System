@@ -1399,6 +1399,7 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int, t
         "status": status,
         "reason": reason,
         "docNo": txn.doc_number or "—",
+        "fiscalYear": fiscal_year_for(txn),
         "lineItem": txn.line_item_number,
         "assignmentNumber": txn.assignment_number,
         "withholdingTaxType": txn.withholding_tax_type,

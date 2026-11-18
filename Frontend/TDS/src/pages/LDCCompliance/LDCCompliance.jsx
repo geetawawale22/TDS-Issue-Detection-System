@@ -11,6 +11,7 @@ import StatusBadge from '@/components/Common/StatusBadge'
 import { fetchLdcCertificates, uploadLdcCertificates } from '@/services/ldcService'
 import { downloadCsv, downloadExcel } from '@/utils/csvExport'
 import { formatDate } from '@/utils/utils'
+import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './LDCCompliance.css'
 
@@ -917,10 +918,9 @@ export default function LDCCompliance() {
             <div className="ldc-toolbar">
               <div className="ldc-search-wrapper">
                 <Search size={14} />
-                <input
-                  className="filter-input"
+                <SearchInput
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={setSearch}
                   placeholder="Search LDC, PAN, vendor..."
                 />
               </div>

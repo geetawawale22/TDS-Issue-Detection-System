@@ -12,6 +12,7 @@ import {
   buildVendorMonthlyReport, buildExceptionReport,
   buildPanLevelReport, buildDeductionBifurcationReport, buildLdcThresholdReport,
 } from '@/utils/reportBuilders'
+import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './Reports.css'
 
@@ -107,11 +108,11 @@ export default function Reports() {
           <LiveDataBadge />
           <div className="reports-search-wrapper">
             <Search size={14} className="reports-search-icon" />
-            <input
-              className="filter-input reports-search"
+            <SearchInput
+              className="reports-search"
               placeholder="Search reports..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
             />
           </div>
         </div>

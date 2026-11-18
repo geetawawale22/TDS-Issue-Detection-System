@@ -243,6 +243,38 @@ def decode_tds_section_string(raw_text: str) -> tuple:
     return old_section, rate
 
 
+# "PNS", "NS", "N/S" or "Sec" followed by a number: the text points at a section.
+_SECTION_MARKER_REGEX = re.compile(r"(?:\bP?NS|N/S|\bSEC)\s*[-.]?\s*\d", re.IGNORECASE)
+
+
+# Pure function of the SAP text, cached like the decoder above.
+@lru_cache(maxsize=8192)
+def applied_section_in_text(raw_text: str) -> tuple[Optional[str], bool]:
+    """Section the SAP text itself names, apart from its payment nature.
+
+    decode_tds_section_string lets the nature win ("Cont. Cos - 2%-194J" ->
+    194C) because it derives the EXPECTED section. This returns what the text
+    says was APPLIED: the Section 393 clause, else a legacy code (194J).
+    Returns (section, unrecognised); unrecognised is True when the text points
+    at a section reference that maps to no known section (e.g. "PNS392").
+    """
+    if not raw_text:
+        return None, False
+    clause_match = _CLAUSE_REGEX.search(raw_text)
+    if clause_match:
+        clause = _normalise_clause(clause_match.group(1))
+        section = CLAUSE_TO_SECTION.get(clause)
+        if clause == "2(i)" and re.search(r"\b(plt|plant|mach|eqpt|equip)", raw_text, re.IGNORECASE):
+            section = "194I"
+        return section, section is None
+    legacy_match = _LEGACY_SECTION_REGEX.search(raw_text)
+    if legacy_match:
+        return legacy_match.group(1).upper(), False
+    if _SECTION_MARKER_REGEX.search(raw_text):
+        return None, True
+    return None, False
+
+
 # Pure function of the SAP text; uploads repeat a handful of distinct
 # section strings across thousands of rows, so results are cached.
 @lru_cache(maxsize=8192)

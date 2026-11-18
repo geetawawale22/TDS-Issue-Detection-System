@@ -8,6 +8,7 @@ from api import ldc
 from api import pan
 from api import tracked_issues
 from api import ledger
+from api import corrections
 
 app = FastAPI(title="TDS Issue Detection System")
 
@@ -37,6 +38,7 @@ app.include_router(ldc.router)
 app.include_router(pan.router)
 app.include_router(tracked_issues.router)
 app.include_router(ledger.router)
+app.include_router(corrections.router)
 
 
 @app.get("/")

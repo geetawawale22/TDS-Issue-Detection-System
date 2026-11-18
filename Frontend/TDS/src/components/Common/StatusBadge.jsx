@@ -21,13 +21,6 @@ export function thresholdStatusToTone(status) {
   return 'success'
 }
 
-export function correctionStatusToTone(status) {
-  if (status === 'pending')  return 'warning'
-  if (status === 'approved' || status === 'applied') return 'success'
-  if (status === 'rejected') return 'danger'
-  return 'neutral'
-}
-
 export function panStatusToTone(status) {
   if (status === 'Active')   return 'success'
   if (status === 'Inactive') return 'warning'

@@ -712,3 +712,10 @@
 }
 
 .case-stored-pager > div { display: flex; align-items: center; gap: 8px; }
+
+/* Second withholding tax row of the same SAP line: amount already on the row above. */
+.case-ledger-same-line {
+  color: var(--color-text-muted);
+  font-style: italic;
+  cursor: help;
+}

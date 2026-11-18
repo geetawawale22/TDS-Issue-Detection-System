@@ -360,6 +360,13 @@ class LedgerLine(Base):
     fiscal_year = Column(String(10), nullable=False, default="")
     doc_no = Column(String(50), nullable=False)
     line_item = Column(String(20), nullable=False, default="")
+    # One SAP line can carry several withholding taxes (e.g. 194Q and 194C on the
+    # same line), each with its own base, TDS and rate; each is saved as its own row.
+    withholding_tax_type = Column(String(10), nullable=False, default="")
+    withholding_tax_code = Column(String(10), nullable=False, default="")
+    # First withholding row of its SAP line: only this one counts the line's
+    # amount in group totals, so a second withholding never doubles the invoice.
+    is_primary_entry = Column(Boolean, nullable=False, default=True)
 
     group_key = Column(String(200), nullable=False, index=True)
     clearing_document = Column(String(50), nullable=True)
@@ -398,7 +405,10 @@ class LedgerLine(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        UniqueConstraint("company_code", "fiscal_year", "doc_no", "line_item", name="uq_ledger_lines_identity"),
+        UniqueConstraint(
+            "company_code", "fiscal_year", "doc_no", "line_item", "withholding_tax_type", "withholding_tax_code",
+            name="uq_ledger_lines_identity",
+        ),
         Index("ix_ledger_lines_company_doc", "company_code", "doc_no"),
         Index("ix_ledger_lines_company_reference", "company_code", "reference_document"),
     )
@@ -441,3 +451,84 @@ class LedgerGroup(Base):
     min_posting_date = Column(Date, nullable=True)
     max_posting_date = Column(Date, nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ============================================================
+# MANUAL CORRECTION REGISTER
+# A user resolves an issue by matching SAP rows that correct it
+# (Match SAP Rows). Each match is one correction group with its rows.
+# Kept here, not in the browser, so every user sees the same register.
+# ============================================================
+
+class CorrectionGroup(Base):
+    __tablename__ = "correction_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_code = Column(String(20), unique=True, nullable=True, index=True)
+    # "CG-00001", set from id after insert
+
+    # The issue being corrected: company + fiscal year + document + line item.
+    issue_key = Column(String(64), nullable=True, index=True)  # tracked_issues.issue_key
+    company_code = Column(String(10), nullable=False, default="", index=True)
+    fiscal_year = Column(String(10), nullable=False, default="")
+    original_doc_no = Column(String(50), nullable=False, index=True)
+    original_line_item = Column(String(20), nullable=False, default="")
+    category = Column(String(150), nullable=True)
+    vendor_code = Column(String(50), nullable=True)
+    vendor_name = Column(String(255), nullable=True)
+    vendor_pan = Column(String(20), nullable=True)
+    section = Column(String(50), nullable=True)
+    base_amount = Column(Numeric(18, 2), nullable=True)
+    applied_rate = Column(Numeric(9, 4), nullable=True)
+    expected_rate = Column(Numeric(9, 4), nullable=True)
+    applied_tds = Column(Numeric(18, 2), nullable=False, default=0)
+    expected_tds = Column(Numeric(18, 2), nullable=False, default=0)
+
+    method = Column(String(30), nullable=False)
+    # DIFFERENCE_ONLY | FULL_REVERSAL
+    status = Column(String(20), nullable=False, default="matched_in_sap", index=True)
+    # matched_in_sap (awaiting approval) | approved | rejected | undone
+    remarks = Column(Text, nullable=True)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    status_changed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status_changed_at = Column(DateTime(timezone=True), nullable=True)
+    status_note = Column(Text, nullable=True)
+
+    # The tracked issue's resolution fields before this group resolved it (JSON),
+    # restored when the group is undone or rejected.
+    previous_issue_state = Column(Text, nullable=True)
+    # Group id from the old browser-only register, so an import never runs twice.
+    legacy_group_id = Column(String(30), nullable=True)
+
+    entries = relationship(
+        "CorrectionEntry", back_populates="group",
+        cascade="all, delete-orphan", order_by="CorrectionEntry.position",
+    )
+
+
+class CorrectionEntry(Base):
+    __tablename__ = "correction_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("correction_groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    position = Column(Integer, nullable=False, default=0)
+    role = Column(String(30), nullable=False)
+    # REVERSAL (takes TDS back) | FRESH_DEDUCTION | ADDITIONAL_DEDUCTION (both add TDS)
+
+    company_code = Column(String(10), nullable=False, default="")
+    fiscal_year = Column(String(10), nullable=False, default="")
+    doc_no = Column(String(50), nullable=False, index=True)
+    line_item = Column(String(20), nullable=False, default="")
+    doc_type = Column(String(10), nullable=True)
+    posting_date = Column(Date, nullable=True)
+    vendor_code = Column(String(50), nullable=True)
+    vendor_name = Column(String(255), nullable=True)
+    section = Column(String(50), nullable=True)
+    base_amount = Column(Numeric(18, 2), nullable=True)
+    applied_rate = Column(Numeric(9, 4), nullable=True)
+    tds_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    # TDS on the SAP row as uploaded (always positive); the role decides its sign.
+
+    group = relationship("CorrectionGroup", back_populates="entries")

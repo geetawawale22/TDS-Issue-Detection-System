@@ -8,7 +8,7 @@
   border-bottom: 1px solid var(--color-border);
 }
 
-.issue-history-toolbar .filter-input { flex: 1 1 220px; max-width: 320px; }
+.issue-history-toolbar .search-input { flex: 1 1 220px; max-width: 320px; }
 
 .issue-history-tabs {
   display: inline-flex;

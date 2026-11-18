@@ -1,7 +1,9 @@
 """Document / GL Ledger across runs (daily SAP feed).
 
 Every analysed file's lines are saved in ``ledger_lines`` (one row per
-company + fiscal year + document + line item) and grouped in ``ledger_groups``
+company + fiscal year + document + line item + withholding tax type/code; a
+line with two withholding taxes has two rows, and only the first counts the
+line's amount) and grouped in ``ledger_groups``
 the same way the per-upload ledger groups them:
 
     clearing document -> reference document (REBZG) -> assignment -> document
@@ -102,6 +104,8 @@ def _line_from_transaction(txn, event_type: str, event: dict[str, Any], run_id: 
         "fiscal_year": fiscal_year_for(txn)[:10],
         "doc_no": doc_no,
         "line_item": str(txn.line_item_number or "").strip()[:20],
+        "withholding_tax_type": (txn.withholding_tax_type or "").strip().upper()[:10],
+        "withholding_tax_code": (txn.withholding_tax_code or "").strip().upper()[:10],
         "clearing_document": clearing,
         "clearing_fiscal_year": _text(txn.clearing_fiscal_year, 10),
         "reference_document": _text(txn.invoice_reference_document or txn.advance_document_reference, 50),
@@ -130,57 +134,97 @@ def _line_from_transaction(txn, event_type: str, event: dict[str, Any], run_id: 
     }
 
 
+LineKey = tuple[str, str, str, str]
+
+
+def _line_key(line: dict[str, Any]) -> LineKey:
+    """One SAP line: company + fiscal year + document + line item."""
+    return (line["company_code"], line["fiscal_year"], line["doc_no"], line["line_item"])
+
+
 def save_run_lines(db: Session, run_id: int | None, items: list[tuple[Any, str, dict[str, Any]]]) -> dict[str, Any]:
-    """Save one run's lines (``(txn, event_type, event)``) and refresh the groups they touch."""
-    incoming: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    """Save one run's lines (``(txn, event_type, event)``) and refresh the groups they touch.
+
+    Each withholding tax of a SAP line is its own row. When a file sends a line
+    again, its saved rows are replaced by the ones sent now: rows matched by
+    withholding type/code are updated, a row saved before withholding types were
+    kept ('' type) is reused, and rows SAP no longer sends for that line go.
+    """
+    # Entries of each SAP line in this run, by withholding type/code (a repeated
+    # identical row keeps the last one, as before).
+    incoming: dict[LineKey, dict[tuple[str, str], dict[str, Any]]] = defaultdict(dict)
     for txn, event_type, event in items:
         line = _line_from_transaction(txn, event_type, event, run_id)
         if not line["doc_no"]:
             continue
-        incoming[(line["company_code"], line["fiscal_year"], line["doc_no"], line["line_item"])] = line
+        incoming[_line_key(line)][(line["withholding_tax_type"], line["withholding_tax_code"])] = line
 
     identity = (LedgerLine.company_code, LedgerLine.fiscal_year, LedgerLine.doc_no, LedgerLine.line_item)
-    existing: dict[tuple[str, str, str, str], Any] = {}
-    keys = list(incoming)
-    for chunk in _chunks(keys):
+    existing: dict[LineKey, list[Any]] = defaultdict(list)
+    for chunk in _chunks(list(incoming)):
         rows = db.query(
-            LedgerLine.id, *identity, LedgerLine.group_key,
-            LedgerLine.inferred_clearing_document, LedgerLine.inferred_clearing_fiscal_year,
+            LedgerLine.id, *identity, LedgerLine.withholding_tax_type, LedgerLine.withholding_tax_code,
+            LedgerLine.group_key, LedgerLine.inferred_clearing_document, LedgerLine.inferred_clearing_fiscal_year,
         ).filter(tuple_(*identity).in_(chunk))
         for row in rows:
-            existing[(row.company_code, row.fiscal_year, row.doc_no, row.line_item)] = row
+            existing[(row.company_code, row.fiscal_year, row.doc_no, row.line_item)].append(row)
 
     affected: set[str] = set()
-    inserts, updates = [], []
-    for key, line in incoming.items():
-        previous = existing.get(key)
-        if previous is not None and not line["clearing_document"]:
-            # Keep a clearing learnt from a later line until SAP sends its own.
-            line["inferred_clearing_document"] = previous.inferred_clearing_document
-            line["inferred_clearing_fiscal_year"] = previous.inferred_clearing_fiscal_year
-        elif line["clearing_document"]:
-            line["inferred_clearing_document"] = None
-            line["inferred_clearing_fiscal_year"] = None
-        line["group_key"] = group_identity(line)["group_key"]
-        affected.add(line["group_key"])
-        if previous is None:
-            inserts.append({**line, "first_run_id": run_id})
-        else:
-            affected.add(previous.group_key)
-            updates.append({**line, "id": previous.id})
-    if inserts:
-        db.bulk_insert_mappings(LedgerLine, inserts)
+    inserts, updates, removed = [], [], []
+    saved = 0
+    for key, entries in incoming.items():
+        previous_rows = existing.get(key, [])
+        by_withholding = {(row.withholding_tax_type, row.withholding_tax_code): row for row in previous_rows}
+        claimed: set[int] = set()
+        # Same order every run, so the same entry stays the primary one.
+        for position, withholding in enumerate(sorted(entries)):
+            line = entries[withholding]
+            line["is_primary_entry"] = position == 0
+            previous = by_withholding.get(withholding)
+            if previous is None or previous.id in claimed:
+                # Reuse a row from before withholding types were saved, or one SAP stopped sending.
+                previous = next((row for row in previous_rows if row.id not in claimed and (row.withholding_tax_type, row.withholding_tax_code) not in entries), None)
+            if previous is not None and not line["clearing_document"]:
+                # Keep a clearing learnt from a later line until SAP sends its own.
+                line["inferred_clearing_document"] = previous.inferred_clearing_document
+                line["inferred_clearing_fiscal_year"] = previous.inferred_clearing_fiscal_year
+            elif line["clearing_document"]:
+                line["inferred_clearing_document"] = None
+                line["inferred_clearing_fiscal_year"] = None
+            elif previous_rows:
+                # A new withholding entry on a line saved earlier shares that line's inferred clearing.
+                line["inferred_clearing_document"] = previous_rows[0].inferred_clearing_document
+                line["inferred_clearing_fiscal_year"] = previous_rows[0].inferred_clearing_fiscal_year
+            line["group_key"] = group_identity(line)["group_key"]
+            affected.add(line["group_key"])
+            saved += 1
+            if previous is None:
+                inserts.append({**line, "first_run_id": run_id})
+            else:
+                claimed.add(previous.id)
+                affected.add(previous.group_key)
+                updates.append({**line, "id": previous.id})
+        for row in previous_rows:
+            if row.id not in claimed:
+                removed.append(row.id)
+                affected.add(row.group_key)
+
+    if removed:
+        db.query(LedgerLine).filter(LedgerLine.id.in_(removed)).delete(synchronize_session=False)
     if updates:
         db.bulk_update_mappings(LedgerLine, updates)
+    if inserts:
+        db.bulk_insert_mappings(LedgerLine, inserts)
     db.flush()
 
-    affected |= _infer_clearing(db, list(incoming.values()))
+    all_lines = [line for entries in incoming.values() for line in entries.values()]
+    affected |= _infer_clearing(db, all_lines)
     companies = sorted({key[0] for key in incoming})
     _refresh_issue_flags(db, companies)
     _rebuild_groups(db, affected)
     _refresh_group_issues(db, companies)
     db.commit()
-    return {"linesSaved": len(incoming), "newLines": len(inserts), "groupsTouched": len(affected)}
+    return {"linesSaved": saved, "newLines": len(inserts), "groupsTouched": len(affected)}
 
 
 def _infer_clearing(db: Session, lines: list[dict[str, Any]]) -> set[str]:
@@ -268,7 +312,10 @@ def _rebuild_groups(db: Session, group_keys: set[str]) -> None:
         lines = (
             db.query(LedgerLine)
             .filter(LedgerLine.group_key.in_(chunk))
-            .order_by(LedgerLine.group_key, LedgerLine.posting_date, LedgerLine.doc_no, LedgerLine.line_item)
+            .order_by(
+                LedgerLine.group_key, LedgerLine.posting_date, LedgerLine.doc_no, LedgerLine.line_item,
+                LedgerLine.is_primary_entry.desc(), LedgerLine.withholding_tax_type, LedgerLine.withholding_tax_code,
+            )
             .all()
         )
         by_group: dict[str, list[LedgerLine]] = defaultdict(list)
@@ -292,7 +339,8 @@ def _rebuild_groups(db: Session, group_keys: set[str]) -> None:
             })
             sums = defaultdict(float)
             for line in group_lines:
-                amount = float(line.amount or 0)
+                # A line's second withholding tax adds its own base and TDS, not the line amount again.
+                amount = float(line.amount or 0) if line.is_primary_entry else 0.0
                 absolute = abs(amount)
                 sums["debit" if amount >= 0 else "credit"] += absolute
                 sums["net"] += amount

@@ -244,9 +244,14 @@ def test_tds_section_text_infers_purchase_and_flags_wrong_legacy_section():
 
     assert transaction.transaction_kind == "purchase"
     assert transaction.tds_deducted_section == "194J"
+    assert transaction.tds_applicable_section == "194Q"
     assert len(issues) == 1
     assert issues[0].category == "Wrong Section Applied"
-    assert "requires section 194Q" in issues[0].message
+    # The description-based check reports it ("Expected section 194Q based on
+    # SAP section description ..."), the same check as with a separate code column.
+    assert issues[0].expected_section == "194Q"
+    assert "194Q" in issues[0].message
+    assert "but 194J was applied" in issues[0].message
 
 
 

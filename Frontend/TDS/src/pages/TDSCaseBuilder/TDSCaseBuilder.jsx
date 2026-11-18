@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
 import Issues, { issueMatchesFilters, issueRowsMatchingIssues, validationRowsMatchingFilters } from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
+import SearchInput from '@/components/Common/SearchInput'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import IssueHistory from '@/pages/CorrectionCenter/IssueHistory'
 import issuesService from '@/services/issuesService'
@@ -103,8 +104,19 @@ function splitLedgerDetailEvents(row) {
   }
 }
 
+// A SAP line with two withholding taxes has two rows; its amount counts once.
 function sumEventAmount(events) {
-  return events.reduce((total, event) => total + Number(event.amount || 0), 0)
+  return events.reduce((total, event) => total + (event.additionalWithholding ? 0 : Number(event.amount || 0)), 0)
+}
+
+/** Amount cell: the second withholding row of a line repeats no amount (it is on the row above). */
+function EventAmount({ event }) {
+  if (!event.additionalWithholding) return <span className="font-mono">{formatCurrency(event.amount)}</span>
+  return (
+    <span className="font-mono case-ledger-same-line" title={`Same SAP line as the row above (amount ${formatCurrency(event.amount)}); this row is its second withholding tax${event.withholdingTaxType ? ` (${event.withholdingTaxType}/${event.withholdingTaxCode || ''})` : ''}.`}>
+      Same line
+    </span>
+  )
 }
 
 function ledgerBaseAmount(row) {
@@ -300,18 +312,19 @@ export default function TDSCaseBuilder() {
   const hasUpload = Boolean(uploadMeta)
   // Issue book across every run (daily feed / uploads): each issue counted once.
   const trackingRunId = uploadMeta?.tracking?.runId ?? null
+  const selectedCompanyCode = useSelector((state) => state.app.selectedCompanyCode)
+  const financialYear = useSelector((state) => state.app.financialYear)
   const [openSummary, setOpenSummary] = useState(null)
   useEffect(() => {
     let cancelled = false
-    issuesService.getTrackedIssueSummary()
+    // Same company / FY as the rest of the page (and the Document / GL Ledger).
+    issuesService.getTrackedIssueSummary({ companyCode: selectedCompanyCode || '', financialYear: financialYear || '' })
       .then((data) => { if (!cancelled) setOpenSummary(data) })
       .catch(() => { if (!cancelled) setOpenSummary(null) })
     return () => { cancelled = true }
-  }, [trackingRunId])
+  }, [trackingRunId, selectedCompanyCode, financialYear])
   // ── Document / GL Ledger: always every saved line across runs. A clearing
   // only makes sense against earlier days, so one file alone is never shown. ──
-  const selectedCompanyCode = useSelector((state) => state.app.selectedCompanyCode)
-  const financialYear = useSelector((state) => state.app.financialYear)
   const [storedOptions, setStoredOptions] = useState(null)
   const [storedGroups, setStoredGroups] = useState({ items: [], total: 0, counts: null })
   const [storedGl, setStoredGl] = useState([])
@@ -599,7 +612,7 @@ export default function TDSCaseBuilder() {
     { key: 'profitCenter', header: 'Profit Center', render: (event) => <span className="font-mono">{presentValue(event.profitCenter) || '—'}</span> },
     { key: 'eventType', header: 'Event', render: (event) => event.eventType },
     { key: 'debitCredit', header: 'D/C', render: (event) => <span className="font-mono">{event.debitCredit}</span> },
-    { key: 'amount', header: 'Document Amount', render: (event) => <span className="font-mono">{formatCurrency(event.amount)}</span> },
+    { key: 'amount', header: 'Document Amount', render: (event) => <EventAmount event={event} /> },
     { key: 'baseAmount', header: 'Base Amount', render: (event) => <span className="font-mono">{formatCurrency(event.baseAmount)}</span> },
     { key: 'tdsSection', header: 'Section', render: (event) => <span className="font-mono">{event.tdsSection}</span> },
     { key: 'tdsAmount', header: 'TDS', render: (event) => <span className="font-mono">{formatCurrency(event.tdsAmount)}</span> },
@@ -732,7 +745,7 @@ export default function TDSCaseBuilder() {
         <span className="font-mono">{event.glAccount}</span>
         <span className="font-mono">{presentValue(event.profitCenter) || '—'}</span>
         <span className="font-mono">{event.debitCredit}</span>
-        <span className="font-mono">{formatCurrency(event.amount)}</span>
+        <EventAmount event={event} />
         <span className="font-mono">{formatCurrency(event.baseAmount)}</span>
         <span className="font-mono">{event.tdsSection}</span>
         <span className="font-mono">{formatRate(appliedRateForEvent(event))}</span>
@@ -833,10 +846,9 @@ export default function TDSCaseBuilder() {
         <div className="filter-bar-label">
           <SlidersHorizontal size={14} />Filters
         </div>
-        <input
-          className="filter-input"
+        <SearchInput
           value={searchQuery}
-          onChange={(event) => dispatch(setSearchQuery(event.target.value))}
+          onChange={(value) => dispatch(setSearchQuery(value))}
           placeholder="Search vendor / doc / ID / section / PAN…"
         />
       </div>

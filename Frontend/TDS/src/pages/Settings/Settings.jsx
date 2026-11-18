@@ -6,6 +6,7 @@ import { useAuth } from '@/context/AuthContext'
 import adminService from '@/services/adminService'
 import { initials, capitalize, isValidEmail } from '@/utils/utils'
 import { MESSAGES } from '@/utils/messages'
+import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './Settings.css'
 
@@ -260,10 +261,9 @@ export default function Settings() {
             <div className="filter-bar" style={{ boxShadow: 'none', margin: '0 16px 10px' }}>
               <div className="filter-bar-top">
                 <div className="filter-bar-label"><Search size={13} />Search</div>
-                <input
-                  className="filter-input"
+                <SearchInput
                   value={userSearch}
-                  onChange={(e) => setUserSearch(e.target.value)}
+                  onChange={setUserSearch}
                   placeholder="Search name or email…"
                 />
               </div>

@@ -268,43 +268,6 @@ export function deriveThresholdSectionBreakdown(vendors) {
   return [...map.values()].sort((a, b) => a.section.localeCompare(b.section))
 }
 
-/** GL correction audit rows from rate-shortfall style issues. */
-export function deriveGlCorrections(issues) {
-  return issues
-    .filter((i) => {
-      if (!i.isViolation) return false
-      const impact = Number(i.taxImpact) || 0
-      return impact > 0 || ['WRONG_TDS_RATE', 'PAN_MISSING_SHORT', 'NON_FILER_206AB', 'THRESHOLD_CROSSED'].includes(i.issueType)
-    })
-    .slice(0, 200)
-    .map((issue, idx) => {
-      const wrongTds = Number(issue.tdsAmount) || 0
-      const expectedRate = Number(issue.expectedRate) || 0
-      const base = Number(issue.baseAmount) || 0
-      const correctTds = expectedRate
-        ? Number(((base * expectedRate) / 100).toFixed(2))
-        : Number((wrongTds + Math.max(0, Number(issue.taxImpact) || 0)).toFixed(2))
-      const shortfall = Number(Math.max(0, correctTds - wrongTds, Number(issue.taxImpact) || 0).toFixed(2))
-
-      const originalDate = issue.date || new Date().toISOString()
-      return {
-        id: issue.id || `CORR-${idx}`,
-        vendor: issue.vendor,
-        section: issue.section,
-        originalDoc: issue.docNo,
-        reversalDoc: String(6100000000 + idx),
-        correctionDoc: String(6200000000 + idx),
-        originalDate,
-        correctionDate: originalDate,
-        baseAmount: base,
-        wrongTds,
-        correctTds,
-        shortfall,
-      }
-    })
-    .filter((c) => c.shortfall > 0)
-}
-
 export function deriveMonthlyTrend(issues) {
   const byMonth = new Map()
   for (const issue of issues) {

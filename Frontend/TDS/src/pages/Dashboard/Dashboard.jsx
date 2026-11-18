@@ -12,6 +12,7 @@ import MonthlyTrendChart from '@/components/Charts/MonthlyTrendChart'
 import TopVendorsChart from '@/components/Charts/TopVendorsChart'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import issuesService from '@/services/issuesService'
+import ledgerService from '@/services/ledgerService'
 import {
   resetDashboardFilters, selectDashboardSections, selectDashboardVendorCodeOptions,
   selectDashboardKpis, selectIsLive, selectUsesTrackedIssues, setTrackedIssues, setDashboardDateFromFilter,
@@ -26,13 +27,15 @@ export default function Dashboard() {
   const [expandedChart, setExpandedChart] = useState(null)
   const navigate = useNavigate()
   const dispatch = useDispatch()
-  const { financialYear, lastSyncTime, dataSource } = useSelector((s) => s.app)
+  const { financialYear, lastSyncTime, dataSource, selectedCompanyCode } = useSelector((s) => s.app)
   const firstName = useSelector((s) => s.auth.user?.name?.split(' ')[0]) ?? 'there'
   const kpisLive = useSelector(selectDashboardKpis)
   const uploadIsLive = useSelector(selectIsLive)
   const usesTrackedIssues = useSelector(selectUsesTrackedIssues)
   // Saved issues are real data too, even before a file is uploaded in this browser.
-  const isLive = uploadIsLive || usesTrackedIssues
+  const [ledgerCounts, setLedgerCounts] = useState(null)
+  // Saved transactions are real data too, like saved issues.
+  const isLive = uploadIsLive || usesTrackedIssues || Boolean(ledgerCounts)
   const sections = useSelector(selectDashboardSections)
   const vendorCodeOptions = useSelector(selectDashboardVendorCodeOptions)
   const trackingRunId = useSelector((s) => s.issues.uploadMeta?.tracking?.runId ?? null)
@@ -57,6 +60,38 @@ export default function Dashboard() {
     dashboardIssueTypeFilter,
     dashboardTdsDeductionFilter,
   } = useSelector((s) => s.issues)
+  // Transactions saved across every run (each SAP line once), under the same
+  // company / FY / date / vendor / section filters as the issue counts.
+  useEffect(() => {
+    let cancelled = false
+    ledgerService.getTransactionCounts({
+      company_code: selectedCompanyCode || '',
+      financial_year: financialYear || '',
+      date_from: dashboardDateFromFilter || undefined,
+      date_to: dashboardDateToFilter || undefined,
+      month: dashboardMonthFilter || '',
+      vendor_code: dashboardVendorCodeFilter !== 'all' ? dashboardVendorCodeFilter : '',
+      vendor_name: dashboardVendorNameFilter !== 'all' ? dashboardVendorNameFilter : '',
+      section: dashboardSectionFilter !== 'all' ? dashboardSectionFilter : '',
+    })
+      .then((data) => { if (!cancelled) setLedgerCounts(data) })
+      // Keep the latest upload's numbers as the fallback.
+      .catch(() => { if (!cancelled) setLedgerCounts(null) })
+    return () => { cancelled = true }
+  }, [
+    selectedCompanyCode, financialYear, trackingRunId, dashboardDateFromFilter, dashboardDateToFilter,
+    dashboardMonthFilter, dashboardVendorCodeFilter, dashboardVendorNameFilter, dashboardSectionFilter,
+  ])
+  const transactionsValue = ledgerCounts
+    ? {
+      deducted: ledgerCounts.tdsDeducted,
+      not_deducted: ledgerCounts.tdsNotDeducted,
+    }[dashboardTdsDeductionFilter] ?? ledgerCounts.transactions
+    : kpisLive.transactions
+  const deductionCounts = ledgerCounts
+    ? { deducted: ledgerCounts.tdsDeducted, notDeducted: ledgerCounts.tdsNotDeducted }
+    : tdsDeductionCounts
+
   const hasDashboardFilters = Boolean(
     dashboardDateFromFilter
     || dashboardDateToFilter
@@ -142,8 +177,8 @@ export default function Dashboard() {
   const kpis = [
     {
       label: 'Transactions',
-      note: usesTrackedIssues ? 'Latest file' : null,
-      value: Number(kpisLive.transactions).toLocaleString('en-IN'),
+      note: ledgerCounts ? 'All runs' : usesTrackedIssues ? 'Latest file' : null,
+      value: Number(transactionsValue).toLocaleString('en-IN'),
       change: isLive ? null : 4.2,
       up: true,
       icon: Activity,
@@ -200,19 +235,19 @@ export default function Dashboard() {
   const tdsDeductionCards = [
     {
       label: 'TDS Deducted',
-      value: tdsDeductionCounts.deducted,
+      value: deductionCounts.deducted,
       filter: 'deducted',
       icon: BadgeCheck,
       tone: 'success',
-      description: usesTrackedIssues ? 'Latest file · rows with TDS amount' : 'Rows with TDS amount',
+      description: ledgerCounts ? 'All runs · rows with TDS amount' : usesTrackedIssues ? 'Latest file · rows with TDS amount' : 'Rows with TDS amount',
     },
     {
       label: 'TDS Not Deducted',
-      value: tdsDeductionCounts.notDeducted,
+      value: deductionCounts.notDeducted,
       filter: 'not_deducted',
       icon: BadgeX,
       tone: 'danger',
-      description: usesTrackedIssues ? 'Latest file · rows with no TDS amount' : 'Rows with no TDS amount',
+      description: ledgerCounts ? 'All runs · rows with no TDS amount' : usesTrackedIssues ? 'Latest file · rows with no TDS amount' : 'Rows with no TDS amount',
     },
   ]
 
@@ -241,9 +276,11 @@ export default function Dashboard() {
             <p className="dashboard-banner-greeting">Welcome back, {firstName}</p>
             <p className="dashboard-banner-sub">
               {isLive
-                ? (usesTrackedIssues
-                  ? 'Issues from every run (each counted once); transaction counts from your latest SAP upload.'
-                  : 'Showing compliance metrics from your latest SAP upload.')
+                ? (ledgerCounts
+                  ? 'Issues and transactions from every run, each counted once.'
+                  : usesTrackedIssues
+                    ? 'Issues from every run (each counted once); transaction counts from your latest SAP upload.'
+                    : 'Showing compliance metrics from your latest SAP upload.')
                 : 'Compliance tracking for your organization'}
             </p>
           </div>

@@ -8,7 +8,6 @@ import {
   deriveDashboardKpis,
   deriveThresholdVendorsFromUpload,
   deriveThresholdSectionBreakdown,
-  deriveGlCorrections,
   deriveMonthlyTrend,
   deriveSectionMonthlyTrend,
   deriveThresholdConsumptionTrend,
@@ -16,10 +15,18 @@ import {
   deriveVendorMonthlyTrend,
 } from '@/utils/liveAnalytics'
 import { getFinancialYear } from '@/utils/utils'
+import {
+  findCorrectionForIssue,
+  groupMatchesIssue,
+  groupOriginalLine,
+  indexCorrectionGroups,
+  isActiveCorrection,
+  sameDocumentLine,
+} from '@/utils/correctionMatching'
 
 const LAST_UPLOAD_STORAGE_KEY = 'tds_last_upload_results'
 const LDC_UTILIZATION_STORAGE_KEY = 'tds_ldc_utilization_results'
-// Bumped to drop the old register (draft corrections, groups tied to reused issue ids).
+// Old browser-only correction register; imported into the backend once, then removed.
 const CORRECTION_REGISTER_STORAGE_KEY = 'tds_correction_register_v2'
 const LEGACY_CORRECTION_REGISTER_KEYS = ['tds_correction_register']
 const LAST_UPLOAD_SCHEMA_VERSION = 6
@@ -29,28 +36,12 @@ const LAST_UPLOAD_SCHEMA_VERSION = 6
 const LAST_UPLOAD_MAX_ROWS = 10000
 
 
-function correctionActor(user) {
-  if (!user) return { name: 'Unknown user', email: '', role: '' }
-  return {
-    name: user.name || user.full_name || user.email || 'Unknown user',
-    email: user.email || '',
-    role: user.role || '',
-  }
-}
-
-function nextCorrectionGroupId(existingGroups = []) {
-  const max = existingGroups.reduce((highest, group) => {
-    const match = String(group.groupId || '').match(/^CG-(\d+)$/i)
-    return match ? Math.max(highest, Number(match[1])) : highest
-  }, 0)
-  return `CG-${String(max + 1).padStart(4, '0')}`
-}
-
-
-function readCorrectionGroups() {
+// The old UI kept the correction register in this browser. It now lives in
+// the backend; whatever is still here is imported once (see
+// CorrectionRegisterLoader) and then removed.
+export function readLegacyCorrectionGroups() {
   if (typeof window === 'undefined') return []
   try {
-    LEGACY_CORRECTION_REGISTER_KEYS.forEach((key) => window.localStorage.removeItem(key))
     const parsed = JSON.parse(window.localStorage.getItem(CORRECTION_REGISTER_STORAGE_KEY) || 'null')
     return Array.isArray(parsed?.correctionGroups) ? parsed.correctionGroups : []
   } catch {
@@ -58,61 +49,65 @@ function readCorrectionGroups() {
   }
 }
 
-function saveCorrectionGroups(correctionGroups = []) {
+export function clearLegacyCorrectionGroups() {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(CORRECTION_REGISTER_STORAGE_KEY, JSON.stringify({ correctionGroups }))
+    ;[CORRECTION_REGISTER_STORAGE_KEY, ...LEGACY_CORRECTION_REGISTER_KEYS].forEach((key) => window.localStorage.removeItem(key))
   } catch {
-    // The correction register is convenience persistence until a backend table exists.
+    // Storage blocked: nothing to clear.
   }
 }
 
-// Cached issues may carry a correction from a register that no longer exists;
-// reopen those so only the current register decides what is resolved.
+// Drop correction flags the register no longer backs. A manual (MANUAL)
+// resolution exists only because of a correction group, so without an active
+// group the issue is open again; any other saved resolution still stands.
 function stripCorrection(issue) {
   if (!issue.correctionGroupId) return issue
   const {
     correctionGroupId, correctionMethod, correctionStatus, isMatchedSapCorrection, ...rest
   } = issue
-  return { ...rest, status: 'open' }
+  const keptResolution = rest.resolutionType && rest.resolutionType !== 'MANUAL'
+  return { ...rest, status: keptResolution ? 'resolved' : 'open' }
 }
 
 function applyCorrectionRegisterToIssues(issues = [], correctionGroups = []) {
-  const groupsByOriginalDoc = new Map()
-  const groupsByCorrectionDoc = new Map()
-  for (const group of correctionGroups) {
-    const originalDocNo = String(group.originalDocumentNumber || '')
-    if (originalDocNo) groupsByOriginalDoc.set(originalDocNo, group)
-    for (const entry of group.entries || []) {
-      const correctionDocNo = String(entry.correctionDocumentNumber || entry.docNo || '')
-      if (correctionDocNo) groupsByCorrectionDoc.set(correctionDocNo, group)
-    }
-  }
+  const index = indexCorrectionGroups(correctionGroups.filter(isActiveCorrection))
   return issues.map((cachedIssue) => {
     const issue = stripCorrection(cachedIssue)
-    const docNo = String(issue.docNo || '')
-    const originalGroup = groupsByOriginalDoc.get(docNo)
-    if (originalGroup) {
-      return {
-        ...issue,
-        status: 'resolved',
-        correctionGroupId: originalGroup.groupId,
-        correctionMethod: originalGroup.method,
-        correctionStatus: originalGroup.status,
-      }
-    }
-
-    const correctionGroup = groupsByCorrectionDoc.get(docNo)
-    if (!correctionGroup) return issue
+    const match = findCorrectionForIssue(index, issue)
+    if (!match) return issue
     return {
       ...issue,
       status: 'resolved',
-      correctionGroupId: correctionGroup.groupId,
-      correctionMethod: correctionGroup.method,
-      correctionStatus: correctionGroup.status,
-      isMatchedSapCorrection: true,
+      correctionGroupId: match.group.groupId,
+      correctionMethod: match.group.method,
+      correctionStatus: match.group.status,
+      ...(match.isCorrectionRow ? { isMatchedSapCorrection: true } : {}),
     }
   })
+}
+
+// After a group is undone or rejected, reopen what its manual resolution
+// closed in the upload on screen (issues and their SAP rows).
+function reopenForCorrection(state, group) {
+  state.uploadedIssues = state.uploadedIssues.map((issue) => (
+    issue.status === 'resolved' && issue.resolutionType === 'MANUAL' && groupMatchesIssue(group, issue)
+      ? { ...issue, status: 'open', resolutionType: null, resolutionNote: null }
+      : issue
+  ))
+  const rows = state.uploadMeta?.validationRows
+  if (!rows) return
+  const original = groupOriginalLine(group)
+  state.uploadMeta.validationRows = rows.map((row) => (
+    row.status === 'corrected' && row.resolutionType === 'MANUAL' && sameDocumentLine(original, row)
+      ? { ...row, status: 'issue', reason: row.originalReason || row.reason, resolutionType: null, correctionDocs: null }
+      : row
+  ))
+}
+
+function upsertCorrectionGroup(groups = [], group) {
+  const others = groups.filter((existing) => existing.id !== group.id)
+  return [group, ...others]
 }
 
 function readLastUpload() {
@@ -135,7 +130,6 @@ function saveLastUpload(state) {
     window.localStorage.setItem(LDC_UTILIZATION_STORAGE_KEY, JSON.stringify({
       ldcUtilization: state.uploadMeta?.ldcUtilization || [],
     }))
-    saveCorrectionGroups(state.correctionGroups || [])
   } catch {
     // LDC utilization is a small convenience cache; upload analysis remains the source of truth.
   }
@@ -146,7 +140,6 @@ function saveLastUpload(state) {
     schemaVersion: LAST_UPLOAD_SCHEMA_VERSION,
     uploadedIssues: snapshot.uploadedIssues,
     uploadMeta: snapshot.uploadMeta,
-    correctionGroups: snapshot.correctionGroups,
   }
   const rowCount = (payload.uploadedIssues?.length || 0)
     + (payload.uploadMeta?.validationRows?.length || 0)
@@ -193,7 +186,6 @@ function readLastLdcUtilization() {
 }
 
 const lastUpload = readLastUpload()
-const storedCorrectionGroups = readCorrectionGroups()
 const initialState = {
   searchQuery:     '',
   vendorFilter:    'all',
@@ -219,9 +211,11 @@ const initialState = {
   drawerOpen:      false,
 
   dataSource: lastUpload ? 'upload' : 'empty',
-  uploadedIssues: applyCorrectionRegisterToIssues(lastUpload?.uploadedIssues || [], storedCorrectionGroups),
+  // Correction flags are re-applied once the register loads from the backend.
+  uploadedIssues: lastUpload?.uploadedIssues || [],
   uploadMeta: lastUpload?.uploadMeta || null,
-  correctionGroups: storedCorrectionGroups,
+  correctionGroups: [],
+  correctionGroupsLoaded: false,
   uploadStatus: 'idle',
   uploadProgress: 0,
   uploadError: null,
@@ -330,158 +324,19 @@ const issuesSlice = createSlice({
       state.dashboardTdsDeductionFilter = 'all'
       saveLastUpload(state)
     },
-    createManualCorrection: (state, action) => {
-      const {
-        issueId,
-        method,
-        remarks,
-        additionalAmount,
-        reversalAmount,
-        freshDeductionAmount,
-        actor,
-      } = action.payload || {}
-      const issue = state.uploadedIssues.find((row) => row.id === issueId)
-      if (!issue) return
-
-      const groupId = nextCorrectionGroupId(state.correctionGroups)
-      const originalDocNo = String(issue.docNo || 'UNKNOWN')
-      const cleanDocNo = originalDocNo.replace(/[^a-z0-9-]/gi, '')
-      const createdAt = new Date().toISOString()
-      const createdBy = correctionActor(actor)
-      const appliedTdsAmount = Math.abs(Number(issue.tdsAmount) || 0)
-      const expectedTdsAmount = issue.expectedRate == null || issue.baseAmount == null
-        ? Math.abs(Number(issue.tdsAmount) || 0) + Math.abs(Number(issue.taxImpact) || 0)
-        : Number((Number(issue.baseAmount) * Number(issue.expectedRate) / 100).toFixed(2))
-      const baseEntry = {
-        originalDocumentNumber: originalDocNo,
-        vendor: issue.vendor,
-        vendorId: issue.vendorId,
-        vendorPan: issue.vendorPan,
-        section: issue.section,
-        baseAmount: Number(issue.baseAmount) || 0,
-        appliedRate: issue.appliedRate,
-        appliedTdsAmount,
-        expectedRate: issue.expectedRate,
-        expectedTdsAmount,
-        taxImpact: Math.abs(Number(issue.taxImpact) || expectedTdsAmount - appliedTdsAmount),
-        postingDate: issue.postingDate || issue.date,
-        createdAt,
-      }
-
-      const entries = method === 'FULL_REVERSAL'
-        ? [
-          {
-            ...baseEntry,
-            correctionDocumentNumber: `CORR-${cleanDocNo}-R`,
-            role: 'REVERSAL',
-            amount: -Math.abs(Number(reversalAmount) || appliedTdsAmount || 0),
-            displayAmount: Math.abs(Number(reversalAmount) || appliedTdsAmount || 0),
-          },
-          {
-            ...baseEntry,
-            correctionDocumentNumber: `CORR-${cleanDocNo}-F`,
-            role: 'FRESH_DEDUCTION',
-            amount: Math.abs(Number(freshDeductionAmount) || expectedTdsAmount || 0),
-            displayAmount: Math.abs(Number(freshDeductionAmount) || expectedTdsAmount || 0),
-          },
-        ]
-        : [
-          {
-            ...baseEntry,
-            correctionDocumentNumber: `CORR-${cleanDocNo}-01`,
-            role: 'ADDITIONAL_DEDUCTION',
-            amount: Math.abs(Number(additionalAmount) || 0),
-            displayAmount: Math.abs(Number(additionalAmount) || 0),
-          },
-        ]
-
-      state.correctionGroups.push({
-        groupId,
-        issueId,
-        originalDocumentNumber: originalDocNo,
-        method,
-        appliedRate: issue.appliedRate,
-        appliedTdsAmount,
-        expectedRate: issue.expectedRate,
-        expectedTdsAmount,
-        taxImpact: Math.abs(Number(issue.taxImpact) || expectedTdsAmount - appliedTdsAmount),
-        status: 'draft',
-        createdBy,
-        actionBy: createdBy,
-        actionLabel: 'Created draft correction',
-        remarks: String(remarks || '').trim(),
-        createdAt,
-        entries,
-      })
-
-      issue.status = 'resolved'
-      issue.correctionGroupId = groupId
-      issue.correctionMethod = method
-      issue.correctionStatus = 'draft'
-      saveCorrectionGroups(state.correctionGroups)
-      saveLastUpload(state)
+    // Register loaded from the backend: re-apply it to the upload on screen.
+    setCorrectionGroups: (state, action) => {
+      state.correctionGroups = action.payload || []
+      state.correctionGroupsLoaded = true
+      state.uploadedIssues = applyCorrectionRegisterToIssues(state.uploadedIssues, state.correctionGroups)
     },
-    createMatchedSapCorrection: (state, action) => {
-      const {
-        issueId,
-        method,
-        remarks,
-        rows,
-        actor,
-      } = action.payload || {}
-      const issue = state.uploadedIssues.find((row) => row.id === issueId)
-      if (!issue || !Array.isArray(rows) || rows.length === 0) return
-
-      const groupId = nextCorrectionGroupId(state.correctionGroups)
-      const originalDocNo = String(issue.docNo || 'UNKNOWN')
-      const createdAt = new Date().toISOString()
-      const matchedBy = correctionActor(actor)
-      const entries = rows.map((row, index) => ({
-        correctionDocumentNumber: String(row.docNo || row.documentNumber || `SAP-${index + 1}`),
-        docNo: String(row.docNo || row.documentNumber || `SAP-${index + 1}`),
-        role: row.matchRole || (method === 'FULL_REVERSAL' && index === 0 ? 'REVERSAL' : method === 'FULL_REVERSAL' ? 'FRESH_DEDUCTION' : 'ADDITIONAL_DEDUCTION'),
-        amount: Number(row.tdsAmount ?? row.amount ?? 0),
-        displayAmount: Math.abs(Number(row.tdsAmount ?? row.amount ?? 0)),
-        originalDocumentNumber: originalDocNo,
-        vendor: row.vendor || issue.vendor,
-        vendorId: row.vendorId || issue.vendorId,
-        vendorPan: row.vendorPan || issue.vendorPan,
-        section: row.section || issue.section,
-        baseAmount: Number(row.baseAmount ?? issue.baseAmount ?? 0),
-        appliedRate: row.appliedRate ?? issue.appliedRate,
-        appliedTdsAmount: Math.abs(Number(row.tdsAmount ?? 0)),
-        expectedRate: issue.expectedRate,
-        expectedTdsAmount: issue.expectedRate == null || issue.baseAmount == null
-          ? Math.abs(Number(issue.tdsAmount) || 0) + Math.abs(Number(issue.taxImpact) || 0)
-          : Number((Number(issue.baseAmount) * Number(issue.expectedRate) / 100).toFixed(2)),
-        postingDate: row.postingDate || row.date || issue.postingDate || issue.date,
-        docType: row.docType,
-        source: 'SAP_MATCHED_ROW',
-        createdAt,
-      }))
-
-      state.correctionGroups.push({
-        groupId,
-        issueId,
-        originalDocumentNumber: originalDocNo,
-        method,
-        source: 'SAP_MATCHED_ROWS',
-        status: 'matched_in_sap',
-        createdBy: matchedBy,
-        matchedBy,
-        actionBy: matchedBy,
-        actionLabel: 'Matched SAP rows',
-        remarks: String(remarks || '').trim(),
-        createdAt,
-        entries,
-      })
-
-      issue.status = 'resolved'
-      issue.correctionGroupId = groupId
-      issue.correctionMethod = method
-      issue.correctionStatus = 'matched_in_sap'
-      saveCorrectionGroups(state.correctionGroups)
-      saveLastUpload(state)
+    // A group was saved, undone, approved or rejected (server response).
+    correctionGroupUpdated: (state, action) => {
+      const group = action.payload
+      if (!group?.id) return
+      state.correctionGroups = upsertCorrectionGroup(state.correctionGroups, group)
+      if (!isActiveCorrection(group)) reopenForCorrection(state, group)
+      state.uploadedIssues = applyCorrectionRegisterToIssues(state.uploadedIssues, state.correctionGroups)
     },
     uploadFailed: (state, action) => {
       state.uploadStatus = 'error'
@@ -493,11 +348,12 @@ const issuesSlice = createSlice({
     restoreLastUpload: (state, action) => {
       if (state.uploadMeta) return
       const cached = action.payload
-      const correctionGroups = state.correctionGroups || []
       state.dataSource = 'upload'
       state.uploadMeta = cached.uploadMeta
-      state.correctionGroups = correctionGroups
-      state.uploadedIssues = applyCorrectionRegisterToIssues(cached.uploadedIssues || [], correctionGroups)
+      // Until the register has loaded, keep the cached flags; setCorrectionGroups re-applies them.
+      state.uploadedIssues = state.correctionGroupsLoaded
+        ? applyCorrectionRegisterToIssues(cached.uploadedIssues || [], state.correctionGroups)
+        : cached.uploadedIssues || []
     },
     clearUpload: (state) => {
       state.dataSource = 'empty'
@@ -522,14 +378,14 @@ export const {
   setDashboardTdsDeductionFilter,
   openDrawer, closeDrawer, resetFilters, resetDashboardFilters,
   uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, restoreLastUpload, clearUpload,
-  createManualCorrection, createMatchedSapCorrection,
+  setCorrectionGroups, correctionGroupUpdated,
 } = issuesSlice.actions
 
 export function selectIsLive(state) {
   return state.issues.dataSource === 'upload'
 }
 
-/** Scope uploaded rows to the global company and Indian financial year. */
+/** Scope uploaded rows to the global company. */
 function scopeToCompany(rows, state) {
   if (state.issues.dataSource !== 'upload') return rows
   const { selectedCompanyCode } = state.app
@@ -538,10 +394,13 @@ function scopeToCompany(rows, state) {
     : rows
 }
 
-function scopeToCompanyAndFY(rows, state) {
-  if (state.issues.dataSource !== 'upload') return rows
-  const { financialYear } = state.app
-  return scopeToCompany(rows, state).filter((row) => {
+/** Scope rows to the company and Indian financial year picked in the app header. */
+function scopeRowsToCompanyAndFY(rows, state) {
+  const { selectedCompanyCode, financialYear } = state.app
+  const companyRows = selectedCompanyCode
+    ? rows.filter((row) => row.companyCode === selectedCompanyCode)
+    : rows
+  return companyRows.filter((row) => {
     if (!financialYear) return true
     const rowDate = row.date || row.postingDate
     if (!rowDate && !row.financialYear) return true
@@ -552,6 +411,12 @@ function scopeToCompanyAndFY(rows, state) {
         : null
     return rowFinancialYear === financialYear
   })
+}
+
+/** Upload rows are scoped only once a file is loaded (sample data is not). */
+function scopeToCompanyAndFY(rows, state) {
+  if (state.issues.dataSource !== 'upload') return rows
+  return scopeRowsToCompanyAndFY(rows, state)
 }
 
 export function selectActiveIssues(state) {
@@ -689,7 +554,9 @@ function matchesTdsDeductionFilter(row, filter) {
  */
 export function selectDashboardSourceIssues(state) {
   const tracked = state.issues.trackedIssues
-  return tracked ? scopeToCompanyAndFY(tracked, state) : selectActiveIssues(state)
+  // Saved issues are real data even before a file is uploaded in this browser,
+  // so they always follow the selected company and financial year.
+  return tracked ? scopeRowsToCompanyAndFY(tracked, state) : selectActiveIssues(state)
 }
 
 export function selectUsesTrackedIssues(state) {
@@ -873,10 +740,6 @@ export function selectLdcUtilization(state) {
 
 export function selectActiveTdsCases(state) {
   return selectActiveUploadMetaRows(state, 'tdsCases')
-}
-
-export function selectGlCorrections(state) {
-  return deriveGlCorrections(selectActiveIssues(state))
 }
 
 export function selectCorrectionGroups(state) {

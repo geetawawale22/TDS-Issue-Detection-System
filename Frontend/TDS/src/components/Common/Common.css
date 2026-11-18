@@ -832,6 +832,43 @@
 
 .filter-bar-top .filter-input { flex: 1 1 220px; min-width: 160px; max-width: 320px; }
 
+/* ── SearchInput: search box with a clear (✕) button ── */
+.search-input {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.search-input > .filter-input { padding-right: 28px; }
+
+.search-input-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.search-input-clear:hover { background: var(--color-bg); color: var(--color-text); }
+.search-input-clear:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+
+/* Where the search box grows with its toolbar, the wrapper takes the sizing. */
+.filter-bar-top .search-input { flex: 1 1 220px; min-width: 160px; max-width: 320px; }
+.filter-bar-top .search-input > .filter-input,
+.search-input--fill > .filter-input { flex: 1 1 auto; width: 100%; min-width: 0; max-width: none; }
+.search-input--fill { display: flex; width: 100%; }
+
 .filter-bar-controls {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

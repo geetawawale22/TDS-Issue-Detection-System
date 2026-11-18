@@ -10,12 +10,16 @@ import {
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
 import IssueDrawer from '@/components/Common/IssueDrawer'
-import issuesService from '@/services/issuesService'
+import correctionsService from '@/services/correctionsService'
+import { groupMatchesIssue } from '@/utils/correctionMatching'
+import {
+  CORRECTION_ROLE_LABELS, CORRECTION_ROLES_BY_METHOD, RECONCILE_TOLERANCE, correctionEffect, expectedTdsForIssue,
+} from '@/utils/correctionLabels'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import LiveDataBadge from '@/components/Common/LiveDataBadge'
 import {
   setSearchQuery, setVendorFilter, setSectionFilter, setSeverityFilter,
-  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters, createMatchedSapCorrection,
+  setStatusFilter, setIssueTypeFilter, openDrawer, closeDrawer, resetFilters, correctionGroupUpdated,
   selectActiveIssues, selectActiveVendors, selectActiveSections, selectActiveValidationRows,
   issueDateKey,
 } from '@/redux/slices/issuesSlice'
@@ -25,6 +29,7 @@ import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiF
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
+import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './Issues.css'
 
@@ -113,11 +118,43 @@ function SectionCell({ issue }) {
 }
 
 
-function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, onSearch, onToggle, onMethodChange, onRemarksChange, onClose, onSave }) {
+/** Credit memo / reversal / TDS top-up rows name the document they correct. */
+function correctionRowLabel(row) {
+  const original = String(row?.correctionOf ?? '').trim()
+  return original ? `Correction to doc ${original}` : 'Correction Entry'
+}
+
+function signedAmount(value) {
+  const number = Number(value) || 0
+  if (Math.abs(number) < 0.005) return formatCurrency(0)
+  return `${number < 0 ? '−' : '+'}${formatCurrency(Math.abs(number))}`
+}
+
+function numberOrNull(value) {
+  if (value == null || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+// The match list shows at most this many search hits (selected rows always stay).
+const MATCH_ROW_LIMIT = 80
+
+function stripLeadingZeros(value) {
+  return String(value || '').replace(/^0+(?=\d)/, '')
+}
+
+function MatchSapRowsModal({ issue, rows, matchCount = rows.length, saving = false, selectedIds, roles = {}, method, remarks, search, onSearch, onToggle, onRoleChange, onMethodChange, onRemarksChange, onClose, onSave }) {
   if (!issue) return null
   const selectedCount = selectedIds.size
   const selectedRows = rows.filter((row) => selectedIds.has(row.id))
-  const selectedTds = selectedRows.reduce((sum, row) => sum + Number(row.tdsAmount || 0), 0)
+  // Live check: TDS applied + what the ticked rows do (by role) against the expected TDS.
+  const appliedTds = Math.abs(Number(issue.tdsAmount) || 0)
+  const expectedTds = expectedTdsForIssue(issue)
+  const selectedEffect = selectedRows.reduce((sum, row) => sum + correctionEffect(roles[row.id], row.tdsAmount), 0)
+  const difference = Number((expectedTds - (appliedTds + selectedEffect)).toFixed(2))
+  const reconciled = Math.abs(difference) <= RECONCILE_TOLERANCE
+  const needsRemark = selectedCount > 0 && !reconciled && !remarks.trim()
+  const roleOptions = CORRECTION_ROLES_BY_METHOD[method] || CORRECTION_ROLES_BY_METHOD.DIFFERENCE_ONLY
 
   return (
     <div className="correction-modal-overlay" onClick={onClose}>
@@ -132,11 +169,12 @@ function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, 
         </div>
 
         <div className="match-toolbar">
-          <input
-            className="filter-input"
+          <SearchInput
+            wrapperClassName="search-input--fill"
             value={search}
-            onChange={(event) => onSearch(event.target.value)}
-            placeholder="Search SAP doc / vendor / PAN / section"
+            onChange={onSearch}
+            placeholder="Search SAP doc no. / vendor name / vendor no. / PAN / section"
+            aria-label="Search SAP rows by document number or vendor"
           />
           <select className="filter-select" value={method} onChange={(event) => onMethodChange(event.target.value)}>
             <option value="DIFFERENCE_ONLY">Difference only</option>
@@ -144,10 +182,15 @@ function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, 
           </select>
         </div>
 
-        <div className="match-summary-strip">
-          <div><span>Selected rows</span><strong>{selectedCount}</strong></div>
-          <div><span>Selected TDS total</span><strong>{formatCurrency(selectedTds)}</strong></div>
-          <div><span>Issue tax impact</span><strong>{formatCurrency(Math.abs(Number(issue.taxImpact) || 0))}</strong></div>
+        <div className="match-summary-strip match-summary-strip--five">
+          <div><span>TDS applied</span><strong>{formatCurrency(appliedTds)}</strong></div>
+          <div><span>Expected TDS</span><strong>{formatCurrency(expectedTds)}</strong></div>
+          <div><span>Needed correction</span><strong>{signedAmount(expectedTds - appliedTds)}</strong></div>
+          <div><span>Selected rows ({selectedCount})</span><strong>{signedAmount(selectedEffect)}</strong></div>
+          <div className={selectedCount === 0 ? '' : reconciled ? 'match-summary--ok' : 'match-summary--diff'}>
+            <span>Difference</span>
+            <strong>{selectedCount === 0 ? '—' : reconciled ? 'Reconciled ✓' : `${difference > 0 ? 'Short' : 'Excess'} ${formatCurrency(Math.abs(difference))}`}</strong>
+          </div>
         </div>
 
         <div className="match-row-list">
@@ -159,6 +202,7 @@ function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, 
             <span>Base</span>
             <span>TDS</span>
             <span>Date</span>
+            <span>Role</span>
           </div>
           {rows.length === 0 ? (
             <div className="match-empty">No uploaded rows match the search.</div>
@@ -171,18 +215,35 @@ function MatchSapRowsModal({ issue, rows, selectedIds, method, remarks, search, 
               <span className="font-mono">{formatCurrency(row.baseAmount)}</span>
               <span className="font-mono">{formatCurrency(row.tdsAmount)}</span>
               <span>{formatDate(row.postingDate || row.date)}</span>
+              {selectedIds.has(row.id) ? (
+                <select className="filter-select match-role-select" value={roles[row.id] || roleOptions[0]}
+                  aria-label={`Role of SAP row ${row.docNo}`}
+                  onChange={(event) => onRoleChange(row.id, event.target.value)}>
+                  {roleOptions.map((role) => <option key={role} value={role}>{CORRECTION_ROLE_LABELS[role]}</option>)}
+                </select>
+              ) : <span className="match-role-empty">—</span>}
             </label>
           ))}
         </div>
+        {matchCount > MATCH_ROW_LIMIT && (
+          <div className="match-limit-note">
+            Showing the first {MATCH_ROW_LIMIT} of {matchCount.toLocaleString()} matching rows. Narrow the search to find others.
+          </div>
+        )}
 
         <label className="correction-field">
           <span>Remarks</span>
           <textarea value={remarks} onChange={(event) => onRemarksChange(event.target.value)} placeholder="Why these SAP rows resolve the issue" />
         </label>
+        {needsRemark && (
+          <div className="match-remark-hint">
+            The selected rows leave a difference of {formatCurrency(Math.abs(difference))}. Explain it in Remarks to save, or change the rows / roles.
+          </div>
+        )}
 
         <div className="correction-modal-actions">
           <button className="btn btn-outline" type="button" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" type="button" disabled={selectedCount === 0} onClick={onSave}>Save matched group</button>
+          <button className="btn btn-primary" type="button" disabled={selectedCount === 0 || saving || needsRemark} onClick={onSave}>{saving ? 'Saving…' : 'Save matched group'}</button>
         </div>
       </div>
     </div>
@@ -324,13 +385,15 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const [matchRemarks, setMatchRemarks] = useState('')
   const [matchSearch, setMatchSearch] = useState('')
   const [selectedMatchIds, setSelectedMatchIds] = useState(() => new Set())
+  const [matchSaving, setMatchSaving] = useState(false)
+  // Role of each ticked row (Reversal / Fresh Deduction / Additional Deduction), chosen by the user.
+  const [matchRoles, setMatchRoles] = useState({})
   const activeDocTypeFilter = externalDocTypeFilter ?? docTypeFilter
   const setActiveDocTypeFilter = onExternalDocTypeFilterChange ?? setDocTypeFilter
   const {
     searchQuery, vendorFilter, sectionFilter, severityFilter, statusFilter,
     issueTypeFilter, profitCenterFilter, issueDateFromFilter, issueDateToFilter, selectedIssueId, drawerOpen, dataSource, uploadMeta, correctionGroups,
   } = useSelector((s) => s.issues)
-  const currentUser = useSelector((s) => s.auth.user)
 
   const issues = useSelector(selectActiveIssues)
   const issueTypeOptions = useMemo(
@@ -457,31 +520,44 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const drawerIsOpen = Boolean(reviewValidationRow) || drawerOpen
   const drawerCorrectionGroups = useMemo(() => {
     if (!drawerIssue || reviewValidationRow) return []
-    return correctionGroups.filter((group) => (
-      group.issueId === drawerIssue.id
-      || String(group.originalDocumentNumber || '') === String(drawerIssue.docNo || '')
-    ))
+    // Same issue key, or same company + fiscal year + document + line item.
+    return correctionGroups.filter((group) => groupMatchesIssue(group, drawerIssue))
   }, [correctionGroups, drawerIssue, reviewValidationRow])
 
-  const matchCandidateRows = useMemo(() => {
+  // Every row the issue could be matched to. Ids are fixed here, before any
+  // search, so a selection still points at the same row after the search changes.
+  const matchPoolRows = useMemo(() => {
     if (!matchIssue) return []
-    const query = matchSearch.trim().toLowerCase()
     return displayValidationRows
       .filter((row) => String(row.docNo || '') !== String(matchIssue.docNo || ''))
-      .filter((row) => {
-        if (!query) return true
-        return [row.docNo, row.vendor, row.vendorId, row.vendorPan, row.section, row.docType]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-          .includes(query)
-      })
-      .slice(0, 80)
       .map((row, index) => ({
         ...row,
         id: row.id || `match-${index}-${row.docNo}`,
       }))
-  }, [displayValidationRows, matchIssue, matchSearch])
+  }, [displayValidationRows, matchIssue])
+
+  // Search hits (first MATCH_ROW_LIMIT) plus every selected row, in upload order,
+  // so rows picked under an earlier search stay visible and counted.
+  const { rows: matchCandidateRows, matchCount: matchSearchCount } = useMemo(() => {
+    const query = matchSearch.trim().toLowerCase()
+    const docQuery = stripLeadingZeros(query)
+    const matchesQuery = (row) => !query
+      || [row.docNo, row.vendor, row.vendorId, row.vendorPan, row.section, row.docType]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(query)
+      || stripLeadingZeros(row.docNo).includes(docQuery)
+    const rows = []
+    let matchCount = 0
+    matchPoolRows.forEach((row) => {
+      const isSelected = selectedMatchIds.has(row.id)
+      const isMatch = matchesQuery(row)
+      if (isMatch) matchCount += 1
+      if (isSelected || (isMatch && matchCount <= MATCH_ROW_LIMIT)) rows.push(row)
+    })
+    return { rows, matchCount }
+  }, [matchPoolRows, matchSearch, selectedMatchIds])
 
   function handleOpenSapMatch(issue) {
     setMatchIssue(issue)
@@ -489,44 +565,99 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     setMatchRemarks('')
     setMatchSearch(String(issue.vendorId || issue.vendor || issue.docNo || ''))
     setSelectedMatchIds(new Set())
+    setMatchRoles({})
+  }
+
+  // Starting role for a newly ticked row; the user can change it in the Role column.
+  function defaultMatchRole(method, roles, selectedIds) {
+    if (method !== 'FULL_REVERSAL') return 'ADDITIONAL_DEDUCTION'
+    const hasReversal = [...selectedIds].some((id) => roles[id] === 'REVERSAL')
+    return hasReversal ? 'FRESH_DEDUCTION' : 'REVERSAL'
   }
 
   function handleToggleMatchRow(rowId) {
-    setSelectedMatchIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(rowId)) next.delete(rowId)
-      else next.add(rowId)
-      return next
-    })
+    const next = new Set(selectedMatchIds)
+    const roles = { ...matchRoles }
+    if (next.has(rowId)) {
+      next.delete(rowId)
+      delete roles[rowId]
+    } else {
+      roles[rowId] = defaultMatchRole(matchMethod, roles, next)
+      next.add(rowId)
+    }
+    setSelectedMatchIds(next)
+    setMatchRoles(roles)
   }
 
-  function handleSaveSapMatch() {
-    if (!matchIssue || selectedMatchIds.size === 0) return
-    const rows = matchCandidateRows.filter((row) => selectedMatchIds.has(row.id))
-    dispatch(createMatchedSapCorrection({
-      issueId: matchIssue.id,
-      actor: currentUser,
-      method: matchMethod,
-      remarks: matchRemarks,
-      rows,
-    }))
-    toast.success('SAP rows matched to correction group')
-    // Keep the saved issue history in step, so later runs don't reopen it.
-    if (matchIssue.issueKey) {
-      issuesService.resolveTrackedIssue({
-        issueKey: matchIssue.issueKey,
-        note: matchRemarks || 'Matched SAP rows',
-        correctionDocs: rows.map((row) => ({
+  function handleMatchRoleChange(rowId, role) {
+    setMatchRoles((prev) => ({ ...prev, [rowId]: role }))
+  }
+
+  // A new method offers different roles: re-assign ticked rows (first one reverses for Full Reversal).
+  function handleMatchMethodChange(method) {
+    setMatchMethod(method)
+    const roles = {}
+    matchPoolRows.filter((row) => selectedMatchIds.has(row.id)).forEach((row) => {
+      roles[row.id] = defaultMatchRole(method, roles, new Set(Object.keys(roles)))
+    })
+    setMatchRoles(roles)
+  }
+
+  // Saved in the backend, which also resolves the issue in the issue history.
+  async function handleSaveSapMatch() {
+    if (!matchIssue || selectedMatchIds.size === 0 || matchSaving) return
+    const rows = matchPoolRows.filter((row) => selectedMatchIds.has(row.id))
+    const issue = matchIssue
+    setMatchSaving(true)
+    try {
+      const group = await correctionsService.create({
+        issue: {
+          issueKey: issue.issueKey || null,
+          companyCode: issue.companyCode || null,
+          fiscalYear: issue.fiscalYear || null,
+          docNo: String(issue.docNo || ''),
+          lineItem: issue.lineItem || null,
+          category: issue.category || null,
+          vendor: issue.vendor || null,
+          vendorId: issue.vendorId || null,
+          vendorPan: issue.vendorPan || null,
+          section: issue.section || null,
+          baseAmount: numberOrNull(issue.baseAmount),
+          appliedRate: numberOrNull(issue.appliedRate),
+          expectedRate: numberOrNull(issue.expectedRate),
+          tdsAmount: numberOrNull(issue.tdsAmount),
+          taxImpact: numberOrNull(issue.taxImpact),
+        },
+        method: matchMethod,
+        remarks: matchRemarks,
+        entries: rows.map((row) => ({
+          role: matchRoles[row.id] || defaultMatchRole(matchMethod, {}, new Set()),
           docNo: String(row.docNo || ''),
+          companyCode: row.companyCode || null,
+          fiscalYear: row.fiscalYear || null,
+          lineItem: row.lineItem || null,
           docType: row.docType || null,
           postingDate: row.postingDate || row.date || null,
-          tdsAmount: Number(row.tdsAmount) || 0,
-          link: 'MANUAL',
+          vendor: row.vendor || null,
+          vendorId: row.vendorId || null,
+          section: row.section || null,
+          baseAmount: numberOrNull(row.baseAmount),
+          appliedRate: numberOrNull(row.appliedRate),
+          tdsAmount: numberOrNull(row.tdsAmount),
         })),
-      }).catch(() => toast.error('Matched locally, but the issue history could not be updated'))
+      })
+      dispatch(correctionGroupUpdated(group))
+      toast.success(`SAP rows matched · ${group.groupId}`)
+      if (issue.issueKey && !group.issueTracked) {
+        toast('Saved, but this issue is not in the issue history yet. Re-analyse the file to track it.')
+      }
+      setMatchIssue(null)
+      setSelectedMatchIds(new Set())
+    } catch (error) {
+      toast.error(error.message || 'Could not save the matched rows')
+    } finally {
+      setMatchSaving(false)
     }
-    setMatchIssue(null)
-    setSelectedMatchIds(new Set())
   }
 
   function buildValidationReviewIssue(row) {
@@ -546,7 +677,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       : statedRate ?? inferredRate
     const isCorrection = row.rowKind === 'correction'
     const isCorrected = row.status === 'corrected'
-    const issueLabel = isCorrected ? 'Corrected' : isCorrection ? 'Correction Entry' : isSkipped ? 'TDS Not Applicable' : isInsufficient ? 'Insufficient Data' : 'Passed Validation'
+    const issueLabel = isCorrected ? 'Corrected' : isCorrection ? correctionRowLabel(row) : isSkipped ? 'TDS Not Applicable' : isInsufficient ? 'Insufficient Data' : 'Passed Validation'
     const ldcValidity = ldcValidityByCertificate.get(row.ldcCertificate)
 
     return {
@@ -838,9 +969,10 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       }
       // Credit memo / reversal / TDS top-up referencing another document.
       if (r.rowKind === 'correction' && r.status !== 'issue') {
+        const label = correctionRowLabel(r)
         return (
           <span title={r.reason || undefined}>
-            <StatusBadge label={r.status === 'passed' ? 'Correction Entry · Passed' : 'Correction Entry'} tone={r.status === 'passed' ? 'success' : 'default'} />
+            <StatusBadge label={r.status === 'passed' ? `${label} · Passed` : label} tone={r.status === 'passed' ? 'success' : 'default'} />
           </span>
         )
       }
@@ -939,10 +1071,9 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           <div className="filter-bar-label">
             <SlidersHorizontal size={14} />Filters
           </div>
-          <input
-            className="filter-input"
+          <SearchInput
             value={searchQuery}
-            onChange={(e) => dispatch(setSearchQuery(e.target.value))}
+            onChange={(value) => dispatch(setSearchQuery(value))}
             placeholder="Search vendor / doc / ID / section / PAN…"
           />
         </div>
@@ -1019,13 +1150,17 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
         <MatchSapRowsModal
           issue={matchIssue}
           rows={matchCandidateRows}
+          matchCount={matchSearchCount}
+          saving={matchSaving}
           selectedIds={selectedMatchIds}
+          roles={matchRoles}
           method={matchMethod}
           remarks={matchRemarks}
           search={matchSearch}
           onSearch={setMatchSearch}
           onToggle={handleToggleMatchRow}
-          onMethodChange={setMatchMethod}
+          onRoleChange={handleMatchRoleChange}
+          onMethodChange={handleMatchMethodChange}
           onRemarksChange={setMatchRemarks}
           onClose={() => setMatchIssue(null)}
           onSave={handleSaveSapMatch}

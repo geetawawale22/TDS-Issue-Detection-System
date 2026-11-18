@@ -5,6 +5,7 @@ import Sidebar from '@/components/Sidebar/Sidebar'
 import Navbar from '@/components/Navbar/Navbar'
 import PageLoader, { GlobalPageLoader } from '@/components/Common/PageLoader'
 import { toggleSidebar, setSidebarCollapsed } from '@/redux/slices/appSlice'
+import { loadCorrectionRegister } from '@/redux/correctionRegister'
 import './AppLayout.css'
 
 const MOBILE_BREAKPOINT = 768
@@ -19,6 +20,14 @@ export default function AppLayout() {
   // the window or rotating a tablet after load leaves the sidebar stuck in
   // whatever state it started in — e.g. wide-open and overlapping content
   // if it started as a desktop tab that got narrowed.
+  // The correction register lives in the backend; load it once after login so
+  // TDS Analysis shows which issues are already corrected.
+  useEffect(() => {
+    loadCorrectionRegister(dispatch).catch(() => {
+      // Pages still work without it; Correction Center retries and shows the error.
+    })
+  }, [dispatch])
+
   useEffect(() => {
     function handleResize() {
       const isMobile = window.innerWidth <= MOBILE_BREAKPOINT

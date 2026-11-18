@@ -2,12 +2,30 @@ import { X, CheckCheck, FileText, Lightbulb, ClipboardList } from 'lucide-react'
 import StatusBadge, { severityToTone, issueStatusToTone } from './StatusBadge'
 import { getDisplayIssueType, getRecommendedAction } from '@/data/issueTypes'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
+import {
+  CORRECTION_METHOD_LABELS, CORRECTION_ROLE_LABELS, CORRECTION_STATUS_LABELS, RECONCILE_TOLERANCE, correctionStatusTone,
+} from '@/utils/correctionLabels'
 import './Common.css'
 
 /**
  * `resolvedNote` replaces the default "corrected" banner text (e.g. how a later
  * run resolved the issue); `children` adds sections under the action column.
  */
+function signedCurrency(value) {
+  const number = Number(value) || 0
+  if (number === 0) return formatCurrency(0)
+  return `${number < 0 ? '−' : '+'}${formatCurrency(Math.abs(number))}`
+}
+
+/** Banner text when no run-specific note is given: say what actually resolved the issue. */
+function defaultResolvedText(issue) {
+  if (issue.correctionGroupId) {
+    const method = CORRECTION_METHOD_LABELS[issue.correctionMethod]
+    return `This issue is corrected by matched SAP rows (${issue.correctionGroupId}${method ? ` · ${method}` : ''}). See the Correction Register below and in Correction Center.`
+  }
+  return 'This issue is marked corrected.'
+}
+
 export default function IssueDrawer({ issue, open, onClose, correctionGroups = [], onMatchSapRows, resolvedNote = null, children = null }) {
   return (
     <div className={`issue-drawer-overlay ${open ? 'open' : ''}`} onClick={onClose}>
@@ -112,7 +130,7 @@ export default function IssueDrawer({ issue, open, onClose, correctionGroups = [
                 {issue.status === 'resolved' && (
                   <div className="corrected-banner">
                     <CheckCheck size={14} />
-                    {resolvedNote || 'This issue has been corrected. A reversal and corrected entry have been posted in the GL for this document.'}
+                    {resolvedNote || defaultResolvedText(issue)}
                   </div>
                 )}
                 <div className="issue-drawer-section-title"><Lightbulb size={13} />Recommended Action</div>
@@ -140,26 +158,39 @@ export default function IssueDrawer({ issue, open, onClose, correctionGroups = [
                       <div className="issue-correction-group" key={group.groupId}>
                         <div className="issue-correction-group-head">
                           <span className="font-mono">{group.groupId}</span>
-                          <StatusBadge
-                            label={group.method === 'FULL_REVERSAL' ? 'Full Reversal' : 'Difference Only'}
-                            tone={group.method === 'FULL_REVERSAL' ? 'warning' : 'success'}
-                          />
+                          <span className="issue-correction-badges">
+                            <StatusBadge
+                              label={CORRECTION_METHOD_LABELS[group.method] || group.method}
+                              tone={group.method === 'FULL_REVERSAL' ? 'warning' : 'success'}
+                            />
+                            <StatusBadge label={CORRECTION_STATUS_LABELS[group.status] || group.status} tone={correctionStatusTone(group.status)} />
+                          </span>
                         </div>
                         <div className="issue-correction-entry-list">
                           {group.entries.map((entry) => (
                             <div className="issue-correction-entry" key={entry.correctionDocumentNumber}>
                               <div>
                                 <div className="font-mono issue-correction-doc">{entry.correctionDocumentNumber}</div>
-                                <div className="issue-correction-role">{formatStatusLabel(entry.role)}</div>
+                                <div className="issue-correction-role">{CORRECTION_ROLE_LABELS[entry.role] || formatStatusLabel(entry.role)}</div>
                               </div>
-                              <strong className="font-mono">{formatCurrency(entry.amount)}</strong>
+                              <strong className="font-mono" title={`TDS on SAP row ${formatCurrency(entry.tdsAmount)}`}>{signedCurrency(entry.amount)}</strong>
                             </div>
                           ))}
                         </div>
+                        {group.expectedTdsAmount != null && (
+                          <div className={`issue-correction-reconcile ${Math.abs(Number(group.unreconciledAmount) || 0) > RECONCILE_TOLERANCE ? 'issue-correction-reconcile--diff' : ''}`}>
+                            TDS {formatCurrency(group.appliedTdsAmount)} {signedCurrency(group.netAmount)} = {formatCurrency(group.correctedTdsAmount)}
+                            {' · '}expected {formatCurrency(group.expectedTdsAmount)}
+                            {Math.abs(Number(group.unreconciledAmount) || 0) > RECONCILE_TOLERANCE
+                              ? ` · ${group.unreconciledAmount > 0 ? 'short' : 'excess'} ${formatCurrency(Math.abs(group.unreconciledAmount))}`
+                              : ' · reconciled'}
+                          </div>
+                        )}
                         <div className="issue-correction-remarks">
-                          <strong>{group.actionBy?.name || group.matchedBy?.name || group.createdBy?.name || 'Unknown user'}</strong>
-                          {group.actionLabel ? ` · ${group.actionLabel}` : ''}
+                          <strong>{group.createdBy?.name || 'Unknown user'}</strong>
+                          {` · Matched SAP rows on ${formatDate(group.createdAt)}`}
                           {group.remarks ? ` · ${group.remarks}` : ''}
+                          {group.statusChangedBy ? ` · ${CORRECTION_STATUS_LABELS[group.status] || group.status} by ${group.statusChangedBy.name}${group.statusNote ? `: ${group.statusNote}` : ''}` : ''}
                         </div>
                       </div>
                     ))}

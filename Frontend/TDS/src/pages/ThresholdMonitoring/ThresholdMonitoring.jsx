@@ -17,6 +17,7 @@ import { fetchLdcCertificates } from '@/services/ldcService'
 import { formatCurrency, formatDate } from '@/utils/utils'
 // formatStatusLabel was only used by the (disabled) Vendor Threshold Tracker.
 import { Bar, BarChart, CartesianGrid, LabelList, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './ThresholdMonitoring.css'
 
@@ -669,10 +670,9 @@ export default function ThresholdMonitoring() {
               */}
             </div>
           </div>
-          <input
-            className="filter-input"
+          <SearchInput
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={setSearch}
             placeholder="Search LDC, PAN, vendor…"
             style={{ width: 180 }}
           />

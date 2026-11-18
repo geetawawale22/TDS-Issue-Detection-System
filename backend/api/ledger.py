@@ -140,6 +140,11 @@ def _open_issue_categories(db: Session, lines: list[LedgerLine]) -> dict[tuple[s
 def _event(line: LedgerLine, issues: dict[tuple[str, str, str], list[str]]) -> dict[str, Any]:
     event = json.loads(line.event)
     event["issues"] = issues.get((line.company_code, line.fiscal_year, line.doc_no), [])
+    event["withholdingTaxType"] = line.withholding_tax_type or None
+    event["withholdingTaxCode"] = line.withholding_tax_code or None
+    # Second withholding tax of the same SAP line: its base and TDS are its own,
+    # its amount is the line's amount already shown on the first row.
+    event["additionalWithholding"] = not line.is_primary_entry
     return event
 
 
@@ -235,7 +240,7 @@ def ledger_groups(
     if keys:
         lines = (
             db.query(LedgerLine).filter(LedgerLine.group_key.in_(keys))
-            .order_by(LedgerLine.posting_date, LedgerLine.doc_no, LedgerLine.line_item).all()
+            .order_by(LedgerLine.posting_date, LedgerLine.doc_no, LedgerLine.line_item, LedgerLine.is_primary_entry.desc()).all()
         )
         issues = _open_issue_categories(db, lines)
         for line in lines:
@@ -385,7 +390,7 @@ def gl_ledger_lines(
     ]
     lines = (
         db.query(LedgerLine).filter(*conditions)
-        .order_by(LedgerLine.posting_date, LedgerLine.doc_no, LedgerLine.line_item)
+        .order_by(LedgerLine.posting_date, LedgerLine.doc_no, LedgerLine.line_item, LedgerLine.is_primary_entry.desc())
         .limit(_MAX_GL_LINES + 1).all()
     )
     truncated = len(lines) > _MAX_GL_LINES
@@ -441,3 +446,72 @@ def ledger_filter_options(
         "profitCenters": distinct(LedgerLine.profit_center),
         "docTypes": distinct(func.upper(LedgerLine.doc_type)),
     }
+
+
+def _month_range(month: str) -> tuple[date, date] | None:
+    """'2026-07' -> (2026-07-01, 2026-07-31)."""
+    try:
+        year, number = (int(part) for part in month.strip().split("-")[:2])
+        start = date(year, number, 1)
+    except (TypeError, ValueError):
+        return None
+    end = date(year + (number == 12), 1 if number == 12 else number + 1, 1)
+    return start, date.fromordinal(end.toordinal() - 1)
+
+
+def _section_condition(section: str):
+    """Issues name a section either way (194C or 393(1)6(i)); lines keep both in section_label."""
+    if section in {"—", "-", NO_SECTION}:
+        return LedgerLine.section.is_(None)
+    return or_(
+        LedgerLine.section == section,
+        LedgerLine.section_label == section,
+        LedgerLine.section_label.like(f"{section} / %"),
+        LedgerLine.section_label.like(f"% / {section}"),
+    )
+
+
+@router.get("/transaction-counts")
+def transaction_counts(
+    company_code: str = "",
+    financial_year: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    month: str = "",
+    vendor_code: str = "",
+    vendor_name: str = "",
+    section: str = "",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Transactions saved across every run (each SAP line once), for the Dashboard cards.
+
+    Same scope as the Dashboard filters: company, financial year, date range or
+    month, vendor and section. Split by whether TDS was deducted on the line.
+    """
+    conditions: list[Any] = []
+    companies = _allowed_companies(current_user, db)
+    if companies is not None:
+        conditions.append(LedgerLine.company_code.in_(companies))
+    if company_code.strip():
+        conditions.append(LedgerLine.company_code == company_code.strip())
+    for period in (financial_year_range(financial_year), _month_range(month) if month.strip() else None):
+        if period:
+            conditions.append(LedgerLine.posting_date.between(*period))
+    if date_from:
+        conditions.append(LedgerLine.posting_date >= date_from)
+    if date_to:
+        conditions.append(LedgerLine.posting_date <= date_to)
+    if vendor_code.strip():
+        conditions.append(LedgerLine.vendor_code == vendor_code.strip())
+    if vendor_name.strip():
+        conditions.append(func.coalesce(LedgerLine.vendor_name, LedgerLine.vendor_code) == vendor_name.strip())
+    if section.strip():
+        conditions.append(_section_condition(section.strip()))
+
+    total, deducted = db.query(
+        func.count(LedgerLine.id),
+        func.coalesce(func.sum(case((LedgerLine.tds_amount != 0, 1), else_=0)), 0),
+    ).filter(*conditions).one()
+    total, deducted = int(total or 0), int(deducted or 0)
+    return {"transactions": total, "tdsDeducted": deducted, "tdsNotDeducted": total - deducted}

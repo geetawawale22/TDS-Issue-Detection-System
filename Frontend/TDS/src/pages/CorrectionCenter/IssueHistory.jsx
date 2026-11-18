@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { useSelector } from 'react-redux'
 import { AlertOctagon, AlertTriangle, BadgeCheck, BadgeX, ChevronLeft, ChevronRight, History, IndianRupee, Link2, ShieldAlert, Sparkles, Wrench } from 'lucide-react'
 import IssueDrawer from '@/components/Common/IssueDrawer'
+import SearchInput from '@/components/Common/SearchInput'
 import issuesService from '@/services/issuesService'
 import { formatCurrency, formatDate } from '@/utils/utils'
 import './IssueHistory.css'
@@ -22,6 +24,7 @@ const LINK_LABELS = {
   REVERSAL: 'Reversal document',
   REVERSED_BY: 'Reversed by',
   REFERENCE: 'Referencing entry',
+  MANUAL: 'Matched SAP row',
 }
 
 const RESOLUTION_OPTIONS = [
@@ -227,15 +230,19 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [reviewRow, setReviewRow] = useState(null)
+  // Company code and financial year picked in the app header.
+  const companyCode = useSelector((state) => state.app.selectedCompanyCode) || ''
+  const financialYear = useSelector((state) => state.app.financialYear) || ''
+  useEffect(() => { setPage(1) }, [companyCode, financialYear])
 
   useEffect(() => {
     if (!showCards) return undefined
     let cancelled = false
-    issuesService.getTrackedIssueSummary()
+    issuesService.getTrackedIssueSummary({ companyCode, financialYear })
       .then((data) => { if (!cancelled) setSummary(data) })
       .catch(() => { if (!cancelled) setSummary(null) })
     return () => { cancelled = true }
-  }, [showCards, refreshKey])
+  }, [showCards, refreshKey, companyCode, financialYear])
 
   // Wait for typing to pause before asking the server.
   useEffect(() => {
@@ -258,12 +265,14 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
       ...CARD_FILTERS[cardView],
       page,
       pageSize: PAGE_SIZE,
+      companyCode,
+      financialYear,
     })
       .then((data) => { if (!cancelled) setResult(data) })
       .catch((err) => { if (!cancelled) setError(err.message || 'Could not load issue history') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [status, search, resolutionType, latestRunOnly, cardView, page, refreshKey])
+  }, [status, search, resolutionType, latestRunOnly, cardView, page, refreshKey, companyCode, financialYear])
 
   function changeCardView(next) {
     setCardView(next)
@@ -310,10 +319,10 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
             Resolved <strong>{(result.counts?.resolved ?? 0).toLocaleString()}</strong>
           </button>
         </div>}
-        <input
-          className="filter-input"
+        <SearchInput
+          wrapperClassName="search-input--fill"
           value={searchInput}
-          onChange={(event) => setSearchInput(event.target.value)}
+          onChange={setSearchInput}
           placeholder="Search document no. / vendor / PAN"
         />
         <select className="filter-select" value={latestRunOnly ? 'latest' : ''}

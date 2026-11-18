@@ -13,10 +13,20 @@ from core.dependencies import get_current_user, get_user_company_codes
 from db.database import get_db
 from db.models import RuleRun, TrackedIssue, User
 from services.issue_tracker import manual_resolve, tracked_issue_to_dict
-from services.ledger_store import refresh_issue_state
+from services.ledger_store import financial_year_range, refresh_issue_state
 
 
 router = APIRouter(prefix="/tracked-issues", tags=["Issue History"])
+
+
+def _in_selection(query, company_code: str = "", financial_year: str = ""):
+    """The company code and financial year picked in the app header (empty = all)."""
+    if company_code.strip():
+        query = query.filter(TrackedIssue.company_code == company_code.strip())
+    period = financial_year_range(financial_year)
+    if period:
+        query = query.filter(TrackedIssue.posting_date.between(*period))
+    return query
 
 
 def _scoped(query, user: User, db: Session):
@@ -33,6 +43,7 @@ def list_tracked_issues(
     search: str = "",
     resolution_type: str = "",
     company_code: str = "",
+    financial_year: str = "",
     run: Literal["", "latest"] = "",
     tds: Literal["", "deducted", "not_deducted"] = "",
     severity: str = "",
@@ -43,9 +54,7 @@ def list_tracked_issues(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """One page of saved issues; filtering and paging happen in the database."""
-    base = _scoped(db.query(TrackedIssue), current_user, db)
-    if company_code.strip():
-        base = base.filter(TrackedIssue.company_code == company_code.strip())
+    base = _in_selection(_scoped(db.query(TrackedIssue), current_user, db), company_code, financial_year)
     term = search.strip()
     if term:
         like = f"%{term}%"
@@ -129,13 +138,12 @@ def _run_dict(run: RuleRun) -> dict[str, Any]:
 @router.get("/summary")
 def tracked_issue_summary(
     company_code: str = "",
+    financial_year: str = "",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Issue book across every run: each issue once, however many files raised it."""
-    base = _scoped(db.query(TrackedIssue), current_user, db)
-    if company_code.strip():
-        base = base.filter(TrackedIssue.company_code == company_code.strip())
+    base = _in_selection(_scoped(db.query(TrackedIssue), current_user, db), company_code, financial_year)
     open_rows = base.filter(TrackedIssue.status == "open")
     open_count, open_impact = open_rows.with_entities(
         func.count(TrackedIssue.id), func.coalesce(func.sum(TrackedIssue.tax_impact), 0),

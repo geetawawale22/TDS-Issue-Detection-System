@@ -12,6 +12,7 @@ import {
   fetchPanStatuses, fetchPanVerificationConfig, overridePanStatus, verifyPans,
 } from '@/services/panService'
 import { formatCurrency, formatDate } from '@/utils/utils'
+import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './PanVerification.css'
 
@@ -337,10 +338,9 @@ export default function PanVerification() {
           </div>
           <div className="pan-search-wrapper">
             <Search size={14} />
-            <input
-              className="filter-input"
+            <SearchInput
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
               placeholder="Search PAN, vendor, code..."
             />
           </div>

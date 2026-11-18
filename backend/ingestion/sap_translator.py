@@ -507,6 +507,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
     or unparseable rate means this export row has no TDS data to evaluate.
     """
     from rules.tds_rule_engine import (
+        applied_section_in_text,
         decode_tds_section_string,
         extract_new_section_reference,
         infer_payment_type_from_tds_text,
@@ -525,7 +526,17 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             raw_section_text = f"{withholding_tax_type}/{withholding_tax_code}"
         old_section, parsed_rate = decode_tds_section_string(raw_section_text)
         explicit_section = _normalise_explicit_tds_section_code(get_tds_section_code_raw(row))
-        applied_section = explicit_section or old_section
+        unrecognised_section = False
+        if explicit_section is None:
+            # No separate code column: the text itself says which section was
+            # applied ("194J Purc of Good"), while its payment nature (old_section)
+            # stays the expected one, so a mismatch is still caught.
+            text_section, unrecognised_section = applied_section_in_text(raw_section_text)
+            if text_section and old_section and text_section != old_section:
+                explicit_section = _normalise_explicit_tds_section_code(text_section)
+        # A section reference that maps to no known section ("PNS392") is not
+        # read as the nature's section; the wrong-section check reports it.
+        applied_section = None if unrecognised_section and explicit_section is None else explicit_section or old_section
         new_section = extract_new_section_reference(raw_section_text)
         transaction_kind = str(get("transaction_kind") or "").strip() or None
         if transaction_kind is None:
@@ -587,7 +598,9 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
             is_advance_payment=is_advance_payment,
 
             tds_raw_section=raw_section_text,
-            tds_applicable_section=old_section if explicit_section and old_section and explicit_section != old_section else None,
+            tds_applicable_section=(
+                old_section if old_section and (unrecognised_section or (explicit_section and explicit_section != old_section)) else None
+            ),
             tds_deducted_section=applied_section,
             tds_legacy_section=applied_section,
             tds_new_section=new_section,
