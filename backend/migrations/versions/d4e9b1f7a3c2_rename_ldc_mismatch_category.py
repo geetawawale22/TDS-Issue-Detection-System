@@ -83,7 +83,10 @@ def _rename(old: str, new: str) -> None:
         for text in {old, _json_text(old)}:
             replacement = new if text == old else _json_text(new)
             bind.execute(
-                sa.text(f"UPDATE ledger_lines SET {column} = replace({column}, :old, :new) WHERE strpos({column}, :old) > 0"),
+                # "column <> replace(...)" picks the rows that contain the name; unlike
+                # strpos (PostgreSQL only) or LIKE (backslash escapes) it works on
+                # PostgreSQL and MySQL alike.
+                sa.text(f"UPDATE ledger_lines SET {column} = replace({column}, :old, :new) WHERE {column} <> replace({column}, :old, :new)"),
                 {"old": text, "new": replacement},
             )
 
