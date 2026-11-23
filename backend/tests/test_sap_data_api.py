@@ -66,3 +66,14 @@ def test_not_configured_does_not_call_the_api(monkeypatch):
     with pytest.raises(SapDataApiError, match="not configured"):
         sap_data_api.query("ZAPI_TDS_EXEMPTION")
     assert sap_data_api.config() == {"url": "https://bigqueryapi.example.test/query", "configured": False}
+
+
+def test_certificate_failure_is_not_reported_as_a_refused_connection(monkeypatch):
+    def fake_post(*args, **kwargs):
+        raise requests.exceptions.SSLError("certificate verify failed: self-signed certificate in certificate chain")
+
+    monkeypatch.setattr(sap_data_api.requests, "post", fake_post)
+    with pytest.raises(SapDataApiError, match="SSL certificate check failed") as error:
+        sap_data_api.query("ZAPI_TDS_EXEMPTION")
+    assert "pip-system-certs" in error.value.message
+    assert "self-signed certificate" in error.value.message

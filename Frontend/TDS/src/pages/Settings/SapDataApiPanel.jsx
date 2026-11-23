@@ -9,6 +9,24 @@ import './SapDataApiPanel.css'
 // Rows rendered in the preview table; downloads include every fetched row.
 const PREVIEW_ROWS = 200
 
+// The two SAP views Mahindra provides: the exemption (LDC) master, read once
+// for LDC Master / PAN checks, and the vendor line items the TDS analysis runs on.
+function presets(companyCode) {
+  const company = companyCode ? `Company_Code = '${companyCode}'` : ''
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  const monthEnd = new Date(now.getFullYear(), now.getMonth(), 0)
+  const iso = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  return [
+    { label: 'Exemption / LDC master', table: 'ZAPI_TDS_EXEMPTION', otherConditions: company },
+    {
+      label: 'Vendor items · last month',
+      table: 'ZAPI_TDS_VENDOR_ITEMS',
+      otherConditions: [`Posting_Date BETWEEN '${iso(monthStart)}' AND '${iso(monthEnd)}'`, company].filter(Boolean).join(' AND '),
+    },
+  ]
+}
+
 function isFilled(value) {
   return value !== null && value !== undefined && String(value).trim() !== ''
 }
@@ -121,6 +139,20 @@ export default function SapDataApiPanel() {
             Set <code>SAP_DATA_API_URL</code> and <code>SAP_DATA_API_TOKEN</code> in <code>backend/.env</code>, then restart the backend.
           </p>
         )}
+
+        <div className="sap-api-presets">
+          <span>Quick fill:</span>
+          {presets(selectedCompanyCode).map((preset) => (
+            <button
+              key={preset.table}
+              type="button"
+              className="btn btn-outline sap-api-preset"
+              onClick={() => setForm((current) => ({ ...current, table: preset.table, otherConditions: preset.otherConditions, pageNo: 1 }))}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
 
         <form className="sap-api-form" onSubmit={runQuery}>
           <label className="sap-api-field sap-api-field--wide">

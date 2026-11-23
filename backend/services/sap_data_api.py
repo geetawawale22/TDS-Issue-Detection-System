@@ -67,6 +67,14 @@ def config() -> dict[str, Any]:
     return {"url": _url() or None, "configured": bool(_url() and _token())}
 
 
+def _reason(exc: Exception) -> str:
+    """The underlying cause from a requests error, kept short, never showing the token."""
+    text = str(exc).strip()
+    if _token():
+        text = text.replace(_token(), "***")
+    return text[-300:]
+
+
 def _host() -> str:
     return requests.utils.urlparse(_url()).hostname or _url()
 
@@ -89,14 +97,23 @@ def query(table: str, page_no: int = 1, page_size: int = 1000, other_conditions:
             headers={"Authorization": f"Bearer {_token()}", "Accept": "application/json"},
             timeout=TIMEOUT_SECONDS,
         )
+    # SSLError and ProxyError are ConnectionErrors too, so they are caught first.
+    except requests.exceptions.SSLError as exc:
+        raise SapDataApiError(
+            f"SSL certificate check failed for {_host()}. The company network re-signs HTTPS traffic: install "
+            "pip-system-certs in the backend venv (python -m pip install pip-system-certs) or set "
+            f"REQUESTS_CA_BUNDLE in backend/.env to the company root certificate, then restart the backend. ({_reason(exc)})"
+        ) from exc
+    except requests.exceptions.ProxyError as exc:
+        raise SapDataApiError(f"The network proxy refused the call to {_host()}. Check the proxy settings with IT. ({_reason(exc)})") from exc
     except requests.exceptions.ConnectionError as exc:
-        text = str(exc)
-        if "resolve" in text.lower() or "getaddrinfo" in text.lower() or "name or service not known" in text.lower():
+        text = str(exc).lower()
+        if "resolve" in text or "getaddrinfo" in text or "name or service not known" in text:
             raise SapDataApiError(
                 f"Cannot find the API server {_host()}. It is only reachable from Mahindra's network — "
                 "connect to the Mahindra VPN on the machine running the backend and try again."
             ) from exc
-        raise SapDataApiError(f"Cannot connect to the API server {_host()}: the connection was refused or dropped.") from exc
+        raise SapDataApiError(f"Cannot connect to the API server {_host()}: the connection was refused or dropped. ({_reason(exc)})") from exc
     except requests.exceptions.Timeout as exc:
         raise SapDataApiError(f"The API did not answer within {TIMEOUT_SECONDS} seconds. Try a smaller page size.") from exc
     except requests.exceptions.RequestException as exc:
