@@ -6,7 +6,7 @@ from typing import Optional
 from datetime import date
 import re
 from rules.transaction_model import Transaction
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 # ============================================================
 # Load tds_sections.yaml once when this module is imported.
@@ -99,6 +99,7 @@ class TDSIssue:
         issue_code: Optional[str] = None,
         expected_rate: Optional[float] = None,
         expected_section: Optional[str] = None,
+        estimated_base: Optional[float] = None,
     ):
         self.category = category
         self.message = message
@@ -106,6 +107,9 @@ class TDSIssue:
         self.issue_code = issue_code or category.upper().replace(" ", "_")
         self.expected_rate = expected_rate
         self.expected_section = expected_section
+        # TDS base worked out by the rule when SAP sent none (e.g. a missed
+        # deduction has no withholding base); used for expected TDS / tax impact.
+        self.estimated_base = estimated_base
 
     def __repr__(self):
         return f"<TDSIssue category={self.category} severity={self.severity}>"
@@ -452,6 +456,66 @@ def _actual_section(txn: Transaction) -> Optional[str]:
     return _section_key(txn.tds_deducted_section) or _section_key(txn.tds_legacy_section)
 
 
+# Rent (194I) has two rates by what is rented: 2% plant, machinery or
+# equipment; 10% land, building or furniture. The nature is read from the
+# SAP withholding tax code text ("PlantMach Rent@2%", "LandBldg/Fur ...10%"),
+# else the GL description, else the line-item text.
+RENT_PLANT_MACHINERY = "plant_machinery_equipment"
+RENT_LAND_BUILDING = "land_building_furniture"
+SECTION_194I_VALID_RATES = {2.0, 10.0}
+_RENT_PLANT_PATTERN = re.compile(
+    r"plant|\bplt\b|mach|equip|eqpt|\bit[\s-]*assets?\b|computer|laptop|server|vehicle|\bcar\b|crane|forklift|generator|\bdg\s*set",
+    re.IGNORECASE,
+)
+_RENT_LAND_BUILDING_PATTERN = re.compile(
+    r"\bland|bldg|build|furn|\bfur\b|office|premises|\bflat\b|house|warehouse|godown|\bshed\b|\bshop\b|factory",
+    re.IGNORECASE,
+)
+
+
+def rent_nature(txn: Transaction) -> Optional[str]:
+    """RENT_PLANT_MACHINERY / RENT_LAND_BUILDING, or None when the texts do not say.
+
+    A text naming both natures (e.g. "office equipment") says nothing; the
+    next text is tried.
+    """
+    for text in (txn.tds_raw_section, txn.gl_description, txn.description):
+        if not text:
+            continue
+        plant = bool(_RENT_PLANT_PATTERN.search(text))
+        building = bool(_RENT_LAND_BUILDING_PATTERN.search(text))
+        if plant != building:
+            return RENT_PLANT_MACHINERY if plant else RENT_LAND_BUILDING
+    return None
+
+
+def statutory_rate_for_section(section_key: Optional[str], txn: Transaction) -> Optional[float]:
+    """Statutory rate of a section for this transaction, from tds_sections.yaml.
+
+    None when the section has no single rate for it: unknown section, a
+    DTAA-based rate (195), or rent whose nature cannot be told.
+    """
+    section_config = SECTIONS.get(_section_key(section_key) or "")
+    if not section_config:
+        return None
+
+    rate_config = section_config.get("rate") or {}
+
+    if "default" in rate_config:
+        return rate_config["default"]
+
+    if "individual_huf" in rate_config and "others" in rate_config:
+        if txn.vendor_category in {"Individual", "HUF"}:
+            return rate_config["individual_huf"]
+        return rate_config["others"]
+
+    if RENT_PLANT_MACHINERY in rate_config or RENT_LAND_BUILDING in rate_config:
+        nature = rent_nature(txn)
+        return rate_config.get(nature) if nature else None
+
+    return None
+
+
 def _get_statutory_rate(txn: Transaction) -> Optional[float]:
     """
     Determines the normal statutory TDS rate before Form 197/LDC relief.
@@ -460,26 +524,7 @@ def _get_statutory_rate(txn: Transaction) -> Optional[float]:
     """
     if txn.tds_applicable_rate is not None:
         return txn.tds_applicable_rate
-
-    section_key = _expected_section(txn)
-    if not section_key:
-        return None
-    section_config = SECTIONS.get(section_key)
-    if not section_config:
-        return None
-
-    rate_config = section_config.get("rate", {})
-
-    if "default" in rate_config:
-        return rate_config["default"]
-
-    if "individual_huf" in rate_config and "others" in rate_config:
-        if txn.vendor_category in {"Individual", "HUF"}:
-            return rate_config["individual_huf"]
-        else:
-            return rate_config["others"]
-
-    return None
+    return statutory_rate_for_section(_expected_section(txn), txn)
 
 
 def _get_applicable_rate(txn: Transaction) -> Optional[float]:
@@ -523,6 +568,37 @@ def _ldc_out_of_date_context(txn: Transaction) -> str:
 SECTION_194J_VALID_RATES = {2.0, 10.0}
 
 
+def _check_rent_rate_without_nature(txn: Transaction, deducted_rate: float) -> Optional[TDSIssue]:
+    """194I when SAP does not say what is rented: 2% or 10% are both accepted.
+
+    Below 2% is short against even the lower rate, above 10% excess against
+    even the higher one; a rate in between cannot be called either way.
+    """
+    if deducted_rate in SECTION_194I_VALID_RATES:
+        return None
+    expected_rate = 2.0 if deducted_rate < 2.0 else 10.0 if deducted_rate > 10.0 else None
+    expected_amount_text = (
+        f" Expected TDS is at least ₹{abs(float(txn.basic_amount) * expected_rate / 100):,.2f}, "
+        f"but ₹{abs(float(txn.tds_deducted_amount or 0.0)):,.2f} was deducted."
+        if expected_rate == 2.0 and txn.basic_amount is not None
+        else f" Expected TDS is at most ₹{abs(float(txn.basic_amount) * expected_rate / 100):,.2f}, "
+        f"but ₹{abs(float(txn.tds_deducted_amount or 0.0)):,.2f} was deducted."
+        if expected_rate == 10.0 and txn.basic_amount is not None
+        else ""
+    )
+    return TDSIssue(
+        category="Wrong TDS Rate",
+        message=(
+            f"{_ldc_out_of_date_context(txn)}"
+            f"TDS deducted at {deducted_rate}% under section 194I, but rent is 2% (plant, machinery, "
+            f"equipment) or 10% (land, building, furniture); SAP does not say which was rented."
+            f"{expected_amount_text}"
+        ),
+        severity="high",
+        expected_rate=expected_rate,
+    )
+
+
 def check_short_excess_tds(txn: Transaction) -> Optional[TDSIssue]:
     """
     Categories: Short TDS Deducted / Excess TDS Deducted
@@ -539,12 +615,14 @@ def check_short_excess_tds(txn: Transaction) -> Optional[TDSIssue]:
             return None
         return TDSIssue(
             category="Short/Excess TDS Deducted",
-            message=f"TDS deducted at {deducted_rate}% under Sectionrat 194J, but valid rates are 2% (technical) or 10% (professional).",
+            message=f"TDS deducted at {deducted_rate}% under section 194J, but valid rates are 2% (technical) or 10% (professional).",
             severity="high",
         )
 
     applicable_rate = _get_applicable_rate(txn)
     if applicable_rate is None:
+        if section == "194I" and _expected_section(txn) == "194I":
+            return _check_rent_rate_without_nature(txn, deducted_rate)
         return None
 
     if deducted_rate < applicable_rate:
@@ -602,6 +680,9 @@ def _tds_amount_matches(expected_amount: float, actual_amount: float) -> bool:
     return actual == math.ceil(expected - 1e-6)
 
 
+TDS_NOT_DEDUCTED_AMOUNT_ZERO = "TDS Not Deducted — Amount Zero"
+
+
 def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     """
     Category: Short/Excess TDS Deducted (amount-derived)
@@ -639,6 +720,21 @@ def check_amount_consistency(txn: Transaction) -> Optional[TDSIssue]:
     if txn.ldc_exemption_reason and not txn.ldc_exemption_number:
         ldc_context = f"{txn.ldc_exemption_reason} Normal statutory rate is therefore used. "
     ldc_context = _ldc_out_of_date_context(txn) or ldc_context
+
+    # SAP records a section and rate but no TDS amount at all: nothing was
+    # deducted, which is "not deducted", not a short deduction.
+    if actual_amount <= TDS_ROW_AMOUNT_TOLERANCE:
+        return TDSIssue(
+            category=TDS_NOT_DEDUCTED_AMOUNT_ZERO,
+            message=(
+                f"{ldc_context}"
+                f"SAP records TDS at {expected_rate}%, which should give "
+                f"₹{expected_amount:,.2f} on a base of ₹{abs(txn.basic_amount):,.2f}, "
+                f"but no TDS was deducted (₹0.00)."
+            ),
+            severity="high",
+            expected_rate=expected_rate,
+        )
 
     mismatch_category = (
         "Short TDS Deducted — Amount Mismatch"
@@ -883,7 +979,7 @@ def check_lower_deduction_cert(txn: Transaction) -> Optional[TDSIssue]:
             else ""
         )
         return TDSIssue(
-            category="TDS Deducted as per LDC — Mismatch",
+            category="TDS Not Deducted as per LDC",
             message=(
                 f"LDC certificate {txn.ldc_exemption_number} is applicable for this PAN/section/date "
                 f"and allows {rate_text}.{statutory_rate_text} expected effective rate is "
@@ -1397,7 +1493,7 @@ def check_ldc_advance_chain(invoice: Transaction, advances: list[Transaction]) -
 
     if abs(actual_total - expected_total) > TDS_AMOUNT_ROUNDING_TOLERANCE * (len(advances) + 1):
         return TDSIssue(
-            category="TDS Deducted as per LDC — Mismatch",
+            category="TDS Not Deducted as per LDC",
             message=(
                 f"LDC certificate {invoice.ldc_exemption_number} ({rate_text}) covers this invoice, "
                 f"which has advance payment(s) {advance_docs or '—'} against it. Expected TDS across "
@@ -1511,6 +1607,18 @@ def _get_financial_year(d: date) -> str:
         return f"{d.year - 1}-{str(d.year)[-2:]}"
 
 
+def threshold_period(section: Optional[str], posting_date: date) -> str:
+    """Period a section's threshold counts over: the FY, or the month for rent.
+
+    Rent (194I) is due once rent exceeds ₹50,000 for a month or part of a
+    month (Budget 2025), so its total is kept per calendar month.
+    """
+    section_config = SECTIONS.get(section or "") or {}
+    if section_config.get("threshold_basis") == "monthly":
+        return posting_date.strftime("%b %Y")
+    return f"FY {_get_financial_year(posting_date)}"
+
+
 def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
     """
     Categories: TDS Not Deducted / Short Deducted / TDS Not Applicable (threshold-based)
@@ -1532,11 +1640,10 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
         section = _expected_section(txn)
         if not txn.vendor_pan or not section or not txn.posting_date:
             continue
-        fy = _get_financial_year(txn.posting_date)
-        key = (txn.vendor_pan.upper(), section, fy)
+        key = (txn.vendor_pan.upper(), section, threshold_period(section, txn.posting_date))
         groups[key].append(txn)
 
-    for (pan, section, fy), group_txns in groups.items():
+    for (pan, section, period), group_txns in groups.items():
         section_config = SECTIONS.get(section)
         if not section_config:
             continue
@@ -1585,10 +1692,14 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
             if has_row_level_shortfall:
                 continue
 
-            # Check MAGNITUDE, not just zero-vs-nonzero.
-            statutory_rate = _get_applicable_rate(group_txns[0])
-            if statutory_rate is not None:
-                required_tds = cumulative_basic_amount * statutory_rate / 100.0
+            # Check MAGNITUDE, not just zero-vs-nonzero. Each row at its own
+            # rate: rent rows of one vendor can be 2% and 10%, and an LDC
+            # covers only part of the year.
+            row_rates = [_get_applicable_rate(t) for t in known_base_txns]
+            if all(rate is not None for rate in row_rates):
+                required_tds = sum(
+                    t.basic_amount * rate / 100.0 for t, rate in zip(known_base_txns, row_rates)
+                )
                 tolerance = max(2.0, 2.0 * len(group_txns))  # ~₹2/txn rounding allowance
                 shortfall = required_tds - cumulative_tds_deducted
 
@@ -1606,7 +1717,7 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
                     issues.append((group_txns[0], TDSIssue(
                         category=category,
                         message=(
-                            f"Vendor PAN {pan}, Section {section}, FY {fy}: cumulative "
+                            f"Vendor PAN {pan}, Section {section}, {period}: cumulative "
                             f"payments ₹{cumulative_basic_amount:,.2f} crossed the threshold "
                             f"of ₹{aggregate_threshold:,.2f}, {detail}{incomplete_note}"
                         ),
@@ -1619,7 +1730,7 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
                 issues.append((group_txns[0], TDSIssue(
                     category="TDS Not Deducted — Threshold Crossed",
                     message=(
-                        f"Vendor PAN {pan}, Section {section}, FY {fy}: cumulative "
+                        f"Vendor PAN {pan}, Section {section}, {period}: cumulative "
                         f"payments ₹{cumulative_basic_amount:,.2f} crossed the threshold "
                         f"of ₹{aggregate_threshold:,.2f}, but no TDS was deducted across "
                         f"{len(group_txns)} transaction(s).{incomplete_note}"
@@ -1633,6 +1744,97 @@ def check_threshold_breach(transactions: list[Transaction]) -> list[tuple[Transa
 # ============================================================
 # CHECK 9 — Missing TDS Deduction (GL Cross-Reference)
 # ============================================================
+
+# Line text naming interest ("interest", or the common "intrest" misspelling):
+# interest to a resident (e.g. on late payment to an MSME vendor) is 194A.
+_INTEREST_TEXT = re.compile(r"inte?rest", re.IGNORECASE)
+
+
+def _money_text(value: float) -> str:
+    return f"₹{value:,.2f}"
+
+
+def _missed_deduction_issue(txn: Transaction, gl: dict, vendor: Optional[dict], severity: str) -> TDSIssue:
+    """Possible Missed TDS Deduction for one blank-TDS row: which section was
+    likely missed, at what rate, and roughly how much TDS that is.
+
+    Interest (by line text) -> 194A. Otherwise the section the same vendor's
+    other invoices in the batch carry most often. Only when the vendor has no
+    TDS anywhere does the GL's pattern stand in. SAP sends no withholding base
+    for a row with no TDS, so the base is estimated: the full amount for
+    interest (no GST on it), else the amount scaled by the vendor's own
+    base-to-amount ratio on its invoices with TDS.
+    """
+    amount = abs(float(txn.bill_amount or 0.0))
+    sap_base = abs(float(txn.basic_amount)) if txn.basic_amount else None
+    doc = f"doc {txn.doc_number}, amount {_money_text(amount)}"
+    text = " ".join(part for part in (txn.description, txn.gl_description) if part)
+
+    def expected_text(section: str, rate: float, base: Optional[float], base_note: str) -> str:
+        if not base or rate is None:
+            return ""
+        return f" Expected TDS under {section} at {rate}% is ≈ {_money_text(base * rate / 100)} on {base_note}."
+
+    if _INTEREST_TEXT.search(text):
+        section = "194A"
+        rate = statutory_rate_for_section(section, txn)
+        threshold = ((SECTIONS.get(section) or {}).get("threshold") or {}).get("others")
+        base = sap_base or amount
+        threshold_text = f" once interest to this vendor crosses {_money_text(threshold)} in the financial year" if threshold else ""
+        return TDSIssue(
+            category="Possible Missed TDS Deduction",
+            message=(
+                f'Line text "{txn.description or txn.gl_description}" is interest (e.g. interest on late payment '
+                f"to an MSME vendor), so TDS under {section} at {rate}% applies{threshold_text}. "
+                f"No TDS was deducted on this document ({doc})."
+                + expected_text(section, rate, base, f"a base of {_money_text(base)} (interest carries no GST)")
+                + " Deduct and file a correction, or record why none is due."
+            ),
+            severity=severity,
+            expected_rate=rate,
+            expected_section=section,
+            estimated_base=None if sap_base else base,
+        )
+
+    if vendor and vendor["sections"]:
+        (section, rate), _ = vendor["sections"].most_common(1)[0]
+        split = ", ".join(f"{sec} at {rt}% on {count}" for (sec, rt), count in vendor["sections"].most_common(3))
+        ratios = sorted(vendor["base_ratios"])
+        ratio = ratios[len(ratios) // 2] if ratios else None
+        base = sap_base or (amount * ratio if ratio else None)
+        base_note = (
+            f"a base of {_money_text(base)}" if sap_base
+            else f"an estimated base of {_money_text(base)} ({ratio * 100:.1f}% of the amount, as on this vendor's invoices with TDS)"
+            if base else ""
+        )
+        return TDSIssue(
+            category="Possible Missed TDS Deduction",
+            message=(
+                f"{txn.vendor_name or txn.vendor_code} had TDS deducted on {vendor['with_tds']} of its "
+                f"{vendor['total']} invoices in this batch ({split}), but none on this one ({doc})."
+                + expected_text(section, rate, base, base_note)
+                + " This may be a missed deduction, or the vendor's cumulative payments may not have "
+                "crossed the threshold yet — review and correct if TDS was due."
+            ),
+            severity=severity,
+            expected_rate=rate,
+            expected_section=section,
+            estimated_base=None if sap_base else base,
+        )
+
+    return TDSIssue(
+        category="Possible Missed TDS Deduction",
+        message=(
+            f"This vendor has no TDS in this batch, but GL {txn.gl_account} "
+            f"({txn.gl_description or 'no description'}) shows TDS deducted at {gl['sample_rate']}% "
+            f"under {gl['sample_section']} on {gl['with_tds']} of {gl['total']} transactions, though "
+            f"not on this one ({doc}). This may be a missed deduction, or the vendor's cumulative "
+            f"payments may not have crossed the applicable threshold yet — recommend manual review."
+        ),
+        severity=severity,
+        expected_rate=gl["sample_rate"],
+    )
+
 
 def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
     """
@@ -1657,20 +1859,36 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
     """
     results: list[tuple[Transaction, TDSIssue]] = []
 
-    # ---- Step 1: learn each (company_code, gl_account)'s TDS behavior ----
+    # ---- Step 1: learn each GL's and each vendor's TDS behaviour ----
+    # The GL decides whether a blank-TDS row is suspicious at all (as before).
+    # The vendor's own invoices decide which section and rate were missed: a
+    # vendor reconciliation GL (e.g. Sundry Creditors) carries every vendor, so
+    # its pattern says nothing about this vendor.
     gl_stats: dict[tuple, dict] = defaultdict(lambda: {
         "with_tds": 0, "total": 0, "sample_section": None, "sample_rate": None
+    })
+    vendor_stats: dict[tuple, dict] = defaultdict(lambda: {
+        "with_tds": 0, "total": 0, "sections": Counter(), "base_ratios": []
     })
 
     for txn in transactions:
         if _is_supporting_adjustment_without_tds(txn) or _is_payment_without_advance_obligation(txn):
             continue
+        has_tds = bool((txn.tds_deducted_section or txn.expected_tds_section) and txn.tds_deducted_rate)
+        if txn.vendor_code:
+            vendor = vendor_stats[(txn.company_code, txn.vendor_code)]
+            vendor["total"] += 1
+            if has_tds:
+                vendor["with_tds"] += 1
+                vendor["sections"][(txn.expected_tds_section or txn.tds_deducted_section, txn.tds_deducted_rate)] += 1
+                if txn.basic_amount and txn.bill_amount:
+                    vendor["base_ratios"].append(abs(txn.basic_amount) / abs(txn.bill_amount))
         if not txn.gl_account:
             continue
         key = (txn.company_code, txn.gl_account)
         stats = gl_stats[key]
         stats["total"] += 1
-        if (txn.tds_deducted_section or txn.expected_tds_section) and txn.tds_deducted_rate:
+        if has_tds:
             stats["with_tds"] += 1
             if stats["sample_section"] is None:  # keep one real example for the message
                 stats["sample_section"] = txn.expected_tds_section or txn.tds_deducted_section
@@ -1692,21 +1910,9 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
             continue  # no corroborating evidence this GL is ever TDS-relevant — stay silent
 
         coverage = stats["with_tds"] / stats["total"]
-        basic_amount = abs(float(txn.basic_amount if txn.basic_amount else txn.bill_amount or 0.0))
         severity = "medium" if coverage >= MISSING_DEDUCTION_COVERAGE_THRESHOLD else "low"
-
-        results.append((txn, TDSIssue(
-            category="Possible Missed TDS Deduction",
-            message=(
-                f"GL {txn.gl_account} ({txn.gl_description or 'no description'}) shows TDS "
-                f"deducted at {stats['sample_rate']}% under {stats['sample_section']} on "
-                f"{stats['with_tds']} of {stats['total']} transactions in this batch, but not "
-                f"on this one (doc {txn.doc_number}, basic amount {basic_amount}). This may be "
-                f"a missed deduction, or the vendor's cumulative payments may not have crossed "
-                f"the applicable threshold yet — recommend manual review."
-            ),
-            severity=severity,
-            expected_rate=stats["sample_rate"],
+        results.append((txn, _missed_deduction_issue(
+            txn, stats, vendor_stats.get((txn.company_code, txn.vendor_code)), severity,
         )))
 
     return results

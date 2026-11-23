@@ -922,7 +922,7 @@ def test_kz_with_tds_signal_is_still_checked_for_amount_mismatch():
 
     issues = run_all_checks(transaction)
 
-    assert any(issue.category == "Short TDS Deducted — Amount Mismatch" for issue in issues)
+    assert any(issue.category == "TDS Not Deducted — Amount Zero" for issue in issues)
 
 
 def test_advance_lifecycle_allows_partial_advance_and_balance_invoice_tds():
@@ -1191,3 +1191,70 @@ def test_excess_tds_check_uses_absolute_signed_invoice_amount():
     transaction.tds_deducted_amount = 15_420
 
     assert check_excess_tds_exceeds_invoice(transaction) is None
+
+
+def _vendor_invoice(doc: str, vendor: str = "EBU23812", **overrides) -> Transaction:
+    fields = dict(
+        doc_number=doc,
+        doc_type="KR",
+        posting_date=date(2025, 10, 27),
+        company_code="1001",
+        vendor_code=vendor,
+        vendor_name="CAPITAL TRADERS & ENGINEE",
+        vendor_pan="AAEPZ9355R",
+        vendor_category=_derive_vendor_category("AAEPZ9355R"),
+        gl_account="16060001",
+        bill_amount=8850.0,
+        basic_amount=7500.0,
+        tds_deducted_section="194C",
+        tds_deducted_rate=1,
+        tds_deducted_amount=75,
+    )
+    fields.update(overrides)
+    return Transaction(**fields)
+
+
+def _missed(doc: str, **overrides) -> Transaction:
+    return _vendor_invoice(doc, basic_amount=0.0, tds_deducted_section=None, tds_deducted_rate=None, tds_deducted_amount=0, **overrides)
+
+
+def test_missed_tds_uses_the_vendors_own_section_and_estimates_the_base():
+    # GL 16060001 is the vendor reconciliation account: another vendor's 194Q
+    # there must not decide this vendor's expected section.
+    other_vendor = [
+        _vendor_invoice(f"Q{i}", vendor="OTHER", tds_deducted_section="194Q", tds_deducted_rate=0.1, tds_deducted_amount=8)
+        for i in range(5)
+    ]
+    own = [_vendor_invoice("C1"), _vendor_invoice("C2")]
+    missed = _missed("2510511761")
+
+    [(txn, issue)] = check_missing_deduction([*other_vendor, *own, missed])
+
+    assert txn is missed
+    assert (issue.expected_section, issue.expected_rate) == ("194C", 1)
+    assert round(issue.estimated_base, 2) == 7500.0  # 8,850 at the vendor's 7,500 / 8,850 base ratio
+    assert "had TDS deducted on 2 of its 3 invoices" in issue.message
+    built = _transaction_issue(1, missed, issue)
+    assert built["section"] == "194C"
+    assert built["taxImpact"] == 75.0
+
+
+def test_missed_tds_on_interest_text_expects_194a():
+    own = [_vendor_invoice("C1"), _vendor_invoice("C2")]
+    interest = _missed("2510724369", bill_amount=22672.74, description="MSM intrest F25")
+
+    [(_, issue)] = check_missing_deduction([*own, interest])
+
+    assert (issue.expected_section, issue.expected_rate) == ("194A", 10.0)
+    assert issue.estimated_base == 22672.74  # interest carries no GST
+    assert _transaction_issue(1, interest, issue)["taxImpact"] == 2267.27
+
+
+def test_line_item_text_column_is_read_as_description():
+    [txn] = build_transactions_from_sap_rows([{
+        "Company_Code": "1001", "Vendor_Number": "DIS02167AB", "Vendor_Name": "SAIPRASAD INDUSTRIAL SERV",
+        "Document_Number": "2510724369", "Line_Item": "001", "Document_Type": "KR", "Posting_Date": "2025-10-27",
+        "Local_Amount": "-22672.74", "GL_Account": "0016060001", "Line_Item_Text": "MSM intrest F25",
+        "TDS_Section": "194C", "TDS_Rate": "1",
+    }])
+    assert txn.description == "MSM intrest F25"

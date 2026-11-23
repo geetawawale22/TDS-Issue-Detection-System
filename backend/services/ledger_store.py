@@ -142,13 +142,20 @@ def _line_key(line: dict[str, Any]) -> LineKey:
     return (line["company_code"], line["fiscal_year"], line["doc_no"], line["line_item"])
 
 
-def save_run_lines(db: Session, run_id: int | None, items: list[tuple[Any, str, dict[str, Any]]]) -> dict[str, Any]:
+def save_run_lines(
+    db: Session,
+    run_id: int | None,
+    items: list[tuple[Any, str, dict[str, Any]]],
+    reports: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Save one run's lines (``(txn, event_type, event)``) and refresh the groups they touch.
 
     Each withholding tax of a SAP line is its own row. When a file sends a line
     again, its saved rows are replaced by the ones sent now: rows matched by
     withholding type/code are updated, a row saved before withholding types were
     kept ('' type) is reused, and rows SAP no longer sends for that line go.
+
+    ``reports`` maps id(txn) to the line's report row (TDS Category Report).
     """
     # Entries of each SAP line in this run, by withholding type/code (a repeated
     # identical row keeps the last one, as before).
@@ -157,6 +164,9 @@ def save_run_lines(db: Session, run_id: int | None, items: list[tuple[Any, str, 
         line = _line_from_transaction(txn, event_type, event, run_id)
         if not line["doc_no"]:
             continue
+        report = (reports or {}).get(id(txn))
+        line["report"] = json.dumps(report, default=str) if report else None
+        line["report_category"] = (str(report.get("reportCategory") or "")[:30] or None) if report else None
         incoming[_line_key(line)][(line["withholding_tax_type"], line["withholding_tax_code"])] = line
 
     identity = (LedgerLine.company_code, LedgerLine.fiscal_year, LedgerLine.doc_no, LedgerLine.line_item)

@@ -299,6 +299,8 @@ class TrackedIssue(Base):
     doc_type = Column(String(10), nullable=True)
     category = Column(String(150), nullable=False)
     issue_type = Column(String(60), nullable=True)
+    # Business sheet (short / excess / not_deducted / ldc / advance_* / ...), see services/report_category.py.
+    report_category = Column(String(30), nullable=True, index=True)
     severity = Column(String(10), nullable=True)
     vendor_code = Column(String(50), nullable=True, index=True)
     vendor_name = Column(String(255), nullable=True)
@@ -399,6 +401,10 @@ class LedgerLine(Base):
     self_clearing = Column(Boolean, nullable=False, default=False)
     has_open_issue = Column(Boolean, nullable=False, default=False)
     event = Column(Text, nullable=False)  # JSON: the line as the ledger UI shows it
+    # Reports → TDS Category Report: the line's validation row as analysed
+    # (JSON, before any later resolution) and its business category.
+    report_category = Column(String(30), nullable=True, index=True)
+    report = Column(Text, nullable=True)
 
     first_run_id = Column(Integer, ForeignKey("rule_runs.id"), nullable=True)
     last_run_id = Column(Integer, ForeignKey("rule_runs.id"), nullable=True)

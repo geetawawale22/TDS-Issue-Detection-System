@@ -64,6 +64,19 @@ export default function DataTable({
 
   const pageData = sorted.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
+  // Columns sharing a `group` get one merged header cell above them (e.g.
+  // "TDS Applicable" over Section / Rate / Amount). Off unless a column sets it.
+  const groupSpans = useMemo(() => {
+    if (!columns.some((col) => col.group)) return null
+    const spans = []
+    for (const col of columns) {
+      const last = spans[spans.length - 1]
+      if (last && col.group && last.group === col.group) last.size += 1
+      else spans.push({ group: col.group || null, size: 1 })
+    }
+    return spans
+  }, [columns])
+
   function handleSort(key) {
     if (!key) return
     if (sortKey === key) setSortDir((d) => d === 'asc' ? 'desc' : 'asc')
@@ -129,12 +142,22 @@ export default function DataTable({
                 ))}
               </tr>
             )}
-            <tr>
+            {groupSpans && (
+              <tr className="data-table-group-row">
+                {groupSpans.map((span, i) => (
+                  <th key={`group-${i}`} colSpan={span.size} className={span.group ? 'data-table-group-cell' : undefined}>
+                    {span.group || ''}
+                  </th>
+                ))}
+              </tr>
+            )}
+            <tr className={groupSpans ? 'data-table-grouped-header-row' : undefined}>
               {columns.map((col) => (
                 <th
                   key={col.key || col.header}
                   onClick={() => col.key && handleSort(col.key)}
                   style={{ cursor: col.key ? 'pointer' : 'default' }}
+                  className={col.headerClassName}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     {col.header}
@@ -167,7 +190,7 @@ export default function DataTable({
                       style={{ cursor: onRowClick ? 'pointer' : 'default' }}
                     >
                       {columns.map((col) => (
-                        <td key={col.key || col.header}>
+                        <td key={col.key || col.header} className={col.cellClassName}>
                           {col.render ? col.render(row, (currentPage - 1) * pageSize + i) : row[col.key]}
                         </td>
                       ))}

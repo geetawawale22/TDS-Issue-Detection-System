@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,7 +14,7 @@ from core.dependencies import get_current_user, get_user_company_codes
 from db.database import get_db
 from db.models import RuleRun, TrackedIssue, User
 from services.issue_tracker import manual_resolve, tracked_issue_to_dict
-from services.ledger_store import financial_year_range, refresh_issue_state
+from services.ledger_store import NO_SECTION, financial_year_range, refresh_issue_state
 
 
 router = APIRouter(prefix="/tracked-issues", tags=["Issue History"])
@@ -26,6 +27,87 @@ def _in_selection(query, company_code: str = "", financial_year: str = ""):
     period = financial_year_range(financial_year)
     if period:
         query = query.filter(TrackedIssue.posting_date.between(*period))
+    return query
+
+
+class _BarFilters:
+    """The TDS Analysis filter bar (vendor, section, doc type, ...), as query parameters."""
+
+    def __init__(
+        self,
+        vendor: list[str] = Query(default=[]),
+        section: list[str] = Query(default=[]),
+        doc_type: list[str] = Query(default=[]),
+        profit_center: list[str] = Query(default=[]),
+        severity_in: list[str] = Query(default=[]),
+        issue_type: list[str] = Query(default=[]),
+        date_from: date | None = None,
+        date_to: date | None = None,
+        bar_search: str = "",
+    ) -> None:
+        self.search = bar_search.strip()
+        self.vendor = [v for v in vendor if v]
+        self.section = [v for v in section if v]
+        self.doc_type = [v.upper() for v in doc_type if v]
+        self.profit_center = [v for v in profit_center if v]
+        self.severity = [v.lower() for v in severity_in if v]
+        # An issue-type option can stand for several categories joined with '||'.
+        self.issue_type = [part for value in issue_type for part in value.split("||") if part]
+        self.date_from = date_from
+        self.date_to = date_to
+
+    def apply(self, query):
+        if self.search:
+            like = f"%{self.search}%"
+            query = query.filter(or_(
+                TrackedIssue.doc_no.ilike(like), TrackedIssue.vendor_name.ilike(like),
+                TrackedIssue.vendor_code.ilike(like), TrackedIssue.vendor_pan.ilike(like),
+                TrackedIssue.section.ilike(like), TrackedIssue.category.ilike(like),
+            ))
+        if self.vendor:
+            query = query.filter(func.coalesce(TrackedIssue.vendor_name, TrackedIssue.vendor_code).in_(self.vendor))
+        if self.section:
+            options = [
+                TrackedIssue.section.is_(None) if value == NO_SECTION else TrackedIssue.section == value
+                for value in self.section
+            ]
+            query = query.filter(or_(*options))
+        if self.doc_type:
+            query = query.filter(func.upper(TrackedIssue.doc_type).in_(self.doc_type))
+        if self.profit_center:
+            query = query.filter(TrackedIssue.profit_center.in_(self.profit_center))
+        if self.severity:
+            query = query.filter(TrackedIssue.severity.in_(self.severity))
+        if self.issue_type:
+            query = query.filter(or_(TrackedIssue.category.in_(self.issue_type), TrackedIssue.issue_type.in_(self.issue_type)))
+        if self.date_from:
+            query = query.filter(TrackedIssue.posting_date >= self.date_from)
+        if self.date_to:
+            query = query.filter(TrackedIssue.posting_date <= self.date_to)
+        return query
+
+
+# Open Issues tabs (as on the Issues tab), each a set of report categories
+# (services/report_category.py). "other" takes every open issue no tab above takes.
+ISSUE_TABS: dict[str, tuple[str, ...]] = {
+    "short": ("short",),
+    "excess": ("excess",),
+    "not_deducted": ("not_deducted",),
+    "ldc": ("ldc",),
+    "advance": ("advance_full", "advance_partial"),
+    "not_applicable": ("not_applicable",),
+}
+_TABBED_CATEGORIES = tuple(category for categories in ISSUE_TABS.values() for category in categories)
+
+
+def _issue_tab_filter(query, issue_tab: str):
+    if issue_tab in ISSUE_TABS:
+        return query.filter(TrackedIssue.report_category.in_(ISSUE_TABS[issue_tab]))
+    if issue_tab == "other":
+        return query.filter(or_(
+            TrackedIssue.report_category.is_(None),
+            TrackedIssue.report_category.notin_(_TABBED_CATEGORIES),
+        ))
     return query
 
 
@@ -48,13 +130,15 @@ def list_tracked_issues(
     tds: Literal["", "deducted", "not_deducted"] = "",
     severity: str = "",
     partial: bool = False,
+    issue_tab: str = "",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
+    bar: _BarFilters = Depends(),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """One page of saved issues; filtering and paging happen in the database."""
-    base = _in_selection(_scoped(db.query(TrackedIssue), current_user, db), company_code, financial_year)
+    base = bar.apply(_in_selection(_scoped(db.query(TrackedIssue), current_user, db), company_code, financial_year))
     term = search.strip()
     if term:
         like = f"%{term}%"
@@ -81,6 +165,7 @@ def list_tracked_issues(
         column = TrackedIssue.resolved_run_id if status == "resolved" else TrackedIssue.first_seen_run_id
         query = query.filter(column == latest_id)
     query = _card_filters(query, tds, severity, partial)
+    query = _issue_tab_filter(query, issue_tab.strip())
     if resolution_type.strip():
         query = query.filter(TrackedIssue.resolution_type == resolution_type.strip().upper())
     total = query.count()
@@ -139,11 +224,12 @@ def _run_dict(run: RuleRun) -> dict[str, Any]:
 def tracked_issue_summary(
     company_code: str = "",
     financial_year: str = "",
+    bar: _BarFilters = Depends(),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Issue book across every run: each issue once, however many files raised it."""
-    base = _in_selection(_scoped(db.query(TrackedIssue), current_user, db), company_code, financial_year)
+    base = bar.apply(_in_selection(_scoped(db.query(TrackedIssue), current_user, db), company_code, financial_year))
     open_rows = base.filter(TrackedIssue.status == "open")
     open_count, open_impact = open_rows.with_entities(
         func.count(TrackedIssue.id), func.coalesce(func.sum(TrackedIssue.tax_impact), 0),
@@ -156,6 +242,12 @@ def tracked_issue_summary(
         .group_by(TrackedIssue.severity).all()
     )
     deducted = open_rows.filter(_tds_deducted()).count()
+    by_category = dict(
+        open_rows.with_entities(TrackedIssue.report_category, func.count(TrackedIssue.id))
+        .group_by(TrackedIssue.report_category).all()
+    )
+    by_tab = {tab: sum(by_category.get(category, 0) for category in categories) for tab, categories in ISSUE_TABS.items()}
+    by_tab["other"] = open_count - sum(by_tab.values())
     return {
         "open": open_count,
         "openTaxImpact": float(open_impact or 0),
@@ -167,6 +259,7 @@ def tracked_issue_summary(
         "openLow": severity_counts.get("low", 0),
         "openNewInLatestRun": open_rows.filter(TrackedIssue.first_seen_run_id == latest.id).count() if latest else 0,
         "resolved": resolved,
+        "openByIssueTab": by_tab,
         "latestRun": _run_dict(latest) if latest else None,
     }
 

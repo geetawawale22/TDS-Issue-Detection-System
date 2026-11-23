@@ -9,8 +9,17 @@ import { downloadCsv, downloadExcel, downloadPdf } from '@/utils/csvExport'
  * csvExport.js already expects, so the same column list drives the on-screen
  * table and all three export formats with no duplication.
  */
-export default function ReportViewModal({ title, description, columns, rows, filenameBase, onClose }) {
+export default function ReportViewModal({ title, description, columns, rows, filenameBase, onClose, onExport }) {
   if (!title) return null
+
+  // With onExport the page handles the download (e.g. asking for a period
+  // first); without it the rows on screen are downloaded as they are.
+  const exportAs = (format) => {
+    if (onExport) return onExport(format)
+    if (format === 'csv') return downloadCsv(`${filenameBase}.csv`, columns, rows)
+    if (format === 'excel') return downloadExcel(`${filenameBase}.xlsx`, columns, rows)
+    return downloadPdf(`${filenameBase}.pdf`, title, columns, rows)
+  }
 
   const tableColumns = columns.map((c) => ({
     header: c.label,
@@ -40,7 +49,7 @@ export default function ReportViewModal({ title, description, columns, rows, fil
               className="btn btn-outline btn-sm"
               type="button"
               disabled={rows.length === 0}
-              onClick={() => downloadCsv(`${filenameBase}.csv`, columns, rows)}
+              onClick={() => exportAs('csv')}
             >
               <Download size={12} />CSV
             </button>
@@ -48,7 +57,7 @@ export default function ReportViewModal({ title, description, columns, rows, fil
               className="btn btn-outline btn-sm"
               type="button"
               disabled={rows.length === 0}
-              onClick={() => downloadExcel(`${filenameBase}.xlsx`, columns, rows)}
+              onClick={() => exportAs('excel')}
             >
               <FileSpreadsheet size={12} />Excel
             </button>
@@ -56,7 +65,7 @@ export default function ReportViewModal({ title, description, columns, rows, fil
               className="btn btn-outline btn-sm"
               type="button"
               disabled={rows.length === 0}
-              onClick={() => downloadPdf(`${filenameBase}.pdf`, title, columns, rows)}
+              onClick={() => exportAs('pdf')}
             >
               <FileText size={12} />PDF
             </button>

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useSearchParams } from 'react-router-dom'
-import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, Download, FileSpreadsheet, GitBranch, ListTree, RotateCcw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react'
 import Issues, { issueMatchesFilters, issueRowsMatchingIssues, validationRowsMatchingFilters } from '@/pages/Issues/Issues'
 import DataTable from '@/components/Common/DataTable'
 import SearchInput from '@/components/Common/SearchInput'
+import MultiSelectFilter from '@/components/Common/MultiSelectFilter'
 import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import IssueHistory from '@/pages/CorrectionCenter/IssueHistory'
 import issuesService from '@/services/issuesService'
@@ -210,83 +211,6 @@ function eventLdc(event) {
   return { certificate, exemptionRate, expectedRate: roundedRate(event.ldcExpectedRate) }
 }
 
-// Checkbox dropdown used by every TDS Analysis filter. `value` is 'all' or an
-// array of option values; ticking nothing (or "All") goes back to 'all'.
-function MultiSelectFilter({ allLabel, options, value, disabled = false, disabledTitle, onChange }) {
-  const [open, setOpen] = useState(false)
-  const menuRef = useRef(null)
-  const selected = selectedValues(value) || []
-  const selectedSet = new Set(selected)
-  const labelFor = (optionValue) => options.find(([candidate]) => candidate === optionValue)?.[1] || optionValue
-  const buttonLabel = selected.length === 0
-    ? allLabel
-    : selected.length === 1 ? labelFor(selected[0]) : `${selected.length} selected`
-
-  useEffect(() => {
-    if (disabled) setOpen(false)
-  }, [disabled])
-
-  useEffect(() => {
-    if (!open) return undefined
-    function handleOutsideClick(event) {
-      if (menuRef.current && !menuRef.current.contains(event.target)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handleOutsideClick)
-    return () => document.removeEventListener('mousedown', handleOutsideClick)
-  }, [open])
-
-  function toggle(optionValue) {
-    const next = selectedSet.has(optionValue)
-      ? selected.filter((item) => item !== optionValue)
-      : [...selected, optionValue]
-    onChange(next.length ? next : 'all')
-  }
-
-  return (
-    <div className="case-filter-menu" ref={menuRef}>
-      <button
-        className={`filter-select case-filter-menu-button ${selected.length ? 'has-selection' : ''}`}
-        type="button"
-        disabled={disabled}
-        title={disabled ? disabledTitle : selected.map(labelFor).join(', ') || undefined}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((next) => !next)}
-      >
-        <span>{buttonLabel}</span>
-        <ChevronDown size={14} />
-      </button>
-      {open && !disabled && (
-        <div className="case-filter-menu-list" role="listbox" aria-multiselectable="true">
-          <button
-            className={`case-filter-menu-option ${selected.length === 0 ? 'is-active' : ''}`}
-            type="button"
-            role="option"
-            aria-selected={selected.length === 0}
-            onClick={() => onChange('all')}
-          >
-            <input type="checkbox" readOnly tabIndex={-1} checked={selected.length === 0} />
-            {allLabel}
-          </button>
-          {options.map(([optionValue, label]) => (
-            <button
-              className={`case-filter-menu-option ${selectedSet.has(optionValue) ? 'is-active' : ''}`}
-              type="button"
-              key={optionValue}
-              role="option"
-              aria-selected={selectedSet.has(optionValue)}
-              onClick={() => toggle(optionValue)}
-            >
-              <input type="checkbox" readOnly tabIndex={-1} checked={selectedSet.has(optionValue)} />
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 const SEVERITY_OPTIONS = [['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]
 const STATUS_OPTIONS = [['open', 'Open'], ['in_review', 'In Review'], ['resolved', 'Resolved'], ['rejected', 'Rejected']]
 
@@ -328,6 +252,7 @@ export default function TDSCaseBuilder() {
   const [storedOptions, setStoredOptions] = useState(null)
   const [storedGroups, setStoredGroups] = useState({ items: [], total: 0, counts: null })
   const [storedGl, setStoredGl] = useState([])
+  const [storedGlLoading, setStoredGlLoading] = useState(true)
   const [storedPage, setStoredPage] = useState(1)
   const [storedLoading, setStoredLoading] = useState(false)
   const [storedError, setStoredError] = useState('')
@@ -371,14 +296,28 @@ export default function TDSCaseBuilder() {
       .finally(() => { if (!cancelled) setStoredLoading(false) })
     return () => { cancelled = true }
   }, [storedFilters, storedStatus, storedPage, trackingRunId])
+  // Loaded on every tab (not only GL) so the GL Ledger tab label shows its count.
   useEffect(() => {
-    if (activeTab !== 'gl') return undefined
     let cancelled = false
+    setStoredGlLoading(true)
     ledgerService.getGlRows({ filters: storedFilters })
       .then((data) => { if (!cancelled) setStoredGl(data.items || []) })
       .catch(() => { if (!cancelled) setStoredGl([]) })
+      .finally(() => { if (!cancelled) setStoredGlLoading(false) })
     return () => { cancelled = true }
-  }, [activeTab, storedFilters, trackingRunId])
+  }, [storedFilters, trackingRunId])
+  // Filter bar for the Open Issues tab (that list is open-only, so no status filter).
+  const openIssueBarFilters = useMemo(() => ({
+    vendor: storedFilters.vendor,
+    section: storedFilters.section,
+    doc_type: storedFilters.doc_type,
+    profit_center: storedFilters.profit_center,
+    severity_in: storedFilters.severity,
+    issue_type: storedFilters.issue_type,
+    date_from: storedFilters.date_from,
+    date_to: storedFilters.date_to,
+    bar_search: storedFilters.search || undefined,
+  }), [storedFilters])
 
   // Counts follow the shared filter bar, using the Issues page's own
   // predicates so tab/card numbers match the cards inside the Issues tab.
@@ -834,7 +773,7 @@ export default function TDSCaseBuilder() {
           Open Issues · All Runs ({(openSummary?.open ?? 0).toLocaleString()})
         </button>
         <button type="button" className={`case-tab ${activeTab === 'gl' ? 'active' : ''}`} onClick={() => applyQuickFilter('gl', 'gl-all')}>
-          GL Ledger ({activeTab !== 'gl' ? '…' : glTableRows.length.toLocaleString()})
+          GL Ledger ({storedGlLoading ? '…' : glTableRows.length.toLocaleString()})
         </button>
       </div>
     </div>
@@ -885,12 +824,14 @@ export default function TDSCaseBuilder() {
           value={issueTypeFilter}
           onChange={(next) => dispatch(setIssueTypeFilter(next))}
         />
-        <MultiSelectFilter
-          allLabel="All Status"
-          options={STATUS_OPTIONS}
-          value={statusFilter}
-          onChange={(next) => dispatch(setStatusFilter(next))}
-        />
+        {activeTab !== 'open-issues' && (
+          <MultiSelectFilter
+            allLabel="All Status"
+            options={STATUS_OPTIONS}
+            value={statusFilter}
+            onChange={(next) => dispatch(setStatusFilter(next))}
+          />
+        )}
         <MultiSelectFilter
           allLabel="All Doc Types"
           options={(storedOptions ? storedOptions.docTypes : docTypeOptions).map((docType) => [docType, docType])}
@@ -951,31 +892,12 @@ export default function TDSCaseBuilder() {
         </div>
       )}
 
-      <div className="case-summary-grid">
-        {summaryCards.map((card) => (
-          <button
-            type="button"
-            className={`kpi-card case-kpi-button ${quickFilter === card.filter ? 'is-active' : ''}`}
-            key={card.label}
-            onClick={() => applyQuickFilter(card.tab, card.filter)}
-          >
-            <div className="kpi-icon-row">
-              <span className="kpi-label">{card.label}</span>
-              <div className={`kpi-icon-box ${card.tone}`}><card.icon size={14} /></div>
-            </div>
-            <span className="kpi-value">{Number(card.value || 0).toLocaleString()}</span>
-            <span className="case-muted">{card.description}</span>
-          </button>
-        ))}
-      </div>
-
-
-      {activeTab !== 'open-issues' && sharedFilters}
+      {sharedFilters}
 
       {activeTab === 'open-issues' ? (
         <>
           {resultsTabsPanel}
-          <IssueHistory mode="open" showCards refreshKey={trackingRunId} />
+          <IssueHistory mode="open" showCards refreshKey={trackingRunId} barFilters={openIssueBarFilters} />
         </>
       ) : activeTab === 'issues' ? (
         <Issues embedded initialView={searchParams.get('view') || 'all'} hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
@@ -1065,6 +987,23 @@ export default function TDSCaseBuilder() {
       ) : (
         <>
           {resultsTabsPanel}
+          <div className="case-summary-grid">
+            {summaryCards.map((card) => (
+              <button
+                type="button"
+                className={`kpi-card case-kpi-button ${quickFilter === card.filter ? 'is-active' : ''}`}
+                key={card.label}
+                onClick={() => applyQuickFilter(card.tab, card.filter)}
+              >
+                <div className="kpi-icon-row">
+                  <span className="kpi-label">{card.label}</span>
+                  <div className={`kpi-icon-box ${card.tone}`}><card.icon size={14} /></div>
+                </div>
+                <span className="kpi-value">{Number(card.value || 0).toLocaleString()}</span>
+                <span className="case-muted">{card.description}</span>
+              </button>
+            ))}
+          </div>
           <div className="table-card">
           <DataTable
             columns={ledgerColumns}

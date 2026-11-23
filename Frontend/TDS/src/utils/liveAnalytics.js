@@ -6,13 +6,14 @@ import { NO_SECTION, hasSection } from '@/utils/sectionAliases'
 
 import { getFinancialYear } from '@/utils/utils'
 
+// Same values as backend config/tds_sections.yaml (Budget 2025).
 const SECTION_THRESHOLDS = {
   '194Q': 5_000_000,
   '194C': 100_000,
-  '194H': 15_000,
-  '194J': 0,
+  '194H': 20_000,
+  '194J': 50_000,
   '194A': 10_000,
-  '194I': 240_000,
+  '194I': 50_000, // per month, not per FY
   '194R': 20_000,
   '192': 0,
   '193': 10_000,

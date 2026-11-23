@@ -379,6 +379,7 @@ def _entry_from_issue(issue: dict[str, Any], txn) -> dict[str, Any]:
         "doc_type": (str(txn.doc_type or "")[:10] or None),
         "category": str(issue.get("category") or "")[:150],
         "issue_type": (str(issue.get("issueType") or "")[:60] or None),
+        "report_category": (str(issue.get("reportCategory") or "")[:30] or None),
         "severity": (str(issue.get("severity") or "")[:10] or None),
         "vendor_code": (str(txn.vendor_code or "")[:50] or None),
         "vendor_name": (str(txn.vendor_name or "")[:255] or None),
@@ -410,6 +411,58 @@ _EVAL_COLUMNS = (
 
 def _row_dict(row) -> dict[str, Any]:
     return dict(row._mapping)
+
+
+# Fields of an issue that a later run may describe differently for the same line.
+_RELABEL_FIELDS = (
+    "issue_key", "category", "issue_type", "report_category", "severity", "section",
+    "base_amount", "tds_amount", "applied_rate", "expected_rate", "tax_impact", "description",
+)
+
+
+# How the rules describe an issue, refreshed to the latest run that raises it.
+_REFRESHED_FIELDS = (
+    "severity", "section", "base_amount", "applied_rate", "expected_rate", "tax_impact", "description",
+)
+
+
+def _line_of(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (row["company_code"], row["fiscal_year"], row["doc_no"], row["line_item"])
+
+
+def _relabelled_issues(
+    current: dict[str, dict[str, Any]],
+    existing: dict[str, dict[str, Any]],
+    carried: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Open issues that this run raises again under another label (e.g. after a rule change).
+
+    When a SAP line has exactly one open issue that is no longer raised and
+    exactly one issue raised for the first time, it is the same problem with
+    a new name: the saved issue takes the new label and key and stays open,
+    instead of being closed as "no longer flagged" next to a new issue.
+    Moves each such issue from ``carried`` to ``existing`` (as recurring) and
+    returns the row updates to save.
+    """
+    added: dict[tuple, list[str]] = defaultdict(list)
+    for key, entry in current.items():
+        if key not in existing:
+            added[_line_of(entry)].append(key)
+    dropped: dict[tuple, list[str]] = defaultdict(list)
+    for key, previous in carried.items():
+        dropped[_line_of(previous)].append(key)
+
+    updates: list[dict[str, Any]] = []
+    for line, new_keys in added.items():
+        old_keys = dropped.get(line, [])
+        if len(new_keys) != 1 or len(old_keys) != 1:
+            continue
+        new_key, old_key = new_keys[0], old_keys[0]
+        previous = carried.pop(old_key)
+        entry = current[new_key]
+        existing[new_key] = {**previous, "issue_key": new_key, **{field: entry[field] for field in _RELABEL_FIELDS}}
+        updates.append({"id": previous["id"], **{field: entry[field] for field in _RELABEL_FIELDS}})
+    return updates
 
 
 def track_rule_run(
@@ -468,6 +521,8 @@ def track_rule_run(
         for row in open_rows:
             if row.issue_key not in current:
                 carried[row.issue_key] = _row_dict(row)
+
+    relabels = _relabelled_issues(current, existing, carried)
 
     new_rows: list[dict[str, Any]] = []
     updates: list[dict[str, Any]] = []
@@ -609,13 +664,22 @@ def track_rule_run(
         )
     if updates:
         db.bulk_update_mappings(TrackedIssue, updates)
-    # Details added after an issue was first saved (e.g. profit center) are
-    # filled in whenever a later file raises it again.
-    detail_updates = [
-        {"id": existing[key]["id"], "profit_center": entry["profit_center"]}
-        for key, entry in current.items()
-        if key in existing and entry.get("profit_center")
-    ]
+    if relabels:
+        db.bulk_update_mappings(TrackedIssue, relabels)
+    # Details added after an issue was first saved (profit center, report category) are
+    # filled in whenever a later file raises it again; how the rules describe the
+    # issue (text, section, rate, amounts, severity) is refreshed to the latest
+    # run, so a rule improvement reaches issues saved before it.
+    detail_updates = []
+    for key, entry in current.items():
+        if key not in existing:
+            continue
+        details = {column: entry[column] for column in ("profit_center", "report_category") if entry.get(column)}
+        details.update({
+            column: entry[column] for column in _REFRESHED_FIELDS if entry.get(column) is not None
+        })
+        if details:
+            detail_updates.append({"id": existing[key]["id"], **details})
     if detail_updates:
         db.bulk_update_mappings(TrackedIssue, detail_updates)
 
@@ -686,6 +750,7 @@ def tracked_issue_to_dict(row: TrackedIssue) -> dict[str, Any]:
         "debitCredit": row.debit_credit,
         "category": row.category,
         "issueType": row.issue_type,
+        "reportCategory": row.report_category,
         "severity": row.severity,
         "vendor": row.vendor_name or row.vendor_code or "Unknown vendor",
         "vendorId": row.vendor_code,

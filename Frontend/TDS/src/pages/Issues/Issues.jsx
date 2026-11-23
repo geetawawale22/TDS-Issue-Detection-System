@@ -10,6 +10,7 @@ import {
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
 import IssueDrawer from '@/components/Common/IssueDrawer'
+import LinkedCorrectionDocs from '@/components/Common/LinkedCorrectionDocs'
 import correctionsService from '@/services/correctionsService'
 import { groupMatchesIssue } from '@/utils/correctionMatching'
 import {
@@ -24,7 +25,7 @@ import {
   issueDateKey,
 } from '@/redux/slices/issuesSlice'
 import { startVerifyPan, finishVerifyPan } from '@/redux/slices/panSlice'
-import { issueTypeFilterOptionsFor, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER } from '@/data/issueTypes'
+import { issueTypeFilterOptionsFor, getDisplayIssueType, simulatePanVerification, MULTI_CATEGORY_DELIMITER, RULE_SCENARIOS } from '@/data/issueTypes'
 import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiFilter'
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
@@ -52,9 +53,9 @@ const VIEW_LABELS = {
   corrected: 'Corrected',
   tds_deducted: 'TDS Deducted',
   tds_not_deducted: 'TDS Not Deducted',
-  passed_deducted: 'Passed - TDS Deducted',
+  passed_deducted: 'TDS Properly Deducted',
   issue_deducted: 'Issues - TDS Deducted',
-  passed_not_deducted: 'Passed - TDS Not Applicable',
+  passed_not_deducted: 'TDS Not Applicable',
   issue_not_deducted: 'Issues - TDS Not Deducted',
 }
 
@@ -80,6 +81,35 @@ function rowInBucketView(row, view, issueKeys) {
   const bucket = BUCKET_VIEWS[view]
   if (!bucket || isRowTdsDeducted(row) !== bucket.deducted || !bucket.statuses.includes(row.status)) return false
   return row.status !== 'issue' || issueKeys.has(issueRowKey(row))
+}
+
+// Tabs under the cards: the issues split by business category (the scenario
+// workbook's sheets, read as problems). Correct rows are in the cards, so only
+// open issues go in these tabs — every open issue row in exactly one of them,
+// adding up to "Issues · This Upload" — plus the issues already resolved.
+// `categories` are reportCategory ids (services/report_category.py).
+const OPEN_ISSUE_TABS = [
+  { id: 'short', label: 'Short TDS Deducted', categories: ['short'] },
+  { id: 'excess', label: 'Excess TDS Deducted', categories: ['excess'] },
+  { id: 'not_deducted', label: 'TDS Not Deducted', categories: ['not_deducted'] },
+  { id: 'ldc', label: 'TDS Not Deducted as per LDC', categories: ['ldc'] },
+  { id: 'advance', label: 'TDS on Advance', categories: ['advance_full', 'advance_partial'] },
+  { id: 'not_applicable', label: 'TDS Deducted though Not Applicable', categories: ['not_applicable'] },
+]
+const ISSUE_TAB_BY_CATEGORY = new Map(OPEN_ISSUE_TABS.flatMap((tab) => tab.categories.map((c) => [c, tab.id])))
+const ISSUE_TABS = [
+  ...OPEN_ISSUE_TABS,
+  // Open issues no tab above takes (e.g. TDS Section Missing).
+  { id: 'other', label: 'Other Issues' },
+  { id: 'resolved', label: 'Resolved Issues' },
+]
+const ISSUE_TAB_LABELS = new Map(ISSUE_TABS.map((tab) => [tab.id, tab.label]))
+
+// The issue tab a row belongs to, or null for a correct / unvalidated row.
+function issueTabOf(row) {
+  if (row.status === 'corrected') return 'resolved'
+  if (row.status !== 'issue') return null
+  return ISSUE_TAB_BY_CATEGORY.get(row.reportCategory) || 'other'
 }
 
 function inferRateFromAmount(baseAmount, tdsAmount) {
@@ -118,10 +148,59 @@ function SectionCell({ issue }) {
 }
 
 
-/** Credit memo / reversal / TDS top-up rows name the document they correct. */
+/**
+ * Rows that reference another document (SAP Reference_Document_Number) name it.
+ * With no TDS of their own they are credit notes against that document; with
+ * TDS they are TDS corrections (top-up / reversal).
+ */
 function correctionRowLabel(row) {
   const original = String(row?.correctionOf ?? '').trim()
+  const hasTds = Math.abs(Number(row?.tdsAmount) || 0) > 0
+  if (!hasTds) return original ? `Credit note for doc ${original}` : 'Credit Note'
   return original ? `Correction to doc ${original}` : 'Correction Entry'
+}
+
+// Where the original document stands now (backend correctionOriginalStatus,
+// read from the issue history after the run): the headline for the entry.
+const CORRECTION_ORIGINAL_STATUS = {
+  resolved: { suffix: 'Original resolved', tone: 'success' },
+  partial: { suffix: 'Partly corrected', tone: 'warning' },
+  open: { suffix: 'Original still open', tone: 'danger' },
+}
+
+/** { label, tone } for a correction / credit-note row. */
+function correctionRowBadge(row) {
+  const label = correctionRowLabel(row)
+  const original = CORRECTION_ORIGINAL_STATUS[row?.correctionOriginalStatus]
+  if (original) return { label: `${label} · ${original.suffix}`, tone: original.tone }
+  // The original has no issue: the entry's own TDS check is all there is.
+  return row?.status === 'passed' ? { label: `${label} · Passed`, tone: 'success' } : { label, tone: 'default' }
+}
+
+/** Review-drawer text for a correction row: the original first, then the entry's own TDS check. */
+function correctionRowAction(row) {
+  const original = row.correctionOf
+  const hasTds = Math.abs(Number(row.tdsAmount) || 0) > 0
+  const ownCheck = !hasTds
+    ? ''
+    : row.status === 'passed'
+      ? ' This entry\'s own TDS matches the expected rate.'
+      : ' This entry\'s own TDS rate was not checked: SAP gives no section or rate on it.'
+  if (row.correctionOriginalStatus === 'resolved') {
+    return `No action needed. Original ${original}: resolved — every issue on it is now resolved (see Correction Center).${ownCheck}`
+  }
+  if (row.correctionOriginalStatus === 'partial') {
+    return `Original ${original} is partly corrected: a shortfall remains on it (see Open Issues · All Runs). Post a further correction for the rest.${ownCheck}`
+  }
+  if (row.correctionOriginalStatus === 'open') {
+    return `Original ${original} still has an open issue; this entry did not resolve it. Check this entry's amount and section against ${original}.${ownCheck}`
+  }
+  if (row.correctionOriginalFlagged) {
+    return `No separate action. This entry corrects document ${original}; its effect is applied to that document's issue (see Open Issues · All Runs and Correction Center).`
+  }
+  return row.status === 'passed'
+    ? `No action needed. The TDS on this entry matches the expected rate. No TDS issue is recorded for document ${original}.`
+    : `No TDS issue is recorded for document ${original}. If this entry cancels it, check whether the TDS deducted on ${original} should be reversed or adjusted.`
 }
 
 function signedAmount(value) {
@@ -378,6 +457,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   const dispatch = useDispatch()
   const [searchParams] = useSearchParams()
   const [validationView, setValidationView] = useState('all')
+  // Business category tab under the cards (same categories as Reports →
+  // TDS Category Report); narrows the table within the selected card.
+  // null = no tab; picking another card clears it.
+  const [categoryTab, setCategoryTab] = useState(null)
+  useEffect(() => { setCategoryTab(null) }, [validationView])
   const [reviewValidationRow, setReviewValidationRow] = useState(null)
   const [docTypeFilter, setDocTypeFilter] = useState('all')
   const [matchIssue, setMatchIssue] = useState(null)
@@ -677,7 +761,8 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       : statedRate ?? inferredRate
     const isCorrection = row.rowKind === 'correction'
     const isCorrected = row.status === 'corrected'
-    const issueLabel = isCorrected ? 'Corrected' : isCorrection ? correctionRowLabel(row) : isSkipped ? 'TDS Not Applicable' : isInsufficient ? 'Insufficient Data' : 'Passed Validation'
+    // A corrected row is a resolved issue: show the issue it had, not 'Corrected'.
+    const issueLabel = isCorrected ? (row.originalReason || 'Corrected') : isCorrection ? correctionRowBadge(row).label : isSkipped ? 'TDS Not Applicable' : isInsufficient ? 'Insufficient Data' : 'Passed Validation'
     const ldcValidity = ldcValidityByCertificate.get(row.ldcCertificate)
 
     return {
@@ -688,9 +773,14 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       category: issueLabel,
       issueTypeLabel: issueLabel,
       issueType: isSkipped ? 'SKIPPED_ROW' : isInsufficient ? 'INSUFFICIENT_DATA' : 'PASSED_VALIDATION',
-      severity: isInsufficient ? 'medium' : 'low',
-      status: 'open',
-      plainEnglish: row.reason || (
+      severity: isCorrected
+        ? (row.originalSeverity || RULE_SCENARIOS.find((scenario) => scenario.category === row.originalReason)?.severity || 'high')
+        : isInsufficient ? 'medium' : 'low',
+      status: isCorrected ? 'resolved' : 'open',
+      rowStatus: row.status,
+      plainEnglish: isCorrected
+        ? `Flagged as ${row.originalReason || 'an issue'}. Now resolved, so no TDS action is pending on this row.`
+        : row.reason || (
         isSkipped
           ? 'TDS is not applicable to this row, so it was excluded from TDS validation.'
           : isInsufficient
@@ -700,11 +790,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       recommendedAction: isCorrected
         ? `No action needed — ${row.reason}${row.originalReason ? ` (was: ${row.originalReason})` : ''} It is listed in Correction Center.`
         : isCorrection
-        ? (row.correctionOriginalFlagged
-          ? `No separate action. This entry corrects document ${row.correctionOf}; its effect is applied to that document's issue (see Open Issues · All Runs and Correction Center).`
-          : row.status === 'passed'
-            ? `No action needed. The TDS on this entry matches the expected rate. No TDS issue is recorded for document ${row.correctionOf}.`
-            : `No TDS issue is recorded for document ${row.correctionOf}. If this entry cancels it, check whether the TDS deducted on ${row.correctionOf} should be reversed or adjusted.`)
+        ? correctionRowAction(row)
         : isSkipped
         ? 'No TDS issue is raised for this row. Keep it as TDS Not Applicable unless the source row should actually carry TDS section/rate details.'
         : isInsufficient
@@ -771,6 +857,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       filteredValidationRowsForSummary.filter((row) => rowInBucketView(row, view, filteredIssueKeys)),
     ]),
   ), [filteredValidationRowsForSummary, filteredIssueKeys])
+
 
   const docTypes = useMemo(() => {
     const values = [
@@ -856,9 +943,9 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       issue: { rows: issueValidationRows, columns: ISSUE_CSV_COLUMNS, suffix: 'issues-found' },
       insufficient: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'insufficient'), columns: VALIDATION_CSV_COLUMNS, suffix: 'insufficient-data' },
       skipped: { rows: filteredValidationRowsForSummary.filter((r) => r.status === 'skipped'), columns: VALIDATION_CSV_COLUMNS, suffix: 'skipped' },
-      passed_deducted: { rows: bucketRows.passed_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'passed-tds-deducted' },
+      passed_deducted: { rows: bucketRows.passed_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'tds-properly-deducted' },
       issue_deducted: { rows: bucketRows.issue_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'issues-tds-deducted' },
-      passed_not_deducted: { rows: bucketRows.passed_not_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'passed-tds-not-applicable' },
+      passed_not_deducted: { rows: bucketRows.passed_not_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'tds-not-applicable' },
       issue_not_deducted: { rows: bucketRows.issue_not_deducted, columns: VALIDATION_CSV_COLUMNS, suffix: 'issues-tds-not-deducted' },
     }[kind]
     if (!exportSpec || exportSpec.rows.length === 0) {
@@ -969,10 +1056,10 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       }
       // Credit memo / reversal / TDS top-up referencing another document.
       if (r.rowKind === 'correction' && r.status !== 'issue') {
-        const label = correctionRowLabel(r)
+        const badge = correctionRowBadge(r)
         return (
           <span title={r.reason || undefined}>
-            <StatusBadge label={r.status === 'passed' ? `${label} · Passed` : label} tone={r.status === 'passed' ? 'success' : 'default'} />
+            <StatusBadge label={badge.label} tone={badge.tone} />
           </span>
         )
       }
@@ -1006,7 +1093,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
 
   // Search/Vendor/Section/period apply to every row. Severity/Issue Type/Status
   // keep only rows with a matching issue, so the table matches the card counts.
-  const validationTableRows = useMemo(() => {
+  const viewTableRows = useMemo(() => {
     if (validationView === 'issue') {
       return issueValidationRows
     }
@@ -1058,6 +1145,24 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
         }
       })
   }, [displayValidationRows, issues, issueValidationRows, filteredIssueKeys, filteredIssuesByRow, validationView, searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, filterValues, profitCenterFilter, issueDateFromFilter, issueDateToFilter])
+
+  // Issue counts per tab for the rows the card view and filters leave, so a
+  // tab's count is exactly what clicking it shows. Needs report categories
+  // (uploads analysed since they were added).
+  const hasReportCategories = useMemo(() => viewTableRows.some((row) => row.reportCategory), [viewTableRows])
+  const issueTabCounts = useMemo(() => {
+    const counts = new Map(ISSUE_TABS.map((tab) => [tab.id, 0]))
+    for (const row of viewTableRows) {
+      const tab = issueTabOf(row)
+      if (tab) counts.set(tab, counts.get(tab) + 1)
+    }
+    return counts
+  }, [viewTableRows])
+
+  const validationTableRows = useMemo(() => {
+    if (!categoryTab || !hasReportCategories) return viewTableRows
+    return viewTableRows.filter((row) => issueTabOf(row) === categoryTab)
+  }, [viewTableRows, categoryTab, hasReportCategories])
 
   function handleResetFilters() {
     setActiveDocTypeFilter('all')
@@ -1141,11 +1246,14 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           open={drawerIsOpen}
           correctionGroups={drawerCorrectionGroups}
           onMatchSapRows={reviewValidationRow ? null : handleOpenSapMatch}
+          resolvedNote={drawerIssue?.rowStatus === 'corrected' ? drawerIssue.reason : null}
           onClose={() => {
             setReviewValidationRow(null)
             dispatch(closeDrawer())
           }}
-        />
+        >
+          {drawerIssue?.rowStatus === 'corrected' && <LinkedCorrectionDocs docs={drawerIssue.correctionDocs || []} emptyText="No SAP document is linked to this resolution." />}
+        </IssueDrawer>
 
         <MatchSapRowsModal
           issue={matchIssue}
@@ -1226,7 +1334,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
               <div className="issues-summary-value">{tdsDeductionSummary.deducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Deducted</div>
               <div className="issues-summary-breakdown">
-                Passed {bucketRows.passed_deducted.length.toLocaleString()} · Issues {bucketRows.issue_deducted.length.toLocaleString()}
+                Properly Deducted {bucketRows.passed_deducted.length.toLocaleString()} · Issues {bucketRows.issue_deducted.length.toLocaleString()}
                 {summary.correctedDeducted > 0 && ` · Corrected ${summary.correctedDeducted.toLocaleString()}`}
                 {tdsDeductionSummary.insufficientDeducted > 0 && ` · Insufficient Data ${tdsDeductionSummary.insufficientDeducted.toLocaleString()}`}
               </div>
@@ -1245,7 +1353,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
               <div className="issues-summary-value">{tdsDeductionSummary.notDeducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Not Deducted</div>
               <div className="issues-summary-breakdown">
-                Passed {bucketRows.passed_not_deducted.length.toLocaleString()} · Issues {bucketRows.issue_not_deducted.length.toLocaleString()}
+                Not Applicable {bucketRows.passed_not_deducted.length.toLocaleString()} · Issues {bucketRows.issue_not_deducted.length.toLocaleString()}
                 {summary.correctedRows - summary.correctedDeducted > 0 && ` · Corrected ${(summary.correctedRows - summary.correctedDeducted).toLocaleString()}`}
                 {tdsDeductionSummary.insufficientNotDeducted > 0 && ` · Insufficient Data ${tdsDeductionSummary.insufficientNotDeducted.toLocaleString()}`}
               </div>
@@ -1265,11 +1373,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             <CheckCircle2 size={16} />
             <div>
               <div className="issues-summary-value">{bucketRows.passed_deducted.length.toLocaleString()}</div>
-              <div className="issues-summary-label">Passed - TDS Deducted</div>
+              <div className="issues-summary-label">TDS Properly Deducted</div>
             </div>
           </button>
           {bucketRows.passed_deducted.length > 0 && (
-            <button className="issues-summary-card-download" type="button" title="Download CSV of Passed - TDS Deducted rows" aria-label="Download Passed - TDS Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_deducted') }}>
+            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Properly Deducted rows" aria-label="Download TDS Properly Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_deducted') }}>
               <Download size={12} />
             </button>
           )}
@@ -1293,11 +1401,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             <CircleSlash size={16} />
             <div>
               <div className="issues-summary-value">{bucketRows.passed_not_deducted.length.toLocaleString()}</div>
-              <div className="issues-summary-label">Passed - TDS Not Applicable</div>
+              <div className="issues-summary-label">TDS Not Applicable</div>
             </div>
           </button>
           {bucketRows.passed_not_deducted.length > 0 && (
-            <button className="issues-summary-card-download" type="button" title="Download CSV of Passed - TDS Not Applicable rows" aria-label="Download Passed - TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_not_deducted') }}>
+            <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Not Applicable rows" aria-label="Download TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_not_deducted') }}>
               <Download size={12} />
             </button>
           )}
@@ -1312,6 +1420,25 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           </button>
           {bucketRows.issue_not_deducted.length > 0 && (
             <button className="issues-summary-card-download" type="button" title="Download CSV of Issues - TDS Not Deducted rows" aria-label="Download Issues - TDS Not Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('issue_not_deducted') }}>
+              <Download size={12} />
+            </button>
+          )}
+        </div>
+        <div className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}>
+          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('insufficient')}>
+            <AlertTriangle size={16} />
+            <div>
+              <div className="issues-summary-value">{summary.insufficientDataRows.toLocaleString()}</div>
+              <div className="issues-summary-label">Insufficient Data</div>
+            </div>
+          </button>
+          {summary.insufficientDataRows > 0 && (
+            <button
+              className="issues-summary-card-download"
+              type="button"
+              title="Download CSV of all Insufficient Data rows"
+              onClick={(e) => { e.stopPropagation(); handleExportKpi('insufficient') }}
+            >
               <Download size={12} />
             </button>
           )}
@@ -1332,36 +1459,40 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             </button>
           </div>
         )}
-        <div className={`issues-summary-card issues-summary-card--warning ${validationView === 'insufficient' ? 'issues-summary-card--active' : ''}`}>
-          <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('insufficient')}>
-            <AlertTriangle size={16} />
-            <div>
-              <div className="issues-summary-value">{summary.insufficientDataRows.toLocaleString()}</div>
-              <div className="issues-summary-label">Insufficient Data</div>
-            </div>
-          </button>
-          {summary.insufficientDataRows > 0 && (
-            <button
-              className="issues-summary-card-download"
-              type="button"
-              title="Download CSV of all Insufficient Data rows"
-              onClick={(e) => { e.stopPropagation(); handleExportKpi('insufficient') }}
-            >
-              <Download size={12} />
-            </button>
-          )}
-        </div>
       </div>
 
       {!hideFilters && !filtersFirst && filterBar}
 
+      {hasReportCategories && (
+        <div className="issues-category-tabs" role="tablist" aria-label="Issues by category">
+          {ISSUE_TABS.map((c) => {
+            const count = issueTabCounts.get(c.id) || 0
+            return (
+              <button
+                key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={categoryTab === c.id}
+                className={`issues-category-tab ${c.id === 'resolved' ? 'issues-category-tab--resolved' : ''} ${categoryTab === c.id ? 'active' : ''} ${count === 0 ? 'is-empty' : ''}`}
+                onClick={() => setCategoryTab((current) => (current === c.id ? null : c.id))}
+                title={categoryTab === c.id ? 'Click again to show every row of the selected card' : undefined}
+              >
+                {c.label}
+                <span className="issues-category-tab-count">{count.toLocaleString()}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       <div className="table-card">
         <div className="issues-count-label">
           {`Showing ${validationTableRows.length.toLocaleString()} ${VIEW_LABELS[validationView] || 'rows'} row${validationTableRows.length === 1 ? '' : 's'}`}
+          {hasReportCategories && categoryTab ? ` · ${ISSUE_TAB_LABELS.get(categoryTab)}` : ''}
           {dataSource === 'upload' ? ' from SAP upload' : ' awaiting SAP upload'}
         </div>
         <DataTable
-          key={`validation-table-${validationView}`}
+          key={`validation-table-${validationView}-${categoryTab}`}
           columns={transactionColumns}
           data={validationTableRows}
           pageSize={200}

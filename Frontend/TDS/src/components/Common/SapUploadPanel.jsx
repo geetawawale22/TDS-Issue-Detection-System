@@ -143,8 +143,17 @@ export default function SapUploadPanel({
       const trackingText = tracking && !tracking.error
         ? ` · ${tracking.newIssues.toLocaleString()} new · ${tracking.resolvedIssues.toLocaleString()} resolved since last run`
         : ''
+      // "Issues found" counts every issue the rules raised in this file,
+      // including ones a correction already resolved (now or in an earlier
+      // run), so say how many of them are still open.
+      const found = Number(stats.issuesFound) || 0
+      const open = stats.openIssues ?? found
+      const alreadyCorrected = Math.max(0, found - open)
+      const foundText = alreadyCorrected > 0
+        ? `${found.toLocaleString()} issues found (${open.toLocaleString()} open, ${alreadyCorrected.toLocaleString()} already corrected)`
+        : `${found.toLocaleString()} issues found`
       toast.success(
-        `Processed ${stats.transactionsBuilt?.toLocaleString?.() ?? stats.transactionsBuilt} transactions · ${stats.issuesFound?.toLocaleString?.() ?? stats.issuesFound} issues found${trackingText}`,
+        `Processed ${stats.transactionsBuilt?.toLocaleString?.() ?? stats.transactionsBuilt} transactions · ${foundText}${trackingText}`,
         { duration: 5000 },
       )
       if (tracking?.error) toast.error(tracking.error)

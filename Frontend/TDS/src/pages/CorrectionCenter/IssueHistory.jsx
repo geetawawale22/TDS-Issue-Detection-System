@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useSelector } from 'react-redux'
-import { AlertOctagon, AlertTriangle, BadgeCheck, BadgeX, ChevronLeft, ChevronRight, History, IndianRupee, Link2, ShieldAlert, Sparkles, Wrench } from 'lucide-react'
+import { AlertOctagon, AlertTriangle, BadgeCheck, BadgeX, ChevronLeft, ChevronRight, History, IndianRupee, ShieldAlert, Sparkles, Wrench } from 'lucide-react'
 import IssueDrawer from '@/components/Common/IssueDrawer'
+import LinkedCorrectionDocs from '@/components/Common/LinkedCorrectionDocs'
 import SearchInput from '@/components/Common/SearchInput'
 import issuesService from '@/services/issuesService'
 import { formatCurrency, formatDate } from '@/utils/utils'
@@ -14,17 +15,6 @@ const RESOLUTION_LABELS = {
   CORRECTION_POSTED: 'Correction posted',
   NO_LONGER_FLAGGED: 'No longer flagged',
   MANUAL: 'Matched manually',
-}
-
-// What a linked document did to the issue (see services/issue_tracker.py).
-const LINK_LABELS = {
-  TDS_CORRECTION: 'TDS correction',
-  CANCELLATION: 'Credit memo / reversal',
-  SUPPLEMENTARY: 'Supplementary entry',
-  REVERSAL: 'Reversal document',
-  REVERSED_BY: 'Reversed by',
-  REFERENCE: 'Referencing entry',
-  MANUAL: 'Matched SAP row',
 }
 
 const RESOLUTION_OPTIONS = [
@@ -60,11 +50,6 @@ function CorrectionDocs({ docs }) {
   )
 }
 
-function signedCurrency(value) {
-  const number = Number(value) || 0
-  return `${number < 0 ? '−' : '+'}${formatCurrency(Math.abs(number))}`
-}
-
 function trackingStatusLabel(row) {
   if (row.status === 'resolved') return RESOLUTION_LABELS[row.resolutionType] || 'Resolved'
   return row.remainingShortfall != null ? 'Partly corrected' : 'Open'
@@ -98,33 +83,10 @@ function TrackingPanel({ row }) {
       </div>
       {row.resolutionNote && <div className="issue-drawer-desc" style={{ marginTop: 8 }}>{row.resolutionNote}</div>}
 
-      <div className="issue-drawer-section-title" style={{ marginTop: 12 }}><Link2 size={13} />Linked Correction Documents</div>
-      {docs.length ? (
-        <div className="issue-tracking-docs">
-          {docs.map((doc) => (
-            <div className="issue-tracking-doc" key={`${doc.docNo}-${doc.link}`}>
-              <div>
-                <span className="font-mono" style={{ fontWeight: 600 }}>{doc.docNo}</span>
-                {doc.docType ? <span className="font-mono"> · {doc.docType}</span> : null}
-              </div>
-              <span className="issue-history-pill">{LINK_LABELS[doc.link] || doc.link}</span>
-              <div className="issue-tracking-doc-meta">
-                {[
-                  doc.postingDate && `Posted ${formatDate(doc.postingDate)}`,
-                  doc.amount != null && `Amount ${formatCurrency(doc.amount)}`,
-                  doc.tdsAmount != null && `TDS ${formatCurrency(doc.tdsAmount)}`,
-                  doc.tdsEffect != null && Number(doc.tdsEffect) !== 0 && `TDS effect ${signedCurrency(doc.tdsEffect)}`,
-                  doc.baseEffect != null && Number(doc.baseEffect) !== 0 && `Base effect ${signedCurrency(doc.baseEffect)}`,
-                ].filter(Boolean).join(' · ')}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="issue-tracking-empty">
-          No correction entry found yet. A later file with a document whose Reference Document Number is {row.docNo} will be linked here.
-        </div>
-      )}
+      <LinkedCorrectionDocs
+        docs={docs}
+        emptyText={`No correction entry found yet. A later file with a document whose Reference Document Number is ${row.docNo} will be linked here.`}
+      />
     </div>
   )
 }
@@ -167,6 +129,43 @@ const CARD_FILTER_LABELS = {
   medium: 'Medium severity',
   partial: 'Partly corrected',
   new_latest: 'New in latest run',
+}
+
+// Issue tabs under the open-issue cards, as on the Issues tab (backend ISSUE_TABS
+// in api/tracked_issues.py); every open issue is in exactly one.
+const OPEN_ISSUE_TABS = [
+  { id: 'short', label: 'Short TDS Deducted' },
+  { id: 'excess', label: 'Excess TDS Deducted' },
+  { id: 'not_deducted', label: 'TDS Not Deducted' },
+  { id: 'ldc', label: 'TDS Not Deducted as per LDC' },
+  { id: 'advance', label: 'TDS on Advance' },
+  { id: 'not_applicable', label: 'TDS Deducted though Not Applicable' },
+  { id: 'other', label: 'Other Issues' },
+]
+const OPEN_ISSUE_TAB_LABELS = new Map(OPEN_ISSUE_TABS.map((tab) => [tab.id, tab.label]))
+
+function OpenIssueTabs({ counts, active, onChange }) {
+  return (
+    <div className="issues-category-tabs" role="tablist" aria-label="Open issues by category">
+      {OPEN_ISSUE_TABS.map((tab) => {
+        const count = Number(counts?.[tab.id] || 0)
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={active === tab.id}
+            className={`issues-category-tab ${active === tab.id ? 'active' : ''} ${count === 0 ? 'is-empty' : ''}`}
+            onClick={() => onChange(active === tab.id ? '' : tab.id)}
+            title={active === tab.id ? 'Click again to show every open issue' : undefined}
+          >
+            {tab.label}
+            <span className="issues-category-tab-count">{count.toLocaleString()}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 function SummaryCard({ tone, icon: Icon, value, label, breakdown, active, onClick }) {
@@ -217,8 +216,12 @@ function OpenIssueCards({ summary, view, onView }) {
   )
 }
 
-export default function IssueHistory({ mode = 'both', initialStatus = 'resolved', refreshKey = null, showCards = false } = {}) {
+const NO_BAR_FILTERS = {}
+
+// barFilters: optional filter bar from TDS Analysis (vendor, section, doc_type, ...); applied to cards and list.
+export default function IssueHistory({ mode = 'both', initialStatus = 'resolved', refreshKey = null, showCards = false, barFilters = NO_BAR_FILTERS } = {}) {
   const [cardView, setCardView] = useState('all')
+  const [issueTab, setIssueTab] = useState('')
   const [summary, setSummary] = useState(null)
   const [status, setStatus] = useState(mode === 'both' ? initialStatus : mode)
   const [latestRunOnly, setLatestRunOnly] = useState(false)
@@ -233,16 +236,17 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
   // Company code and financial year picked in the app header.
   const companyCode = useSelector((state) => state.app.selectedCompanyCode) || ''
   const financialYear = useSelector((state) => state.app.financialYear) || ''
-  useEffect(() => { setPage(1) }, [companyCode, financialYear])
+  const barFilterKey = JSON.stringify(barFilters)
+  useEffect(() => { setPage(1) }, [companyCode, financialYear, barFilterKey])
 
   useEffect(() => {
     if (!showCards) return undefined
     let cancelled = false
-    issuesService.getTrackedIssueSummary({ companyCode, financialYear })
+    issuesService.getTrackedIssueSummary({ companyCode, financialYear, barFilters: JSON.parse(barFilterKey) })
       .then((data) => { if (!cancelled) setSummary(data) })
       .catch(() => { if (!cancelled) setSummary(null) })
     return () => { cancelled = true }
-  }, [showCards, refreshKey, companyCode, financialYear])
+  }, [showCards, refreshKey, companyCode, financialYear, barFilterKey])
 
   // Wait for typing to pause before asking the server.
   useEffect(() => {
@@ -263,20 +267,27 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
       resolutionType: status === 'resolved' ? resolutionType : '',
       run: latestRunOnly ? 'latest' : '',
       ...CARD_FILTERS[cardView],
+      issueTab: showCards ? issueTab : '',
       page,
       pageSize: PAGE_SIZE,
       companyCode,
       financialYear,
+      barFilters: JSON.parse(barFilterKey),
     })
       .then((data) => { if (!cancelled) setResult(data) })
       .catch((err) => { if (!cancelled) setError(err.message || 'Could not load issue history') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [status, search, resolutionType, latestRunOnly, cardView, page, refreshKey, companyCode, financialYear])
+  }, [status, search, resolutionType, latestRunOnly, cardView, issueTab, showCards, page, refreshKey, companyCode, financialYear, barFilterKey])
 
   function changeCardView(next) {
     setCardView(next)
     if (next === 'new_latest') setLatestRunOnly(false)
+    setPage(1)
+  }
+
+  function changeIssueTab(next) {
+    setIssueTab(next)
     setPage(1)
   }
 
@@ -291,6 +302,7 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
   return (
     <>
     {showCards && summary && <OpenIssueCards summary={summary} view={cardView} onView={changeCardView} />}
+    {showCards && summary?.openByIssueTab && <OpenIssueTabs counts={summary.openByIssueTab} active={issueTab} onChange={changeIssueTab} />}
     <div className="table-card issue-history-card">
       <div className="table-card-header">
         <div>
@@ -303,6 +315,12 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
             <div className="issue-history-card-filter">
               Showing: {CARD_FILTER_LABELS[cardView]}
               <button type="button" onClick={() => changeCardView('all')}>Clear</button>
+            </div>
+          )}
+          {showCards && issueTab && (
+            <div className="issue-history-card-filter">
+              Showing: {OPEN_ISSUE_TAB_LABELS.get(issueTab)}
+              <button type="button" onClick={() => changeIssueTab('')}>Clear</button>
             </div>
           )}
         </div>

@@ -27,7 +27,7 @@ COLUMN_ALIASES = {
     "gl_account": ("GL", "GL_Account"),
     "profit_center": ("Profit_Center", "Profit Center", "ProfitCenter", "Profit_Centre", "PRCTR"),
     "gl_description": ("GL_Description", "GLDescription", "GL_Desc"),
-    "description": ("Description",),
+    "description": ("Description", "Line_Item_Text", "Item_Text", "SGTXT"),
     "bill_amount": ("Bill_Amount", "bill_amount", "Document_Amount", "Local_Amount", "Amount", "Amount_Document_Currency", "Amount_Local_Currency"),
     "basic_amount": ("Basic_Amount", "basic_amount", "TDS_Base_Amount", "Withholding_Tax_Base_Amount"),
     "withholding_tax_base_amount": ("Withholding_Tax_Base_Amount",),
@@ -450,6 +450,7 @@ def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
 
             gl_account=str(get("gl_account") or ""),
             gl_description=str(get("gl_description") or "").strip() or None,
+            description=str(get("description") or "").strip() or None,
             hsn_sac_code=str(get("hsn_sac_code") or "").strip() or None,
 
             bill_amount=float(get("bill_amount") or 0),
@@ -583,6 +584,7 @@ def build_transactions_from_sap_export(raw_rows: List[dict]) -> List[Transaction
 
             gl_account=str(get("gl_account") or "").strip() or None,
             gl_description=str(get("gl_description") or "").strip() or None,
+            description=str(get("description") or "").strip() or None,
 
             bill_amount=_safe_float(get("bill_amount")) or 0.0,
             basic_amount=_safe_float(get("basic_amount")),  # None if blank — do NOT fall back to bill_amount (GST-inclusive), that produces false positives

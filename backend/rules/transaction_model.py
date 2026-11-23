@@ -36,6 +36,7 @@ class Transaction(BaseModel):
     gl_account: Optional[str] = None
     profit_center: Optional[str] = None  # PRCTR, per line item
     gl_description: Optional[str] = None
+    description: Optional[str] = None              # line-item text (SGTXT) — shown in reports only
     hsn_sac_code: Optional[str] = None            # not yet confirmed by Mahindra
     expected_tds_section: Optional[str] = None     # derived from GL mapping when available
     gl_tds_applicability: Optional[str] = None     # applicable / conditional / not_applicable / verify

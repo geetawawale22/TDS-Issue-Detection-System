@@ -37,12 +37,12 @@ from ingestion.sap_translator import (
     looks_like_descriptive_tds_section,
 )
 from rules.tds_rule_engine import (
+    SECTION_194I_VALID_RATES,
     SECTION_194J_VALID_RATES,
     SECTIONS,
     TDSIssue,
     _expected_section,
     _get_applicable_rate,
-    _get_financial_year,
     _is_advance_clearing_adjustment,
     run_all_checks,
     ldc_decides_transaction,
@@ -51,10 +51,13 @@ from rules.tds_rule_engine import (
     check_threshold_breach,
     check_missing_deduction,
     check_advance_payment_lifecycle,
+    statutory_rate_for_section,
+    threshold_period,
 )
 from services.tds_case_builder import build_tds_cases, classify_event
 from services.issue_tracker import build_issue_key, fiscal_year_for, references_other_document, track_rule_run
 from services.ledger_store import save_run_lines
+from services.report_category import apply_resolutions, build_advance_roles, issue_report_category, report_fields
 
 
 router = APIRouter(prefix="/issues", tags=["Issues"])
@@ -117,7 +120,8 @@ ISSUE_TYPE_BY_CATEGORY = {
     "Wrong Section Applied — Resident": "WRONG_SECTION_RESIDENT",
     "LDC Not Yet Valid": "LDC_NOT_YET_VALID",
     "LDC Expired": "LDC_EXPIRED",
-    "TDS Deducted as per LDC — Mismatch": "LDC_MISMATCH",
+    "TDS Not Deducted as per LDC": "LDC_MISMATCH",
+    "TDS Deducted as per LDC — Mismatch": "LDC_MISMATCH",  # name before 2026-11-23
     "TDS Deducted as per LDC": "LDC_CORRECT",
     "LDC Limit 80% Utilized — Warning": "LDC_LIMIT_80_WARNING",
     "LDC Limit 90% Utilized — High Warning": "LDC_LIMIT_90_WARNING",
@@ -148,21 +152,7 @@ def _normalise_payment_type(value: str | None) -> str | None:
 
 
 def _get_rate_for_section(section: str | None, txn) -> float | None:
-    if not section:
-        return None
-
-    section_config = SECTIONS.get(section.strip().upper())
-    if not section_config:
-        return None
-
-    rate_config = section_config.get("rate", {})
-    if "default" in rate_config:
-        return rate_config["default"]
-
-    if "individual_huf" in rate_config and "others" in rate_config:
-        return rate_config["individual_huf"] if txn.vendor_category in {"Individual", "HUF"} else rate_config["others"]
-
-    return None
+    return statutory_rate_for_section(section, txn)
 
 
 def _get_tds_base_amount(txn) -> float | None:
@@ -1220,11 +1210,51 @@ def _mark_corrected_rows(issues, issue_txns, transactions, validation_rows) -> i
         first = row_issues[0]
         row["status"] = "corrected"
         row["originalReason"] = row["reason"]
+        # Severity of the issue before it was resolved, for the Review drawer.
+        row["originalSeverity"] = first.get("severity")
         row["reason"] = first.get("resolutionNote") or "Resolved in the issue history."
         row["resolutionType"] = first.get("resolutionType")
         row["correctionDocs"] = first.get("correctionDocs")
         count += 1
     return count
+
+
+def correction_original_status(issues: list[Any]) -> str | None:
+    """Where a correction entry's original document stands now, from its saved issues.
+
+    'resolved' when every issue on it is resolved, 'partial' when one is still
+    open but a correction was already applied to it (a shortfall remains),
+    'open' otherwise; None when the original has no saved issue.
+    """
+    if not issues:
+        return None
+    if all(issue.status == "resolved" for issue in issues):
+        return "resolved"
+    if any(issue.status != "resolved" and (issue.correction_docs or issue.remaining_shortfall is not None) for issue in issues):
+        return "partial"
+    return "open"
+
+
+def _mark_correction_originals(db: Session, validation_rows: list[dict[str, Any]]) -> None:
+    """Tell each correction row (credit note, TDS top-up, reversal) how its original stands now.
+
+    Read from the issue history after this run updated it, so an original
+    from an earlier file counts too (invoices one day, corrections the next).
+    """
+    rows = [row for row in validation_rows if row.get("rowKind") == "correction" and row.get("correctionOf")]
+    keys = list({(str(row.get("companyCode") or "").strip(), str(row["correctionOf"]).strip()) for row in rows})
+    found: dict[tuple[str, str], list[Any]] = {}
+    for start in range(0, len(keys), 500):
+        query = db.query(
+            TrackedIssue.company_code, TrackedIssue.doc_no, TrackedIssue.status,
+            TrackedIssue.correction_docs, TrackedIssue.remaining_shortfall,
+        ).filter(tuple_(TrackedIssue.company_code, TrackedIssue.doc_no).in_(keys[start:start + 500]))
+        for issue in query:
+            found.setdefault((issue.company_code, issue.doc_no), []).append(issue)
+    for row in rows:
+        status = correction_original_status(found.get((str(row.get("companyCode") or "").strip(), str(row["correctionOf"]).strip()), []))
+        if status:
+            row["correctionOriginalStatus"] = status
 
 
 def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
@@ -1247,6 +1277,12 @@ def _transaction_issue(issue_id: int, txn, rule_issue) -> dict[str, Any]:
         applied_rate = txn.tds_deducted_rate
     tax_impact = 0.0
     tax_base_amount = _get_tds_base_amount(txn)
+    # SAP sends no base for a row with no TDS; the rule may have estimated one
+    # (Possible Missed TDS Deduction), so expected TDS / tax impact are not ₹0.
+    estimated_base = getattr(rule_issue, "estimated_base", None)
+    if not tax_base_amount and estimated_base:
+        tax_base_amount = estimated_base
+        base_amount = estimated_base
     if tax_base_amount is not None and expected_rate is not None:
         expected_tds = abs(float(tax_base_amount) * expected_rate / 100)
         actual_tds = abs(float(txn.tds_deducted_amount or 0.0))
@@ -1393,6 +1429,9 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int, t
     has_ldc_rate = txn.ldc_exemption_percent is not None or txn.ldc_approved_rate is not None
     if not has_ldc_rate and section == "194J" and txn.tds_deducted_rate in SECTION_194J_VALID_RATES:
         expected_rate = txn.tds_deducted_rate
+    # Rent whose nature SAP does not state: 2% and 10% are both accepted.
+    if expected_rate is None and section == "194I" and txn.tds_deducted_rate in SECTION_194I_VALID_RATES:
+        expected_rate = txn.tds_deducted_rate
 
     return {
         "id": f"{status}:{row_index}:{txn.doc_number}:{txn.vendor_code}:{_threshold_section_for_transaction(txn)}",
@@ -1474,6 +1513,22 @@ def _has_tds_section_signal(txn) -> bool:
         txn.tds_new_section,
         txn.tds_applicable_section,
     ))
+
+
+PAYMENT_AGAINST_INVOICE_REASON = "Payment against invoice — TDS is deducted when the invoice is booked, not at payment."
+
+
+def _is_payment_against_invoice_without_tds(txn) -> bool:
+    """A plain (non-advance) payment carrying no TDS: nothing is due on it.
+
+    Its TDS belongs to the invoice it pays, so it passes even when SAP gives
+    the payment no section or base (it is not "insufficient data").
+    """
+    return (
+        classify_event(txn) == "PAYMENT"
+        and not txn.is_advance_payment
+        and _blank_or_zero_amount(txn.tds_deducted_amount)
+    )
 
 
 def _is_skipped_non_tds_document_without_tds_amounts(txn) -> bool:
@@ -1566,12 +1621,12 @@ def _missing_deduction_candidates(transactions, issue_eligible_transactions) -> 
 
 
 def _threshold_limits(section: str | None) -> tuple[float | None, float | None]:
-    """Return (annual aggregate limit, single-bill limit) for a section.
+    """Return (aggregate limit, single-bill limit) for a section.
 
-    Monthly thresholds (e.g. rent) are not summarised here and return (None, None).
+    The aggregate is per FY, or per month for rent (see threshold_period).
     """
     section_config = SECTIONS.get(section or "")
-    if not section_config or section_config.get("threshold_basis") == "monthly":
+    if not section_config:
         return None, None
     threshold_config = section_config.get("threshold")
     if isinstance(threshold_config, dict):
@@ -1638,7 +1693,7 @@ def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, st
             and classify_event(txn) in {"INVOICE", "ADVANCE_PAYMENT"}
             and not _is_advance_clearing_adjustment(txn)
         ):
-            group_key = (txn.vendor_pan.strip().upper(), section, _get_financial_year(txn.posting_date))
+            group_key = (txn.vendor_pan.strip().upper(), section, threshold_period(section, txn.posting_date))
             cumulative_by_group[group_key] += _note_amount(txn)
 
     notes: dict[int, str] = {}
@@ -1672,7 +1727,7 @@ def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, st
             notes[id(txn)] = f"{description} ({doc_type}) — accounting entry, not a TDS event."
             continue
         if classify_event(txn) == "PAYMENT" and not txn.is_advance_payment:
-            notes[id(txn)] = "Payment against invoice — TDS is deducted when the invoice is booked, not at payment."
+            notes[id(txn)] = PAYMENT_AGAINST_INVOICE_REASON
             continue
         if _ldc_covers_posting_date(txn):
             period = f"{_format_display_date(txn.ldc_exempt_from)} to {_format_display_date(txn.ldc_exempt_to)}"
@@ -1697,13 +1752,14 @@ def _build_tds_notes(transactions, issue_reasons_by_transaction_id: dict[int, st
         section = _expected_section(txn)
         aggregate_limit, single_limit = _threshold_limits(section)
         if txn.vendor_pan and section and aggregate_limit and txn.posting_date:
-            group_key = (txn.vendor_pan.strip().upper(), section, _get_financial_year(txn.posting_date))
+            period = threshold_period(section, txn.posting_date)
+            group_key = (txn.vendor_pan.strip().upper(), section, period)
             cumulative = cumulative_by_group.get(group_key, 0.0)
             this_amount = _note_amount(txn)
             if cumulative < aggregate_limit and (single_limit is None or this_amount < single_limit):
                 single_text = f" and this bill ₹{this_amount:,.2f} is under the single-bill limit ₹{single_limit:,.2f}" if single_limit else ""
                 notes[id(txn)] = (
-                    f"Below threshold for {section} — vendor's total ₹{cumulative:,.2f} this FY "
+                    f"Below threshold for {section} — vendor's total ₹{cumulative:,.2f} in {period} "
                     f"is under ₹{aggregate_limit:,.2f}{single_text}."
                 )
                 continue
@@ -1836,6 +1892,23 @@ async def upload_sap_file(
     issue_txns: list[Any] = []  # transaction behind issues[i], for issue tracking
     issue_reasons_by_transaction_id: dict[int, str] = {}
     issue_transaction_ids: set[int] = set()
+    # For the Reports page category report: each row's first reported issue,
+    # and its first informational result ("TDS Deducted as per LDC", "TDS Not
+    # Applicable", ...) that is not reported as an issue.
+    first_issue_by_transaction_id: dict[int, dict[str, Any]] = {}
+    info_issue_by_transaction_id: dict[int, TDSIssue] = {}
+
+    def record(txn, rule_issue, *, always: bool = False) -> None:
+        if always or include_informational or rule_issue.severity != "low":
+            issue = _transaction_issue(len(issues) + 1, txn, rule_issue)
+            issues.append(issue)
+            issue_txns.append(txn)
+            issue_transaction_ids.add(id(txn))
+            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+            first_issue_by_transaction_id.setdefault(id(txn), issue)
+        else:
+            info_issue_by_transaction_id.setdefault(id(txn), rule_issue)
+
     issue_eligible_transactions = [
         txn for txn in transactions
         if not _is_skipped_non_tds_document_without_tds_amounts(txn)
@@ -1850,41 +1923,21 @@ async def upload_sap_file(
     row_check_transactions = [txn for txn in issue_eligible_transactions if id(txn) not in correction_line_ids]
     for txn in row_check_transactions:
         for rule_issue in _row_checks(txn, ldc_chains, ldc_chain_members):
-            if include_informational or rule_issue.severity != "low":
-                issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-                issue_txns.append(txn)
-                issue_transaction_ids.add(id(txn))
-                issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+            record(txn, rule_issue)
 
     # Threshold checks operate across transactions, so each result carries a
     # representative transaction from its own vendor/section/FY group.
     for txn, rule_issue in _skip_ldc_decided(check_threshold_breach(issue_eligible_transactions), ldc_chain_members):
-        if include_informational or rule_issue.severity != "low":
-            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-            issue_txns.append(txn)
-            issue_transaction_ids.add(id(txn))
-            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
-
+        record(txn, rule_issue)
 
     for txn, rule_issue in _skip_ldc_decided(check_missing_deduction([txn for txn in _missing_deduction_candidates(transactions, issue_eligible_transactions) if id(txn) not in correction_line_ids]), ldc_chain_members):
-        if include_informational or rule_issue.severity != "low":
-            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-            issue_txns.append(txn)
-            issue_transaction_ids.add(id(txn))
-            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+        record(txn, rule_issue)
 
     for txn, rule_issue in _skip_ldc_decided(check_advance_payment_lifecycle(issue_eligible_transactions), ldc_chain_members):
-        if include_informational or rule_issue.severity != "low":
-            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-            issue_txns.append(txn)
-            issue_transaction_ids.add(id(txn))
-            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+        record(txn, rule_issue)
 
     for txn, rule_issue in _check_ldc_limit_breach(issue_eligible_transactions, ldc_utilization):
-        issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-        issue_txns.append(txn)
-        issue_transaction_ids.add(id(txn))
-        issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+        record(txn, rule_issue, always=True)
 
     # Correction entries (credit memo / reversal / TDS top-up pointing at another
     # document) skip the single-row rules above, but their own TDS is still
@@ -1893,11 +1946,7 @@ async def upload_sap_file(
     for txn in correction_lines:
         outcome = correction_results.get(id(txn))
         if outcome and outcome[0] == "issue":
-            rule_issue = outcome[1]
-            issues.append(_transaction_issue(len(issues) + 1, txn, rule_issue))
-            issue_txns.append(txn)
-            issue_transaction_ids.add(id(txn))
-            issue_reasons_by_transaction_id.setdefault(id(txn), rule_issue.category)
+            record(txn, outcome[1], always=True)
 
     vendors = sorted({issue["vendor"] for issue in issues if issue["vendor"]})
     sections = sorted({issue["section"] for issue in issues if issue["section"] and issue["section"] != "—"})
@@ -1905,6 +1954,11 @@ async def upload_sap_file(
     # threshold_vendors = _threshold_vendor_summaries(transactions)
     threshold_vendors = []
     tds_notes = _build_tds_notes(transactions, issue_reasons_by_transaction_id)
+    # A correction entry with no TDS of its own is not missing SAP data, so it
+    # gets this note instead of the generic "Cannot verify".
+    for txn in correction_lines:
+        if abs(float(txn.tds_deducted_amount or 0.0)) <= 0 and id(txn) not in issue_transaction_ids:
+            tds_notes[id(txn)] = f"Credit note for invoice {str(txn.invoice_reference_document).strip()}, no TDS on it."
     case_ledger = _build_case_ledger_from_transactions(transactions, issues, tds_notes)
     skipped_validation_rows = sum(
         id(txn) not in issue_transaction_ids and _is_skipped_non_tds_document_without_tds_amounts(txn)
@@ -1913,6 +1967,7 @@ async def upload_sap_file(
     insufficient_data_rows = sum(
         id(txn) not in issue_transaction_ids
         and not _is_skipped_non_tds_document_without_tds_amounts(txn)
+        and not _is_payment_against_invoice_without_tds(txn)
         and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
         for txn in transactions
     )
@@ -1955,6 +2010,14 @@ async def upload_sap_file(
                 row_index,
                 tds_notes.get(txn_id),
             ))
+        elif _is_payment_against_invoice_without_tds(txn):
+            validation_rows.append(_transaction_validation_row(
+                txn,
+                "passed",
+                PAYMENT_AGAINST_INVOICE_REASON,
+                row_index,
+                tds_notes.get(txn_id),
+            ))
         elif _has_zero_base_amount(txn):
             validation_rows.append(_transaction_validation_row(
                 txn,
@@ -1979,6 +2042,29 @@ async def upload_sap_file(
                 row_index,
                 tds_notes.get(txn_id),
             ))
+
+    # One business category per row for the Reports page (services/report_category.py).
+    advance_roles = build_advance_roles(issue_eligible_transactions)
+    for txn, row in zip(transactions, validation_rows):
+        row.update(report_fields(
+            txn,
+            row,
+            first_issue_by_transaction_id.get(id(txn)),
+            info_issue_by_transaction_id.get(id(txn)),
+            advance_roles.get(id(txn)),
+            id(txn) in ldc_chain_members,
+        ))
+    # Each issue's business sheet, saved with it so Open Issues can split by it.
+    # A row's first issue takes the row's own category, matching this upload's tabs.
+    report_category_by_txn = {id(txn): row.get("reportCategory") for txn, row in zip(transactions, validation_rows)}
+    for issue, txn in zip(issues, issue_txns):
+        if first_issue_by_transaction_id.get(id(txn)) is issue and report_category_by_txn.get(id(txn)):
+            issue["reportCategory"] = report_category_by_txn[id(txn)]
+        else:
+            issue["reportCategory"] = issue_report_category(issue, txn, advance_roles.get(id(txn)))
+    # Each row as analysed, saved with its ledger line for the TDS Category
+    # Report across runs; resolutions are applied when the report is read.
+    report_rows = {id(txn): {key: value for key, value in row.items() if key != "id"} for txn, row in zip(transactions, validation_rows)}
 
     passed_rows = sum(row["status"] == "passed" for row in validation_rows)
     issue_rows = sum(row["status"] == "issue" for row in validation_rows)
@@ -2033,6 +2119,10 @@ async def upload_sap_file(
             stats["correctedRows"] = corrected
             stats["validatedRows"] = stats["passedRows"] + stats["issueRows"] + corrected
             stats["openIssues"] = sum(issue.get("status") != "resolved" for issue in issues)
+        # Reports: a corrected document is filed where it stands now (e.g.
+        # Properly Deducted after a top-up), not under its original issue.
+        apply_resolutions(validation_rows)
+        _mark_correction_originals(db, validation_rows)
 
     # Save this run's lines so the Document / GL Ledger can join them with
     # earlier and later days (services/ledger_store.py). Like the issue
@@ -2043,7 +2133,7 @@ async def upload_sap_file(
                 (txn, event_type, ledger_event(txn, event_type, tds_notes.get(id(txn))))
                 for txn in transactions
                 for event_type in (classify_event(txn),)
-            ])
+            ], reports=report_rows)
         except Exception:  # noqa: BLE001
             db.rollback()
             logger.exception("Saving ledger lines failed for upload %s", filename)
@@ -2155,6 +2245,7 @@ async def upload_case_source_files(
     insufficient_data_rows = sum(
         id(txn) not in issue_transaction_ids
         and not _is_skipped_non_tds_document_without_tds_amounts(txn)
+        and not _is_payment_against_invoice_without_tds(txn)
         and (_has_zero_base_amount(txn) or not _has_validation_signal(txn))
         for txn in transactions
     )

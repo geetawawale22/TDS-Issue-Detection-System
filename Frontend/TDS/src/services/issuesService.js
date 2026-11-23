@@ -30,9 +30,12 @@ const issuesService = {
   },
 
   /** One page of saved issues across runs (status: open | resolved | all). */
-  async getTrackedIssues({ status = 'open', search = '', resolutionType = '', run = '', tds = '', severity = '', partial = false, page = 1, pageSize = 50, companyCode = '', financialYear = '' } = {}) {
+  // barFilters: optional TDS Analysis filter bar (vendor, section, doc_type, profit_center,
+  // severity_in, issue_type, date_from, date_to), sent as repeated keys for FastAPI.
+  async getTrackedIssues({ status = 'open', search = '', resolutionType = '', run = '', tds = '', severity = '', partial = false, issueTab = '', page = 1, pageSize = 50, companyCode = '', financialYear = '', barFilters = {} } = {}) {
     const { data } = await api.get('/tracked-issues', {
-      params: { status, search, resolution_type: resolutionType, run, tds, severity, partial, page, page_size: pageSize, company_code: companyCode || '', financial_year: financialYear || '' },
+      params: { ...barFilters, status, search, resolution_type: resolutionType, run, tds, severity, partial, issue_tab: issueTab, page, page_size: pageSize, company_code: companyCode || '', financial_year: financialYear || '' },
+      paramsSerializer: { indexes: null },
     })
     return data
   },
@@ -44,9 +47,10 @@ const issuesService = {
   },
 
   /** Issue book across every run (each issue once) plus the latest run's counts, for the selected company / FY. */
-  async getTrackedIssueSummary({ companyCode = '', financialYear = '' } = {}) {
+  async getTrackedIssueSummary({ companyCode = '', financialYear = '', barFilters = {} } = {}) {
     const { data } = await api.get('/tracked-issues/summary', {
-      params: { company_code: companyCode || '', financial_year: financialYear || '' },
+      params: { ...barFilters, company_code: companyCode || '', financial_year: financialYear || '' },
+      paramsSerializer: { indexes: null },
     })
     return data
   },

@@ -362,6 +362,33 @@ sections:
       threshold, buyer turnover > Rs.10cr in preceding FY.
 
   # ----------------------------------------------------------
+  # 194R / 393(1)8(iv) — BENEFIT OR PERQUISITE OF BUSINESS/PROFESSION
+  # In force from 1 July 2022; no Budget 2025 change to rate or threshold.
+  # ----------------------------------------------------------
+  "194R":
+    old_section: "194R"
+    new_section: "393"
+    new_subsection: "393(1)"
+    category: "Category 8"
+    name: "Benefit / Perquisite (Business or Profession)"
+    deductee_types:
+      - "Individual"
+      - "HUF"
+      - "Firm"
+      - "Body Corporate"
+    rate:
+      default: 10.0
+    threshold: 20000                 # Rs. 20,000 aggregate per vendor per FY
+    time_of_deduction: "credit_or_payment_whichever_earlier"
+    payer: "any_except_small_individual_huf"
+    notes: >
+      10% of the value of the benefit/perquisite; no TDS while the
+      value given to the vendor in the FY is Rs.20,000 or less.
+      Not applicable where the recipient is an individual/HUF whose
+      turnover is within the audit limit - that cannot be seen in SAP,
+      so it is not checked. No PAN -> 20% (206AA), handled generically.
+
+  # ----------------------------------------------------------
   # 195 / 393(2) — NON-RESIDENT / FOREIGN PAYMENTS
   # DTAA/treaty-based, case-specific by nature — no fixed rate.
   # GL: A/P GOODS OVERSEAS VENDORS, A/P CAPITAL OVERSEAS VENDOR
@@ -558,6 +585,7 @@ section_rename_map:
     "194N":  "393(3)"
     "194O":  "393(1)"
     "194Q":  "393(1)"
+    "194R":  "393(1)"
     "195":   "393(2)"
   note: >
     Section 192 (Salary) intentionally excluded from this system's

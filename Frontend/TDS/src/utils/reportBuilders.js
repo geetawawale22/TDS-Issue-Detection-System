@@ -1,4 +1,3 @@
-import { getDisplayIssueType } from '@/data/issueTypes'
 import { formatCurrency, formatDate } from '@/utils/utils'
 
 function monthKey(dateStr) {
@@ -16,6 +15,13 @@ function pctChange(current, previous) {
   if (previous == null) return null
   if (previous === 0) return current === 0 ? 0 : null
   return ((current - previous) / previous) * 100
+}
+
+// Excel cell for an amount: a real number (sums/filters work), blank when absent.
+function amountCell(v) {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null
 }
 
 function formatPct(v) {
@@ -73,31 +79,12 @@ export function buildVendorMonthlyReport(issues) {
     { label: 'Vendor', value: (r) => r.vendor },
     { label: 'Month', value: (r) => r.monthLabel },
     { label: 'Issue Count', value: (r) => r.count },
-    { label: 'Total Tax Impact', value: (r) => formatCurrency(r.taxImpact) },
+    { label: 'Total Tax Impact', value: (r) => formatCurrency(r.taxImpact), excelValue: (r) => amountCell(r.taxImpact) },
   ]
   return { columns, rows }
 }
 
-// ── 3. Exception Report — No TDS Deduction / Not Applicable ────────────
-const EXCEPTION_CATEGORY_RE = /Not Deducted|Not Applicable/i
-
-export function buildExceptionReport(issues) {
-  const rows = issues.filter((i) => i.isViolation && EXCEPTION_CATEGORY_RE.test(i.category || ''))
-  const columns = [
-    { label: 'Doc No.', value: (r) => r.docNo },
-    { label: 'Vendor', value: (r) => r.vendor },
-    { label: 'PAN', value: (r) => r.vendorPan },
-    { label: 'Section', value: (r) => r.section },
-    { label: 'Base Amount', value: (r) => formatCurrency(r.baseAmount) },
-    { label: 'TDS Amount', value: (r) => formatCurrency(r.tdsAmount) },
-    { label: 'Category', value: (r) => getDisplayIssueType(r) },
-    { label: 'Severity', value: (r) => r.severity },
-    { label: 'Date', value: (r) => formatDate(r.date) },
-  ]
-  return { columns, rows }
-}
-
-// ── 4. PAN-level report ──────────────────────────────────────────────
+// ── 3. PAN-level report ──────────────────────────────────────────────
 export function buildPanLevelReport(issues) {
   const byPan = new Map()
   for (const i of issues) {
@@ -118,73 +105,220 @@ export function buildPanLevelReport(issues) {
     { label: 'PAN', value: (r) => r.pan },
     { label: 'Vendor(s)', value: (r) => r.vendorList },
     { label: 'Issue Count', value: (r) => r.issueCount },
-    { label: 'Total Base Amount', value: (r) => formatCurrency(r.baseAmount) },
-    { label: 'Total TDS Amount', value: (r) => formatCurrency(r.tdsAmount) },
-    { label: 'Total Tax Impact', value: (r) => formatCurrency(r.taxImpact) },
+    { label: 'Total Base Amount', value: (r) => formatCurrency(r.baseAmount), excelValue: (r) => amountCell(r.baseAmount) },
+    { label: 'Total TDS Amount', value: (r) => formatCurrency(r.tdsAmount), excelValue: (r) => amountCell(r.tdsAmount) },
+    { label: 'Total Tax Impact', value: (r) => formatCurrency(r.taxImpact), excelValue: (r) => amountCell(r.taxImpact) },
   ]
   return { columns, rows }
 }
 
-// ── 5. TDS Deduction Report — Correct / Short / Excess / No Deduction / Not Applicable
-// Built from validationRows (every transaction, not just flagged issues) so
-// "Correct" has a real count — a report bifurcating deduction outcomes has
-// to include the compliant majority, not just the exceptions.
-const BUCKET_ORDER = ['Correct', 'Short', 'Excess', 'No Deduction', 'Not Applicable', 'Insufficient Data', 'Other']
+// ── 5. TDS Category Report ──────────────────────────────────────────────
+// Mirrors the business scenario workbook: one sheet per category, the TDS
+// that was applicable next to the TDS that was deducted, and a remark. Every
+// transaction (validationRows), not only issues, because several categories
+// (Properly Deducted, Not Applicable, LDC, advances) are mostly correct rows.
+// The backend assigns `reportCategory` (services/report_category.py).
+export const REPORT_CATEGORIES = [
+  { id: 'properly_deducted', label: 'TDS Properly Deducted', sheet: 'TDS Properly Deducted' },
+  { id: 'not_applicable', label: 'TDS Not Applicable', sheet: 'TDS not Applicable' },
+  { id: 'short', label: 'Short TDS Deducted', sheet: 'Short TDS Deducted' },
+  { id: 'excess', label: 'Excess TDS Deducted', sheet: 'Excess TDS Deducted' },
+  { id: 'ldc', label: 'TDS Deducted as per LDC', sheet: 'TDS Deducted as per LDC' },
+  { id: 'not_deducted', label: 'TDS Not Deducted', sheet: 'TDS Not Deducted' },
+  { id: 'advance_full', label: '100% TDS on Advance', sheet: '100% TDS on Adv' },
+  { id: 'advance_partial', label: 'Partial TDS on Advance', sheet: 'Partial TDS on Adv' },
+  // Not a business sheet: rows whose issue a correction, reversal or manual
+  // review resolved. Kept apart so the sheets above hold open issues only and
+  // their issue count matches Open Issues for the upload.
+  { id: 'resolved', label: 'Resolved Issues', sheet: 'Resolved Issues' },
+  { id: 'other', label: 'Other / Needs Review', sheet: 'Other - Needs Review' },
+]
 
-function classifyValidationRow(row) {
-  if (row.status === 'passed') return 'Correct'
-  if (row.status === 'insufficient' || row.status === 'insufficient data') return 'Insufficient Data'
-  const reason = row.reason || ''
-  if (/Short/i.test(reason)) return 'Short'
-  if (/Excess/i.test(reason)) return 'Excess'
-  if (/Not Deducted/i.test(reason)) return 'No Deduction'
-  if (/Not Applicable/i.test(reason)) return 'Not Applicable'
-  return 'Other'
+const CATEGORY_LABEL = Object.fromEntries(REPORT_CATEGORIES.map((c) => [c.id, c.label]))
+
+export const ROW_STATUS_LABELS = {
+  passed: 'Correct',
+  issue: 'Issue',
+  corrected: 'Resolved',
+  insufficient: 'Insufficient Data',
+  skipped: 'Not Validated',
 }
 
-export function buildDeductionBifurcationReport(validationRows) {
-  const byBucket = new Map()
-  for (const row of validationRows) {
-    const bucket = classifyValidationRow(row)
-    if (!byBucket.has(bucket)) byBucket.set(bucket, { bucket, count: 0, baseAmount: 0, tdsAmount: 0 })
-    const r = byBucket.get(bucket)
-    r.count += 1
-    r.baseAmount += Number(row.baseAmount) || 0
-    r.tdsAmount += Math.abs(Number(row.tdsAmount) || 0)
+export function reportCategoryLabel(id) {
+  return CATEGORY_LABEL[id] || CATEGORY_LABEL.other
+}
+
+// "Resolved Issues (was Short TDS Deducted)" for a resolved row.
+function rowCategoryLabel(row) {
+  const label = reportCategoryLabel(row.reportCategory)
+  return row.reportCategory === 'resolved' && row.resolvedFrom
+    ? `${label} (was ${reportCategoryLabel(row.resolvedFrom)})`
+    : label
+}
+
+export function rowStatusLabel(row) {
+  return ROW_STATUS_LABELS[row.status] || row.status || ''
+}
+
+function blank(v) {
+  return v == null || v === '—' || v === '-' ? '' : v
+}
+
+function rateText(v) {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return ''
+  return `${Number(Number(v).toFixed(4))}%`
+}
+
+function moneyText(v) {
+  return v == null || v === '' ? '' : formatCurrency(v)
+}
+
+// TDS deducted on the document; for a document a later correction fixed,
+// the posted TDS plus the top-up (reportTdsAmount, set by the backend).
+export function deductedAmount(row) {
+  if (row.reportTdsAmount != null) return Math.abs(Number(row.reportTdsAmount) || 0)
+  return Math.abs(Number(row.tdsAmount) || 0)
+}
+
+// A correction line whose TDS is already in its original document's
+// deducted amount; its amounts are left out of totals so they count once.
+export function countsInTotals(row) {
+  return !row.reportCountedOn
+}
+
+function linkedDoc(row) {
+  if (row.linkedDoc) return row.linkedDoc
+  return row.rowKind === 'correction' ? blank(row.correctionOf) : ''
+}
+
+// SAP signs amounts by debit/credit (an invoice's base is negative); the
+// business workbook shows them as plain amounts, like the TDS columns.
+function magnitude(v) {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.abs(n) : null
+}
+
+// Rate as keyed in SAP (2%), not the rate implied by amount ÷ base (2.0001%);
+// rows from uploads made before deductedRate existed fall back to the latter.
+function deductedRate(row) {
+  return row.deductedRate ?? row.appliedRate
+}
+
+// Same columns, in the same order, as the business workbook ("TDS Devlopement
+// IT"), except Person and PO Number, which Mahindra's SAP data does not carry;
+// Line Item, Status, Linked Doc and Issue Type are added after Remark.
+// Used for the on-screen table, CSV and every Excel sheet. `numeric` columns
+// sort and align as numbers; `wide` columns wrap.
+export const CATEGORY_REPORT_COLUMNS = [
+  { id: 'serial', label: 'S.No.', value: (r) => r.serial, numeric: true },
+  { id: 'category', label: 'Category', value: (r) => rowCategoryLabel(r) },
+  { id: 'companyCode', label: 'Company Code', value: (r) => blank(r.companyCode) },
+  { id: 'vendorCode', label: 'Vendor Code', value: (r) => blank(r.vendorId) },
+  { id: 'vendorName', label: 'Vendor Name', value: (r) => blank(r.vendor), wide: true },
+  { id: 'pan', label: 'PAN', value: (r) => blank(r.vendorPan) },
+  { id: 'billDate', label: 'Bill Date', value: (r) => (r.documentDate ? formatDate(r.documentDate) : ''), sortValue: (r) => r.documentDate || '' },
+  { id: 'billNo', label: 'Bill No.', value: (r) => blank(r.billNo) },
+  { id: 'gl', label: 'GL', value: (r) => blank(r.glAccount) },
+  { id: 'glDescription', label: 'GL Description', value: (r) => blank(r.glDescription), wide: true },
+  { id: 'description', label: 'Description', value: (r) => blank(r.txnDescription), wide: true },
+  { id: 'billAmount', label: 'Bill Amount', value: (r) => moneyText(magnitude(r.billAmount)), excelValue: (r) => amountCell(magnitude(r.billAmount)), numeric: true },
+  { id: 'basicAmount', label: 'Basic Amount', value: (r) => moneyText(magnitude(r.baseAmount)), excelValue: (r) => amountCell(magnitude(r.baseAmount)), numeric: true },
+  { id: 'postingDate', label: 'Posting Date', value: (r) => formatDate(r.postingDate || r.date), sortValue: (r) => r.postingDate || r.date || '' },
+  { id: 'docType', label: 'Document Type', value: (r) => blank(r.docType) },
+  { id: 'docNo', label: 'Document No.', value: (r) => blank(r.docNo) },
+  { id: 'lineItem', label: 'Line Item', value: (r) => blank(r.lineItem) },
+  { id: 'applicableSection', group: 'TDS Applicable', label: 'TDS Section', value: (r) => blank(r.applicableSection) },
+  { id: 'applicableRate', group: 'TDS Applicable', label: 'TDS Rate (%)', value: (r) => rateText(r.applicableRate), excelValue: (r) => amountCell(r.applicableRate), numeric: true },
+  { id: 'applicableAmount', group: 'TDS Applicable', label: 'TDS Amount', value: (r) => moneyText(r.applicableAmount), excelValue: (r) => amountCell(r.applicableAmount), numeric: true },
+  { id: 'deductedSection', group: 'TDS Deducted', label: 'TDS Section', value: (r) => blank(r.deductedSection) },
+  {
+    id: 'deductedRate',
+    group: 'TDS Deducted',
+    label: 'TDS Rate (%)',
+    value: (r) => (deductedAmount(r) > 0 ? rateText(deductedRate(r)) : ''),
+    excelValue: (r) => (deductedAmount(r) > 0 ? amountCell(deductedRate(r)) : null),
+    numeric: true,
+  },
+  { id: 'deductedAmount', group: 'TDS Deducted', label: 'TDS Amount', value: (r) => moneyText(deductedAmount(r)), excelValue: (r) => amountCell(deductedAmount(r)), numeric: true },
+  { id: 'remark', label: 'Remark', value: (r) => blank(r.remark), wide: true },
+  { id: 'status', label: 'Status', value: (r) => rowStatusLabel(r) },
+  { id: 'linkedDoc', label: 'Linked Doc', value: (r) => linkedDoc(r) },
+  { id: 'issueType', label: 'Issue Type', value: (r) => blank(r.issueCategory), wide: true },
+]
+
+function withSerial(rows) {
+  return rows.map((row, i) => ({ ...row, serial: i + 1 }))
+}
+
+function summarise(rows) {
+  let applicable = 0
+  let deducted = 0
+  let base = 0
+  let issues = 0
+  let resolved = 0
+  let difference = 0
+  let unverified = 0
+  for (const row of rows) {
+    if (row.status === 'issue') issues += 1
+    if (row.status === 'corrected') resolved += 1
+    if (!countsInTotals(row)) continue
+    const known = row.applicableAmount != null
+    applicable += Number(row.applicableAmount) || 0
+    deducted += deductedAmount(row)
+    base += magnitude(row.baseAmount) || 0
+    // Only rows whose applicable TDS is known (the rules worked out a rate)
+    // count towards the difference; the rest would show as fake excess.
+    if (known) difference += (Number(row.applicableAmount) || 0) - deductedAmount(row)
+    else if (deductedAmount(row) > 0) unverified += 1
   }
-  const total = validationRows.length || 1
-  const rows = BUCKET_ORDER
-    .filter((b) => byBucket.has(b))
-    .map((b) => {
-      const r = byBucket.get(b)
-      return { ...r, pct: (r.count / total) * 100 }
-    })
-
-  const columns = [
-    { label: 'Category', value: (r) => r.bucket },
-    { label: 'Count', value: (r) => r.count },
-    { label: '% of Total', value: (r) => `${r.pct.toFixed(1)}%` },
-    { label: 'Total Base Amount', value: (r) => formatCurrency(r.baseAmount) },
-    { label: 'Total TDS Amount', value: (r) => formatCurrency(r.tdsAmount) },
-  ]
-  return { columns, rows }
+  return { count: rows.length, issues, resolved, base, applicable, deducted, difference, unverified }
 }
 
-// ── 6. LDC & Threshold Monitoring report ────────────────────────────────
-const LDC_THRESHOLD_RE = /LDC|Threshold Crossed|Premature Deduction/i
+export const CATEGORY_SUMMARY_COLUMNS = [
+  { label: 'Category', value: (r) => r.label },
+  { label: 'Transactions', value: (r) => r.count },
+  { label: 'Open Issues', value: (r) => r.issues },
+  { label: 'Resolved', value: (r) => r.resolved },
+  { label: 'Basic Amount', value: (r) => formatCurrency(r.base), excelValue: (r) => amountCell(r.base) },
+  { label: 'TDS Applicable', value: (r) => formatCurrency(r.applicable), excelValue: (r) => amountCell(r.applicable) },
+  { label: 'TDS Deducted', value: (r) => formatCurrency(r.deducted), excelValue: (r) => amountCell(r.deducted) },
+  { label: 'Short (+) / Excess (−)', value: (r) => formatCurrency(r.difference), excelValue: (r) => amountCell(r.difference) },
+  { label: 'Rate Not Verified', value: (r) => r.unverified },
+]
 
-export function buildLdcThresholdReport(issues) {
-  const rows = issues.filter((i) => LDC_THRESHOLD_RE.test(i.category || ''))
-  const columns = [
-    { label: 'Doc No.', value: (r) => r.docNo },
-    { label: 'Vendor', value: (r) => r.vendor },
-    { label: 'PAN', value: (r) => r.vendorPan },
-    { label: 'Section', value: (r) => r.section },
-    { label: 'Category', value: (r) => getDisplayIssueType(r) },
-    { label: 'Base Amount', value: (r) => formatCurrency(r.baseAmount) },
-    { label: 'TDS Amount', value: (r) => formatCurrency(r.tdsAmount) },
-    { label: 'Severity', value: (r) => r.severity },
-    { label: 'Date', value: (r) => formatDate(r.date) },
+/**
+ * { hasCategories, tabs: [{ id, label, sheet, rows, summary }], summaryRows }
+ * `tabs[0]` is "All". Rows from an upload made before categories existed
+ * have no reportCategory; `hasCategories` is then false and the page asks
+ * for a fresh upload instead of showing everything as "Other".
+ */
+export function buildCategoryReport(validationRows) {
+  const hasCategories = validationRows.some((row) => row.reportCategory)
+  const byCategory = new Map(REPORT_CATEGORIES.map((c) => [c.id, []]))
+  for (const row of validationRows) {
+    const id = byCategory.has(row.reportCategory) ? row.reportCategory : 'other'
+    byCategory.get(id).push(row)
+  }
+  const ordered = REPORT_CATEGORIES.flatMap((c) => byCategory.get(c.id))
+  const tabs = [
+    { id: 'all', label: 'All', sheet: 'All', rows: withSerial(ordered), summary: summarise(ordered) },
+    ...REPORT_CATEGORIES.map((c) => {
+      const rows = byCategory.get(c.id)
+      return { ...c, rows: withSerial(rows), summary: summarise(rows) }
+    }),
   ]
-  return { columns, rows }
+  const summaryRows = [
+    ...tabs.slice(1).map((tab) => ({ label: tab.label, ...tab.summary })),
+    { label: 'Total', ...tabs[0].summary },
+  ]
+  return { hasCategories, tabs, summaryRows }
+}
+
+/** Sheets for the category workbook: Summary, All, then one per category. */
+export function categoryReportSheets(report) {
+  return [
+    { name: 'Summary', columns: CATEGORY_SUMMARY_COLUMNS, rows: report.summaryRows },
+    ...report.tabs.map((tab) => ({ name: tab.sheet, columns: CATEGORY_REPORT_COLUMNS, rows: tab.rows })),
+  ]
 }

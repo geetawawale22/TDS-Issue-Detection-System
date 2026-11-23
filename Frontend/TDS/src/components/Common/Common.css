@@ -1153,7 +1153,137 @@
   gap: 8px;
 }
 
+/* The table's own wrapper is the one scroll area (both directions), so its
+   sticky header rows stay visible; the pager stays below it, always in view.
+   If this box scrolled instead, the header would scroll away with the rows. */
 .report-modal-table {
-  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 12px 20px 20px;
+}
+
+.report-modal-table > .data-table-flex {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.report-modal-table .data-table-wrapper {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.report-modal-table .table-pagination {
+  flex-shrink: 0;
+}
+
+/* Optional group header row (columns with `group`), e.g. "TDS Applicable"
+   over Section / Rate / Amount. The second header row sticks below it. */
+.data-table thead tr.data-table-group-row th {
+  top: 0;
+  height: 30px;
+  padding: 6px 12px;
+  cursor: default;
+}
+
+.data-table thead tr.data-table-group-row th.data-table-group-cell {
+  text-align: center;
+  color: var(--color-text);
+  background: var(--color-primary-light, #EEF2FF);
+  border-left: 1px solid var(--color-border-light);
+  border-right: 1px solid var(--color-border-light);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.data-table thead tr.data-table-grouped-header-row th {
+  top: 30px;
+}
+
+.data-table thead tr.data-table-group-row th:hover {
+  background: var(--color-surface);
+}
+
+.data-table thead tr.data-table-group-row th.data-table-group-cell:hover {
+  background: var(--color-primary-light, #EEF2FF);
+}
+
+/* ── Export period dialog (asked before every report export) ── */
+.modal-overlay.export-period-overlay {
+  z-index: 60; /* above the report viewer it can open from */
+}
+
+.export-period-card {
+  width: min(440px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  background: var(--color-surface);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+}
+
+.export-period-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.export-period-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.export-period-modes {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.export-period-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.export-period-field .filter-select,
+.export-period-field .filter-input {
+  width: 100%;
+}
+
+.export-period-range {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.export-period-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.export-period-hint.is-empty {
+  color: var(--color-danger);
+}
+
+.export-period-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--color-border-light);
 }

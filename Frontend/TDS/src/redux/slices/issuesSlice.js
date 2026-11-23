@@ -419,6 +419,13 @@ function scopeToCompanyAndFY(rows, state) {
   return scopeRowsToCompanyAndFY(rows, state)
 }
 
+/** Upload issues in the header's financial year, every company (Reports filters companies itself). */
+export function selectFyScopedIssues(state) {
+  const rows = state.issues.uploadedIssues
+  if (state.issues.dataSource !== 'upload') return rows
+  return scopeRowsToCompanyAndFY(rows, { ...state, app: { ...state.app, selectedCompanyCode: '' } })
+}
+
 export function selectActiveIssues(state) {
   return scopeToCompanyAndFY(state.issues.uploadedIssues, state)
 }
