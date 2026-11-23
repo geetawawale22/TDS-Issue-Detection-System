@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Building2, Users, ShieldCheck, Database, RefreshCw, Bell, History, Plus, X, Pencil, Search, RotateCcw, Trash2 } from 'lucide-react'
+import { Building2, Users, ShieldCheck, Database, RefreshCw, Bell, History, Plus, X, Pencil, Search, RotateCcw, Trash2, Plug } from 'lucide-react'
 import StatusBadge from '@/components/Common/StatusBadge'
 import { useAuth } from '@/context/AuthContext'
 import adminService from '@/services/adminService'
@@ -9,12 +9,14 @@ import { MESSAGES } from '@/utils/messages'
 import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './Settings.css'
+import SapDataApiPanel from './SapDataApiPanel'
 
 const ALL_TABS = [
   { id: 'organization', label: 'Organization', icon: Building2 },
   { id: 'users',        label: 'Users',        icon: Users,       adminOnly: true },
   { id: 'roles',        label: 'Roles',        icon: ShieldCheck, adminOnly: true },
   { id: 'gcp',          label: 'GCP Config',   icon: Database },
+  { id: 'sapApi',       label: 'SAP Data API', icon: Plug,        adminOnly: true },
   { id: 'sync',         label: 'Sync',         icon: RefreshCw },
   { id: 'notifications',label: 'Notifications',icon: Bell },
   { id: 'audit',        label: 'Audit Logs',   icon: History },
@@ -400,6 +402,8 @@ export default function Settings() {
             </div>
           </div>
         )}
+
+        {activeTab === 'sapApi' && isAdmin && <SapDataApiPanel />}
 
         {activeTab === 'sync' && (
           <div className="settings-card" style={{ maxWidth: 480 }}>

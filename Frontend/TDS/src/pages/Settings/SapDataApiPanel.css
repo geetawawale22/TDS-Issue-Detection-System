@@ -1,0 +1,115 @@
+.sap-api {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.sap-api-card { max-width: 100%; min-width: 0; }
+
+.sap-api-intro {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-bottom: 12px;
+}
+
+.sap-api-status-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sap-api-hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 8px;
+}
+
+.sap-api-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+}
+
+.sap-api-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  min-width: 0;
+}
+
+.sap-api-field--wide { grid-column: span 2; }
+
+.sap-api-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.sap-api-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-danger-border);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-radius: var(--border-radius-sm);
+  font-size: 12.5px;
+}
+
+.sap-api-result-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sap-api-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sap-api-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sap-api-meta {
+  font-size: 11.5px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  overflow: auto;
+}
+
+.sap-api-samples {
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sap-api-rows {
+  max-height: 480px;
+}
+
+.sap-api-rows td {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .sap-api-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sap-api-field--wide { grid-column: 1 / -1; }
+}

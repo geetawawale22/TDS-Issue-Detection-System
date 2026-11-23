@@ -1,0 +1,43 @@
+# Database
+DATABASE_URL=postgresql://tdsuser:tds1234@localhost:5432/tdsmahindra
+
+# Application
+APP_ENV=development
+APP_NAME=TDS Issue Detection System
+
+# Company codes being processed
+COMPANY_CODES=1001,1079,1081
+
+# Data source - 'mock' uses local files, 'gcp' uses BigQuery
+DATA_SOURCE=mock
+
+# GCP (fill later when Mahindra provides access)
+GCP_PROJECT_ID=
+GCP_DATASET_ID=
+GOOGLE_APPLICATION_CREDENTIALS=
+
+# Email (fill later)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=surajsharmatest94@gmail.com
+EMAIL_FROM=surajsharmatest94@gmail.com
+SMTP_PASSWORD=egwfpepnntriirfe
+SMTP_USE_TLS=true
+
+FRONTEND_URL=http://192.168.10.148:5173
+
+INVITE_EXPIRE_HOURS=48
+PASSWORD_RESET_EXPIRE_MINUTES=30
+
+JWT_SECRET_KEY=317b31ffeeeeb04abe87ecc44f13a710e8c4dd5ee6e5663aeb3ea8364adcde12
+JWT_ALGORITHM=HS256
+JWT_EXPIRE_MINUTES=480
+
+PAN_VERIFICATION_API_KEY=xxxxx
+PAN_VERIFICATION_API_URL=xxxxx
+
+
+# Mahindra SAP data API (BigQuery query service). Reachable only on the Mahindra VPN.
+# Paste the bearer token given by Mahindra (with or without "Bearer ").
+SAP_DATA_API_URL=https://bigqueryapi.m-devsecops.com/query
+SAP_DATA_API_TOKEN=VutzqyNOuFqhM9G54JbH3E
