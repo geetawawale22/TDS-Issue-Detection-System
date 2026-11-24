@@ -376,6 +376,63 @@ def _normalise_explicit_tds_section_code(value) -> Optional[str]:
     return None
 
 
+def _is_unused_withholding_row(get) -> bool:
+    """A withholding type assigned to the vendor that does not apply to this line:
+    type set, no tax code, and no base or TDS amount."""
+    return (
+        bool(str(get("withholding_tax_type") or "").strip())
+        and not str(get("withholding_tax_code") or "").strip()
+        and not _safe_float(get("withholding_tax_base_amount"))
+        and not _safe_float(get("tds_amount"))
+    )
+
+
+def drop_unused_withholding_rows(raw_rows: List[dict]) -> tuple[List[dict], int]:
+    """Drop SAP rows for withholding types that do not apply to their line.
+
+    SAP's vendor line item view (ZAPI_TDS_VENDOR_ITEMS, the SAP data API)
+    sends one row per withholding type assigned to the vendor, e.g. CI (194C)
+    with its code and amounts plus II and JI with no code and zeros. The Excel
+    export has only the applicable row. Left in, every unused row reads as an
+    invoice line with TDS missing ("Possible Missed TDS Deduction"), doubles
+    the vendor's invoice count, and does not match its issue on screen.
+
+    A line whose rows are all unused keeps one row, with the withholding type
+    cleared, as the Excel export shows such a line. Returns (rows, dropped).
+    """
+    readers = [_row_reader(row) for row in raw_rows]
+    line_keys = []
+    lines_with_applicable_row = set()
+    for get in readers:
+        doc = str(get("doc_number") or "").strip()
+        key = (
+            str(get("company_code") or "").strip(),
+            str(get("fiscal_year") or "").strip(),
+            doc,
+            str(get("line_item_number") or "").strip(),
+        ) if doc else None
+        line_keys.append(key)
+        if key is not None and not _is_unused_withholding_row(get):
+            lines_with_applicable_row.add(key)
+
+    kept: List[dict] = []
+    kept_unused_lines = set()
+    dropped = 0
+    for row, get, key in zip(raw_rows, readers, line_keys):
+        if key is None or not _is_unused_withholding_row(get):
+            kept.append(row)
+            continue
+        if key in lines_with_applicable_row or key in kept_unused_lines:
+            dropped += 1
+            continue
+        kept_unused_lines.add(key)
+        row = dict(row)
+        for column in _field_lookup_keys(tuple(row), "withholding_tax_type"):
+            row[column] = None
+        kept.append(row)
+    return kept, dropped
+
+
 def build_transactions_from_sap_rows(raw_rows: List[dict]) -> List[Transaction]:
     """
     Converts raw SAP-style rows into a clean list of Transaction objects.

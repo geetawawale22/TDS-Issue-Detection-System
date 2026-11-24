@@ -135,3 +135,44 @@ def test_analyse_runs_api_rows_through_the_upload_analysis_and_saves_the_run(mon
     assert body["fileName"] == "SAP API · ZAPI_TDS_VENDOR_ITEMS"
     run = db.query(RuleRun).one()
     assert run.source == "sap_api"
+
+
+def _wht_row(doc, line, wht_type, code, base, tds, **extra):
+    return {
+        "Company_Code": "1001", "Fiscal_Year": 2026, "Document_Number": doc, "Line_Item": line,
+        "Withholding_Tax_Type": wht_type, "Withholding_Tax_Code": code,
+        "Withholding_Tax_Base_Amount": base, "Withholding_Tax_Amount": tds, **extra,
+    }
+
+
+def test_unused_withholding_rows_are_dropped_next_to_the_applicable_one():
+    from ingestion.sap_translator import drop_unused_withholding_rows
+
+    rows = [
+        _wht_row("3188141738", 1, "II", "", 0, 0),
+        _wht_row("3188141738", 1, "CI", "C1", -4309.2, -87),
+        _wht_row("3188141738", 1, "JI", None, 0, 0),
+        # Another line of the same document keeps its own row.
+        _wht_row("3188141738", 2, "CI", "C1", -100, -2),
+    ]
+    kept, dropped = drop_unused_withholding_rows(rows)
+    assert dropped == 2
+    assert [(row["Line_Item"], row["Withholding_Tax_Type"]) for row in kept] == [(1, "CI"), (2, "CI")]
+
+
+def test_line_with_only_unused_withholding_rows_keeps_one_row_without_a_type():
+    from ingestion.sap_translator import drop_unused_withholding_rows
+
+    rows = [_wht_row("2610487526", 1, "II", "", 0, 0), _wht_row("2610487526", 1, "JI", "", 0, 0)]
+    kept, dropped = drop_unused_withholding_rows(rows)
+    assert dropped == 1
+    assert len(kept) == 1 and kept[0]["Withholding_Tax_Type"] is None
+    # The input rows are not changed.
+    assert rows[0]["Withholding_Tax_Type"] == "II"
+
+
+def test_rows_without_withholding_columns_are_untouched():
+    from ingestion.sap_translator import drop_unused_withholding_rows
+
+    rows = [{"Document_No": "1", "TDS_Section": "194C", "TDS_Amount": 0}, {"Document_No": "1", "TDS_Section": "194C", "TDS_Amount": 0}]
+    assert drop_unused_withholding_rows(rows) == (rows, 0)
