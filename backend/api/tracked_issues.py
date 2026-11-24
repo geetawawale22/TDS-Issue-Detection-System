@@ -119,6 +119,11 @@ def _scoped(query, user: User, db: Session):
     return query.filter(TrackedIssue.company_code.in_(codes))
 
 
+def _desc_nulls_last(column):
+    """Newest first, empty values last. `NULLS LAST` is PostgreSQL-only (MySQL
+    rejects it), so sort on "is empty" first: false (0) before true (1)."""
+    return column.is_(None), column.desc()
+
 @router.get("")
 def list_tracked_issues(
     status: Literal["open", "resolved", "all"] = "open",
@@ -169,8 +174,8 @@ def list_tracked_issues(
     if resolution_type.strip():
         query = query.filter(TrackedIssue.resolution_type == resolution_type.strip().upper())
     total = query.count()
-    order = TrackedIssue.resolved_at.desc().nullslast() if status == "resolved" else TrackedIssue.last_seen_at.desc()
-    rows = query.order_by(order, TrackedIssue.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    order = _desc_nulls_last(TrackedIssue.resolved_at) if status == "resolved" else (TrackedIssue.last_seen_at.desc(),)
+    rows = query.order_by(*order, TrackedIssue.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {
         "items": [tracked_issue_to_dict(row) for row in rows],
         "total": total,
@@ -288,7 +293,7 @@ def all_tracked_issues(
     )
     rows = (
         _scoped(db.query(*columns), current_user, db)
-        .order_by(TrackedIssue.posting_date.desc().nullslast(), TrackedIssue.id.desc())
+        .order_by(*_desc_nulls_last(TrackedIssue.posting_date), TrackedIssue.id.desc())
         .limit(_DASHBOARD_LIMIT + 1)
         .all()
     )
