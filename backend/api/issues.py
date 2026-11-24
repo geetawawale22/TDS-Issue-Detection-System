@@ -33,6 +33,7 @@ from ingestion.sap_translator import (
     COLUMN_ALIASES,
     build_transactions_from_sap_export,
     build_transactions_from_sap_rows,
+    drop_unused_withholding_rows,
     get_tds_section_raw,
     looks_like_descriptive_tds_section,
 )
@@ -1826,6 +1827,12 @@ def analyse_frame(
     elif requested_code:
         records = [row for row in records if str(row.get("Company_Code") or "").strip() == requested_code]
 
+    # One row per SAP line: drop withholding types assigned to the vendor
+    # that do not apply to the line (the SAP data API sends them, see
+    # drop_unused_withholding_rows); otherwise each reads as missed TDS.
+    rows_read = len(records)
+    records, unused_withholding_rows = drop_unused_withholding_rows(records)
+
     # Exports containing compound descriptive section text (either the old
     # numbering, e.g. "194C - Ind/HUF - 1%", or the new one, e.g.
     # "...-393(1)6(i)") need the decoder + signed-amount normalization;
@@ -2042,7 +2049,8 @@ def analyse_frame(
     skipped_validation_rows = sum(row["status"] == "skipped" for row in validation_rows)
 
     stats = {
-        "rowsRead": len(records),
+        "rowsRead": rows_read,
+        "unusedWithholdingRows": unused_withholding_rows,
         "transactionsBuilt": len(validation_rows),
         "rowsSkipped": skipped_validation_rows,
         "passedRows": passed_rows,
