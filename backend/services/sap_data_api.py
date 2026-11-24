@@ -146,3 +146,45 @@ def query(table: str, page_no: int = 1, page_size: int = 1000, other_conditions:
         raise SapDataApiError('The API response has a "data" field that is not a list.')
     meta = {key: value for key, value in payload.items() if key != "data"}
     return SapPage(rows=[row for row in rows if isinstance(row, dict)], meta=meta, elapsed_ms=elapsed_ms)
+
+
+# Safety cap for fetch_all: stop instead of pulling an unbounded table.
+MAX_FETCH_ROWS = 500_000
+
+
+def fetch_all(table: str, other_conditions: str = "", page_size: int = MAX_PAGE_SIZE, max_rows: int = MAX_FETCH_ROWS) -> list[dict[str, Any]]:
+    """Every row of ``table`` matching ``other_conditions``, page by page.
+
+    Stops at the first short page, or when the API's total (if it sends one)
+    is reached. Raises SapDataApiError if more than ``max_rows`` match, so a
+    missing filter does not silently analyse a partial table.
+    """
+    rows: list[dict[str, Any]] = []
+    page_no = 1
+    previous_first: dict[str, Any] | None = None
+    while True:
+        page = query(table, page_no, page_size, other_conditions)
+        # An API that ignores PageNo would return page 1 forever.
+        if page.rows and page_no > 1 and page.rows[0] == previous_first:
+            break
+        rows.extend(page.rows)
+        if len(rows) > max_rows:
+            raise SapDataApiError(
+                f"More than {max_rows:,} rows match these filters. Narrow them (company code, date range) and try again."
+            )
+        total = _total(page.meta)
+        if len(page.rows) < page_size or not page.rows or (total is not None and len(rows) >= total):
+            break
+        previous_first = page.rows[0]
+        page_no += 1
+    return rows
+
+
+def _total(meta: dict[str, Any]) -> int | None:
+    for key, value in meta.items():
+        if key.lower() in {"total", "totalcount", "total_count", "totalrecords"}:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+    return None

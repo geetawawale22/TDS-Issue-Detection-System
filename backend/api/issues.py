@@ -1791,52 +1791,22 @@ class _FastJSONResponse(JSONResponse):
         ).encode("utf-8")
 
 
-@router.post("/upload", response_class=_FastJSONResponse)
-async def upload_sap_file(
-    files: list[UploadFile] | None = File(None),
-    file: UploadFile | None = File(None),
-    company_code: str = Form(""),
-    include_informational: bool = Form(False),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Analyse one or more SAP CSV/XLSX extracts and return issues for the frontend.
+def analyse_frame(
+    frame: pd.DataFrame,
+    *,
+    filename: str,
+    filenames: list[str],
+    company_code: str,
+    include_informational: bool,
+    current_user: User,
+    db: Session,
+    source: str,
+) -> "_FastJSONResponse":
+    """Run the TDS rules on SAP line items and save the run (issue history + ledger).
 
-    Multiple files are stacked into a single extract before analysis, so
-    documents split across files (e.g. invoices in one, payments in another)
-    still group into the same ledger. ``file`` is kept for older clients.
+    Shared by the Excel upload and the SAP data API (api/sap_data.py), so rows
+    from either source go through the same analysis and reach every page.
     """
-    uploads = [*(files or []), *([file] if file else [])]
-    if not uploads:
-        raise HTTPException(status_code=422, detail="Choose at least one file to upload.")
-
-    frames: list[pd.DataFrame] = []
-    filenames: list[str] = []
-    for upload in uploads:
-        name = upload.filename or "upload"
-        if Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
-            raise HTTPException(status_code=415, detail=f"{name}: upload a CSV, XLSX, XLSM, or XLS file.")
-
-        content = await upload.read()
-        if not content:
-            raise HTTPException(status_code=422, detail=f"{name}: the uploaded file is empty.")
-        if len(content) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail=f"{name}: the uploaded file exceeds the 25 MB limit.")
-
-        part = _read_upload(name, content)
-        # Strip headers per file so "Amount " and "Amount" line up on concat.
-        part.columns = [str(column).strip() for column in part.columns]
-        if not part.empty:
-            frames.append(part)
-        filenames.append(name)
-
-    if not frames:
-        raise HTTPException(status_code=422, detail="The uploaded file(s) have no transaction rows.")
-    # Outer-join on columns so files with slightly different layouts still
-    # combine; columns missing from one file become blank for its rows.
-    frame = pd.concat(frames, ignore_index=True, sort=False) if len(frames) > 1 else frames[0]
-    filename = filenames[0] if len(filenames) == 1 else f"{len(filenames)} files ({', '.join(filenames)})"
-
     records = _normalise_records(frame)
     allowed_codes = set(get_user_company_codes(current_user, db))
     requested_code = company_code.strip()
@@ -2100,13 +2070,13 @@ async def upload_sap_file(
             issue_txns=issue_txns,
             transactions=transactions,
             user_id=current_user.id,
-            source="upload",
+            source=source,
             file_name=filename,
             include_informational=include_informational,
         )
     except Exception as exc:  # noqa: BLE001 - history must never block analysis
         db.rollback()
-        logger.exception("Issue tracking failed for upload %s", filename)
+        logger.exception("Issue tracking failed for %s %s", source, filename)
         tracking = {"error": "Issue history could not be updated for this run."}
 
     # Rows whose issues the issue history already counts as resolved (a
@@ -2136,7 +2106,7 @@ async def upload_sap_file(
             ], reports=report_rows)
         except Exception:  # noqa: BLE001
             db.rollback()
-            logger.exception("Saving ledger lines failed for upload %s", filename)
+            logger.exception("Saving ledger lines failed for %s %s", source, filename)
             tracking["ledgerError"] = "Ledger lines could not be saved for this run."
 
     # Returned as a response object (not a dict) so FastAPI does not run its
@@ -2162,6 +2132,64 @@ async def upload_sap_file(
         "errors": [],
         "tracking": tracking,
     })
+
+
+@router.post("/upload", response_class=_FastJSONResponse)
+async def upload_sap_file(
+    files: list[UploadFile] | None = File(None),
+    file: UploadFile | None = File(None),
+    company_code: str = Form(""),
+    include_informational: bool = Form(False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Analyse one or more SAP CSV/XLSX extracts and return issues for the frontend.
+
+    Multiple files are stacked into a single extract before analysis, so
+    documents split across files (e.g. invoices in one, payments in another)
+    still group into the same ledger. ``file`` is kept for older clients.
+    """
+    uploads = [*(files or []), *([file] if file else [])]
+    if not uploads:
+        raise HTTPException(status_code=422, detail="Choose at least one file to upload.")
+
+    frames: list[pd.DataFrame] = []
+    filenames: list[str] = []
+    for upload in uploads:
+        name = upload.filename or "upload"
+        if Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(status_code=415, detail=f"{name}: upload a CSV, XLSX, XLSM, or XLS file.")
+
+        content = await upload.read()
+        if not content:
+            raise HTTPException(status_code=422, detail=f"{name}: the uploaded file is empty.")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"{name}: the uploaded file exceeds the 25 MB limit.")
+
+        part = _read_upload(name, content)
+        # Strip headers per file so "Amount " and "Amount" line up on concat.
+        part.columns = [str(column).strip() for column in part.columns]
+        if not part.empty:
+            frames.append(part)
+        filenames.append(name)
+
+    if not frames:
+        raise HTTPException(status_code=422, detail="The uploaded file(s) have no transaction rows.")
+    # Outer-join on columns so files with slightly different layouts still
+    # combine; columns missing from one file become blank for its rows.
+    frame = pd.concat(frames, ignore_index=True, sort=False) if len(frames) > 1 else frames[0]
+    filename = filenames[0] if len(filenames) == 1 else f"{len(filenames)} files ({', '.join(filenames)})"
+
+    return analyse_frame(
+        frame,
+        filename=filename,
+        filenames=filenames,
+        company_code=company_code,
+        include_informational=include_informational,
+        current_user=current_user,
+        db=db,
+        source="upload",
+    )
 
 
 @router.post("/upload-case-sources")

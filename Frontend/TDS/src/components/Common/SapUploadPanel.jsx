@@ -7,13 +7,12 @@ import {
 import toast from 'react-hot-toast'
 import issuesService from '@/services/issuesService'
 import {
-  uploadStarted, uploadProgress, uploadSucceeded, uploadFailed, clearUpload,
+  uploadStarted, uploadProgress, uploadFailed, clearUpload,
   selectActiveIssues, selectActiveValidationRows,
 } from '@/redux/slices/issuesSlice'
-import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode, setFinancialYear } from '@/redux/slices/appSlice'
-import { seedPansFromIssues } from '@/redux/slices/panSlice'
+import { setDataSourceLabel, setLastSyncTime, setSyncStatus, setSelectedCompanyCode } from '@/redux/slices/appSlice'
+import { applyAnalysisResult } from '@/utils/applyAnalysisResult'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
-import { dominantFinancialYear } from '@/utils/utils'
 import './SapUploadPanel.css'
 
 const ACCEPTED = '.csv,.xlsx,.xls,.xlsm'
@@ -125,38 +124,7 @@ export default function SapUploadPanel({
         includeInformational: includeInfo,
         onProgress: (pct) => dispatch(uploadProgress(pct)),
       })
-      dispatch(uploadSucceeded(result))
-      dispatch(seedPansFromIssues(result.issues || []))
-      // Show the FY the uploaded data belongs to, so its rows aren't hidden
-      // by an FY selected earlier.
-      const uploadFinancialYear = dominantFinancialYear(result.validationRows || [])
-      if (uploadFinancialYear) dispatch(setFinancialYear(uploadFinancialYear))
-      dispatch(setSyncStatus('synced'))
-      dispatch(setLastSyncTime('Just now'))
-      dispatch(setDataSourceLabel(
-        result.fileName
-          ? `SAP upload — ${result.fileName}`
-          : 'SAP upload — live extract',
-      ))
-      const stats = result.stats || {}
-      const tracking = result.tracking
-      const trackingText = tracking && !tracking.error
-        ? ` · ${tracking.newIssues.toLocaleString()} new · ${tracking.resolvedIssues.toLocaleString()} resolved since last run`
-        : ''
-      // "Issues found" counts every issue the rules raised in this file,
-      // including ones a correction already resolved (now or in an earlier
-      // run), so say how many of them are still open.
-      const found = Number(stats.issuesFound) || 0
-      const open = stats.openIssues ?? found
-      const alreadyCorrected = Math.max(0, found - open)
-      const foundText = alreadyCorrected > 0
-        ? `${found.toLocaleString()} issues found (${open.toLocaleString()} open, ${alreadyCorrected.toLocaleString()} already corrected)`
-        : `${found.toLocaleString()} issues found`
-      toast.success(
-        `Processed ${stats.transactionsBuilt?.toLocaleString?.() ?? stats.transactionsBuilt} transactions · ${foundText}${trackingText}`,
-        { duration: 5000 },
-      )
-      if (tracking?.error) toast.error(tracking.error)
+      applyAnalysisResult(dispatch, result, result.fileName ? `SAP upload — ${result.fileName}` : 'SAP upload — live extract')
     } catch (err) {
       dispatch(uploadFailed(err.message || 'Upload failed'))
       toast.error(err.message || 'Upload failed')

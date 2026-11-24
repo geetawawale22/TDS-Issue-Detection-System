@@ -521,15 +521,11 @@ def list_ldc_certificates(
     }
 
 
-@router.post("/upload-certificates")
-async def upload_ldc_certificates(
-    file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Validate and upsert LDC certificate master rows."""
-    del current_user
-    frame = await _read_frame(file)
+def import_certificate_frame(frame: pd.DataFrame, db: Session) -> dict[str, Any]:
+    """Validate and upsert LDC certificate rows (columns already normalised).
+
+    Shared by the Excel upload and the SAP data API (api/sap_data.py).
+    """
     missing = sorted(REQUIRED_CERTIFICATE_COLUMNS.difference(frame.columns))
     if missing:
         raise HTTPException(status_code=422, detail=f"Missing columns: {', '.join(missing)}")
@@ -680,3 +676,15 @@ async def upload_ldc_certificates(
         "issues": issue_rows,
         "certificates": certificate_rows,
     }
+
+
+@router.post("/upload-certificates")
+async def upload_ldc_certificates(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Validate and upsert LDC certificate master rows."""
+    del current_user
+    frame = await _read_frame(file)
+    return import_certificate_frame(frame, db)

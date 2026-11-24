@@ -40,6 +40,16 @@ const ldcPageCache = {
   stats: null,
   loaded: false,
 }
+/** Reload certificates from the backend on the next visit (after an import elsewhere, e.g. the SAP data API). */
+export function invalidateLdcPageCache() {
+  ldcPageCache.rows = null
+  ldcPageCache.loaded = false
+  ldcPageCache.uploadResult = null
+  ldcPageCache.uploadIssues = null
+  ldcPageCache.stats = null
+  try { window.localStorage.removeItem(LDC_UPLOAD_META_KEY) } catch { /* storage may be unavailable */ }
+}
+
 const TODAY = new Date()
 TODAY.setHours(0, 0, 0, 0)
 const EXPIRING_SOON_DAYS = 30
