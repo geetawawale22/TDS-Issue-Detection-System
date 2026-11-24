@@ -329,13 +329,20 @@ export default function SapDataApiPanel() {
               <>
                 <label className="sap-api-field">
                   <span>{spec.date.label} from</span>
-                  <input className="sap-api-control" type="date" value={filters.dateFrom} max={filters.dateTo || undefined}
-                    onChange={(e) => setFilters((f) => ({ ...f, dateFrom: e.target.value }))} />
+                  <input className="sap-api-control" type="date" value={filters.dateFrom}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      // A from-date past the to-date moves the to-date along (one-day range), instead of blocking it.
+                      setFilters((f) => ({ ...f, dateFrom: value, dateTo: value && f.dateTo && value > f.dateTo ? value : f.dateTo }))
+                    }} />
                 </label>
                 <label className="sap-api-field">
                   <span>{spec.date.label} to</span>
-                  <input className="sap-api-control" type="date" value={filters.dateTo} min={filters.dateFrom || undefined}
-                    onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value }))} />
+                  <input className="sap-api-control" type="date" value={filters.dateTo}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setFilters((f) => ({ ...f, dateTo: value, dateFrom: value && f.dateFrom && value < f.dateFrom ? value : f.dateFrom }))
+                    }} />
                 </label>
               </>
             )}
