@@ -45,7 +45,7 @@ def main():
             conn.execute(text(f"DELETE FROM {table}"))
         print("After:")
         print_counts(conn)
-    print("Analysis data cleared. In the app, click Clear on the upload panel (or just upload the new file).")
+    print("Analysis data cleared. Reload the app: browsers holding the old upload drop it on their own.")
 
 
 if __name__ == "__main__":

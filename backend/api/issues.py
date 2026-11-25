@@ -1436,6 +1436,9 @@ def _transaction_validation_row(txn, status: str, reason: str, row_index: int, t
 
     return {
         "id": f"{status}:{row_index}:{txn.doc_number}:{txn.vendor_code}:{_threshold_section_for_transaction(txn)}",
+        # Position in this upload; each issue carries its row's rowIndex so the
+        # UI pairs them exactly (an issue's amounts can differ from its row's).
+        "rowIndex": row_index,
         "status": status,
         "reason": reason,
         "docNo": txn.doc_number or "—",
@@ -2039,9 +2042,14 @@ def analyse_frame(
             issue["reportCategory"] = report_category_by_txn[id(txn)]
         else:
             issue["reportCategory"] = issue_report_category(issue, txn, advance_roles.get(id(txn)))
+    # Link each issue to its validation row. Matching on amounts is not enough:
+    # "Possible Missed TDS Deduction" estimates a base where the row has none.
+    row_index_by_txn = {id(txn): row_index for row_index, txn in enumerate(transactions, start=1)}
+    for issue, txn in zip(issues, issue_txns):
+        issue["rowIndex"] = row_index_by_txn.get(id(txn))
     # Each row as analysed, saved with its ledger line for the TDS Category
     # Report across runs; resolutions are applied when the report is read.
-    report_rows = {id(txn): {key: value for key, value in row.items() if key != "id"} for txn, row in zip(transactions, validation_rows)}
+    report_rows = {id(txn): {key: value for key, value in row.items() if key not in ("id", "rowIndex")} for txn, row in zip(transactions, validation_rows)}
 
     passed_rows = sum(row["status"] == "passed" for row in validation_rows)
     issue_rows = sum(row["status"] == "issue" for row in validation_rows)
