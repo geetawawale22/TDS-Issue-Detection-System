@@ -363,3 +363,14 @@ def list_rule_runs(
         query = query.filter(RuleRun.run_by == current_user.id)
     rows = query.order_by(RuleRun.created_at.desc(), RuleRun.id.desc()).limit(limit).all()
     return [_run_dict(run) for run in rows]
+
+
+@router.get("/runs/{run_id}/exists")
+def rule_run_exists(
+    run_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    """Whether a run is still saved. The browser keeps a copy of the last
+    upload; once its run is gone (clear_analysis.py) that copy is dropped."""
+    return {"exists": db.query(RuleRun.id).filter(RuleRun.id == run_id).first() is not None}

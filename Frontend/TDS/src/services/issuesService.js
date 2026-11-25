@@ -60,6 +60,12 @@ const issuesService = {
     return data
   },
 
+  /** Whether a rule run is still saved (false once clear_analysis.py wiped it). */
+  async ruleRunExists(runId) {
+    const { data } = await api.get(`/tracked-issues/runs/${runId}/exists`, { skipGlobalLoader: true })
+    return Boolean(data?.exists)
+  },
+
   async downloadTemplate() {
     const { data } = await api.get('/issues/template', { responseType: 'blob' })
     const url = window.URL.createObjectURL(new Blob([data], { type: 'text/csv' }))

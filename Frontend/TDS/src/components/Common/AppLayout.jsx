@@ -4,8 +4,12 @@ import { useDispatch, useSelector } from 'react-redux'
 import Sidebar from '@/components/Sidebar/Sidebar'
 import Navbar from '@/components/Navbar/Navbar'
 import PageLoader, { GlobalPageLoader } from '@/components/Common/PageLoader'
-import { toggleSidebar, setSidebarCollapsed } from '@/redux/slices/appSlice'
+import {
+  toggleSidebar, setSidebarCollapsed, setDataSourceLabel, setLastSyncTime, setSyncStatus,
+} from '@/redux/slices/appSlice'
+import { clearUpload } from '@/redux/slices/issuesSlice'
 import { loadCorrectionRegister } from '@/redux/correctionRegister'
+import issuesService from '@/services/issuesService'
 import './AppLayout.css'
 
 const MOBILE_BREAKPOINT = 768
@@ -27,6 +31,27 @@ export default function AppLayout() {
       // Pages still work without it; Correction Center retries and shows the error.
     })
   }, [dispatch])
+
+  // This browser keeps a copy of the last upload (localStorage / IndexedDB).
+  // If its run is no longer in the database (e.g. clear_analysis.py ran),
+  // drop the copy so TDS Analysis and the Dashboard don't show stale data.
+  const cachedRunId = useSelector((s) => s.issues.uploadMeta?.tracking?.runId ?? null)
+  const checkedRunRef = useRef(null)
+  useEffect(() => {
+    if (!cachedRunId || checkedRunRef.current === cachedRunId) return
+    checkedRunRef.current = cachedRunId
+    issuesService.ruleRunExists(cachedRunId)
+      .then((exists) => {
+        if (exists) return
+        dispatch(clearUpload())
+        dispatch(setDataSourceLabel('No SAP upload loaded'))
+        dispatch(setLastSyncTime('Not synced'))
+        dispatch(setSyncStatus('idle'))
+      })
+      .catch(() => {
+        // Backend unreachable: keep the copy rather than blank the page.
+      })
+  }, [cachedRunId, dispatch])
 
   useEffect(() => {
     function handleResize() {

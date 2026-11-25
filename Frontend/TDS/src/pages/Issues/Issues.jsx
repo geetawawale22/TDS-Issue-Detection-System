@@ -337,6 +337,11 @@ function issueRowKey(row) {
   // share a document number and amounts (one row per withholding type, or the
   // same line exported against two clearing items), so each row only shows
   // its own issue.
+  // Uploads analysed now give each issue its validation row's rowIndex: an
+  // exact pairing, needed because an issue's amounts can differ from its
+  // row's ("Possible Missed TDS Deduction" estimates a base the row lacks).
+  // Older cached uploads have none and fall back to the field key below.
+  if (row.rowIndex != null) return `ROW|${row.rowIndex}`
   return [
     row.docNo,
     row.lineItem,
