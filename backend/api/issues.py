@@ -20,6 +20,7 @@ from uuid import uuid4
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.encoders import jsonable_encoder
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy import or_, tuple_
@@ -227,26 +228,38 @@ def _sample_values(values: list[str]) -> str:
     return f"{', '.join(unique_values[:3])} +{len(unique_values) - 3} more"
 
 
-def _set_ldc_no_match_reason(txn, certificates: list[LDCCertificateMaster], reason: str) -> None:
+def _set_ldc_no_match_reason(
+    txn,
+    certificates: list[LDCCertificateMaster],
+    reason: str,
+    scope_cache: dict[tuple[int, ...], str] | None = None,
+) -> None:
     if not certificates or txn.ldc_exemption_number:
         return
 
-    company_codes = _sample_values([cert.company_code or "Any company" for cert in certificates])
-    sections = _sample_values([cert.applicable_tds_section or "" for cert in certificates])
-    wtax_keys = _sample_values([
-        _withholding_key(cert.wtax_type, cert.wtx_code) or ""
-        for cert in certificates
-    ])
-    validities = _sample_values([
-        f"{_format_display_date(cert.valid_from)} to {_format_display_date(cert.valid_to)}"
-        for cert in certificates
-        if cert.valid_from and cert.valid_to
-    ])
-    txn.ldc_exemption_reason = (
-        "No applicable LDC certificate found: "
-        f"{reason}. Available LDC scope for this PAN/vendor is company {company_codes}, "
-        f"section {sections}, WTax {wtax_keys}, validity {validities}."
-    )
+    # The scope text depends only on the certificates; a vendor's lines share
+    # them, so it is worked out once per certificate set (scope_cache).
+    cache_key = tuple(id(cert) for cert in certificates)
+    scope = scope_cache.get(cache_key) if scope_cache is not None else None
+    if scope is None:
+        company_codes = _sample_values([cert.company_code or "Any company" for cert in certificates])
+        sections = _sample_values([cert.applicable_tds_section or "" for cert in certificates])
+        wtax_keys = _sample_values([
+            _withholding_key(cert.wtax_type, cert.wtx_code) or ""
+            for cert in certificates
+        ])
+        validities = _sample_values([
+            f"{_format_display_date(cert.valid_from)} to {_format_display_date(cert.valid_to)}"
+            for cert in certificates
+            if cert.valid_from and cert.valid_to
+        ])
+        scope = (
+            f"Available LDC scope for this PAN/vendor is company {company_codes}, "
+            f"section {sections}, WTax {wtax_keys}, validity {validities}."
+        )
+        if scope_cache is not None:
+            scope_cache[cache_key] = scope
+    txn.ldc_exemption_reason = f"No applicable LDC certificate found: {reason}. {scope}"
 
 
 def _apply_pan_verification_to_transactions(transactions, db: Session) -> None:
@@ -326,6 +339,23 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
     if not certificates:
         return
 
+    # Certificates by PAN and by vendor code, in query order, so each
+    # transaction looks up its own instead of scanning every certificate
+    # (75k lines x thousands of certificates took minutes). Same matches as
+    # comparing each certificate's stripped PAN / vendor code.
+    certificates_by_pan: dict[str, list[LDCCertificateMaster]] = defaultdict(list)
+    certificates_by_vendor: dict[str, list[LDCCertificateMaster]] = defaultdict(list)
+    # Each certificate's section and WTax keys, cleaned once:
+    # (section key, WTax key, section key without its "/..." suffix).
+    certificate_keys: dict[int, tuple[str, str, str | None]] = {}
+    scope_cache: dict[tuple[int, ...], str] = {}
+    for cert in certificates:
+        certificates_by_pan[(cert.vendor_pan or "").strip().upper()].append(cert)
+        certificates_by_vendor[(cert.vendor_code or "").strip()].append(cert)
+        section_key = (cert.applicable_tds_section or "").strip().upper()
+        wtax_key = (_withholding_key(cert.wtax_type, cert.wtx_code) or "").strip().upper()
+        certificate_keys[id(cert)] = (section_key, wtax_key, _normalise_section(section_key))
+
     for txn in transactions:
         pan = (txn.vendor_pan or "").strip().upper()
         company_code = (txn.company_code or "").strip()
@@ -343,14 +373,11 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
         }
         txn_sections.discard(None)
 
-        pan_or_vendor_matches = [
-            cert for cert in certificates
-            if (
-                ((cert.vendor_pan or "").strip().upper() == pan)
-                if has_valid_pan
-                else ((cert.vendor_code or "").strip() == (txn.vendor_code or "").strip())
-            )
-        ]
+        pan_or_vendor_matches = list(
+            certificates_by_pan.get(pan, ())
+            if has_valid_pan
+            else certificates_by_vendor.get((txn.vendor_code or "").strip(), ())
+        )
         scoped_matches = [
             cert for cert in pan_or_vendor_matches
             if not cert.company_code or cert.company_code == company_code
@@ -364,24 +391,41 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
                 txn,
                 pan_or_vendor_matches,
                 f"transaction company {company_code or '—'} does not match the LDC company",
+                scope_cache,
             )
             continue
+        # Same test as _certificate_section_matches, on the keys cleaned above.
+        allowed_keys: set[str] | None = None
+        if txn_withholding_key:
+            txn_key = txn_withholding_key.strip().upper()
+            txn_type, _, txn_code = txn_key.partition("/")
+            allowed_keys = {txn_key}
+            if txn_code:
+                allowed_keys.add(txn_code)
+            if txn_type:
+                allowed_keys.add(txn_type)
+
         def certificate_matches_section(cert: LDCCertificateMaster) -> bool:
-            return _certificate_section_matches(
-                cert.applicable_tds_section,
-                txn_withholding_key,
-                txn_sections,
-                _withholding_key(cert.wtax_type, cert.wtx_code),
-            )
+            section_key, wtax_key, normalised_section = certificate_keys[id(cert)]
+            if not section_key and not wtax_key:
+                return False
+            if allowed_keys is not None:
+                return wtax_key in allowed_keys or section_key in allowed_keys or normalised_section in txn_sections
+            return section_key in txn_sections or normalised_section in txn_sections
+
+        # The statutory rate depends on the transaction only: look it up once.
+        statutory_rate_cache: list[float | None] = []
 
         def certificate_expected_gap(cert: LDCCertificateMaster) -> float:
             if txn.basic_amount is None or txn.tds_deducted_amount is None:
                 return math.inf
-            statutory_rate = (
-                _get_rate_for_section(txn.tds_deducted_section, txn)
-                or _get_rate_for_section(txn.tds_legacy_section, txn)
-                or _get_rate_for_section(expected_section, txn)
-            )
+            if not statutory_rate_cache:
+                statutory_rate_cache.append(
+                    _get_rate_for_section(txn.tds_deducted_section, txn)
+                    or _get_rate_for_section(txn.tds_legacy_section, txn)
+                    or _get_rate_for_section(expected_section, txn)
+                )
+            statutory_rate = statutory_rate_cache[0]
             if statutory_rate is None or cert.approved_tds_rate is None:
                 return math.inf
             expected_rate = statutory_rate * (1 - float(cert.approved_tds_rate) / 100)
@@ -389,13 +433,12 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
             return abs(expected_amount - abs(float(txn.tds_deducted_amount)))
 
         def certificate_priority(cert: LDCCertificateMaster) -> tuple[Any, ...]:
-            cert_section_key = (cert.applicable_tds_section or "").strip().upper()
-            cert_wtax_key = _withholding_key(cert.wtax_type, cert.wtx_code)
+            cert_section_key, cert_wtax_key, _ = certificate_keys[id(cert)]
             exact_key_match = bool(
                 txn_withholding_key
                 and (
                     cert_section_key == txn_withholding_key
-                    or (cert_wtax_key or "").strip().upper() == txn_withholding_key
+                    or cert_wtax_key == txn_withholding_key
                 )
             )
             return (
@@ -417,6 +460,7 @@ def _apply_ldc_master_to_transactions(transactions, db: Session) -> None:
                     f"{txn.tds_deducted_section or txn.tds_legacy_section or '—'}"
                     f"/{txn_withholding_key or '—'} does not match the LDC section/WTax"
                 ),
+                scope_cache,
             )
         matches = [
             cert for cert in section_matches
@@ -2196,7 +2240,11 @@ async def upload_sap_file(
     frame = pd.concat(frames, ignore_index=True, sort=False) if len(frames) > 1 else frames[0]
     filename = filenames[0] if len(filenames) == 1 else f"{len(filenames)} files ({', '.join(filenames)})"
 
-    return analyse_frame(
+    # The analysis is CPU and database work that takes minutes on a large
+    # extract; run it in a worker thread so the server keeps answering other
+    # requests (pages, other users) meanwhile instead of freezing.
+    return await run_in_threadpool(
+        analyse_frame,
         frame,
         filename=filename,
         filenames=filenames,

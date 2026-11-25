@@ -14,6 +14,14 @@ export const store = configureStore({
     dashboard: dashboardReducer,
     pan: panReducer,
   },
+  // Redux Toolkit's development checks walk the whole state on every action.
+  // With a 75k-row SAP pull in the store that took ~1.5s on load and ~100ms
+  // per action under `vite` dev (machine 2). They never run in a production
+  // build, so turning them off changes no behaviour.
+  middleware: (getDefaultMiddleware) => getDefaultMiddleware({
+    immutableCheck: false,
+    serializableCheck: false,
+  }),
 })
 
 // Uploads too large for localStorage are kept in IndexedDB, which can only be

@@ -26,16 +26,48 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Iterable
 
-from sqlalchemy import and_, exists, func, select, tuple_, update
+from sqlalchemy import Numeric, and_, exists, func, select, tuple_, update
 from sqlalchemy.orm import Session
 
+from db.bulk import insert_rows
 from db.models import LedgerGroup, LedgerLine, TrackedIssue
 from services.issue_tracker import fiscal_year_for
 
 _CHUNK = 500
 NO_SECTION = "No Section"
+
+
+def _same_value(column, saved: Any, new: Any) -> bool:
+    """Whether writing ``new`` would leave the saved value as it is.
+
+    Numbers compare at the column's scale (the database rounds to it, and
+    gives back Decimals); anything uncertain counts as changed.
+    """
+    if saved is None or new is None:
+        return saved is None and new is None
+    if isinstance(column.type, Numeric) and column.type.scale is not None:
+        step = Decimal(1).scaleb(-column.type.scale)
+        try:
+            return (
+                Decimal(str(saved)).quantize(step, ROUND_HALF_UP)
+                == Decimal(str(new)).quantize(step, ROUND_HALF_UP)
+            )
+        except (ArithmeticError, ValueError):
+            return False
+    return saved == new
+
+
+def _unchanged(model, saved, values: dict[str, Any], ignore: set[str]) -> bool:
+    """Whether every column in ``values`` (except ``ignore``) already holds that value."""
+    columns = model.__table__.columns
+    return all(
+        _same_value(columns[key], getattr(saved, key), value)
+        for key, value in values.items()
+        if key not in ignore
+    )
 
 
 def _chunks(values: list, size: int = _CHUNK) -> Iterable[list]:
@@ -172,15 +204,17 @@ def save_run_lines(
     identity = (LedgerLine.company_code, LedgerLine.fiscal_year, LedgerLine.doc_no, LedgerLine.line_item)
     existing: dict[LineKey, list[Any]] = defaultdict(list)
     for chunk in _chunks(list(incoming)):
-        rows = db.query(
-            LedgerLine.id, *identity, LedgerLine.withholding_tax_type, LedgerLine.withholding_tax_code,
-            LedgerLine.group_key, LedgerLine.inferred_clearing_document, LedgerLine.inferred_clearing_fiscal_year,
-        ).filter(tuple_(*identity).in_(chunk))
+        # Every column, so a line SAP sends again unchanged can skip its UPDATE.
+        rows = db.query(*LedgerLine.__table__.columns).filter(tuple_(*identity).in_(chunk))
         for row in rows:
             existing[(row.company_code, row.fiscal_year, row.doc_no, row.line_item)].append(row)
 
     affected: set[str] = set()
     inserts, updates, removed = [], [], []
+    # Lines sent again with nothing changed: only last_run_id moves (one
+    # batched UPDATE instead of one statement per line, which on a daily
+    # 75k-line pull took most of the save time).
+    unchanged_ids: list[int] = []
     saved = 0
     for key, entries in incoming.items():
         previous_rows = existing.get(key, [])
@@ -213,7 +247,10 @@ def save_run_lines(
             else:
                 claimed.add(previous.id)
                 affected.add(previous.group_key)
-                updates.append({**line, "id": previous.id})
+                if _unchanged(LedgerLine, previous, line, {"last_run_id"}):
+                    unchanged_ids.append(previous.id)
+                else:
+                    updates.append({**line, "id": previous.id})
         for row in previous_rows:
             if row.id not in claimed:
                 removed.append(row.id)
@@ -223,8 +260,15 @@ def save_run_lines(
         db.query(LedgerLine).filter(LedgerLine.id.in_(removed)).delete(synchronize_session=False)
     if updates:
         db.bulk_update_mappings(LedgerLine, updates)
+    for chunk in _chunks(unchanged_ids):
+        db.execute(
+            update(LedgerLine)
+            .where(LedgerLine.id.in_(chunk))
+            .values(last_run_id=run_id)
+            .execution_options(synchronize_session=False)
+        )
     if inserts:
-        db.bulk_insert_mappings(LedgerLine, inserts)
+        insert_rows(db, LedgerLine, inserts)
     db.flush()
 
     all_lines = [line for entries in incoming.values() for line in entries.values()]
@@ -332,7 +376,8 @@ def _rebuild_groups(db: Session, group_keys: set[str]) -> None:
         for line in lines:
             by_group[line.group_key].append(line)
 
-        current = {row.group_key: row.id for row in db.query(LedgerGroup.id, LedgerGroup.group_key).filter(LedgerGroup.group_key.in_(chunk))}
+        saved_groups = {row.group_key: row for row in db.query(*LedgerGroup.__table__.columns).filter(LedgerGroup.group_key.in_(chunk))}
+        current = {key: row.id for key, row in saved_groups.items()}
         stale = [current[key] for key in chunk if key in current and key not in by_group]
         if stale:
             db.query(LedgerGroup).filter(LedgerGroup.id.in_(stale)).delete(synchronize_session=False)
@@ -403,11 +448,15 @@ def _rebuild_groups(db: Session, group_keys: set[str]) -> None:
                 "status": _status(0, open_item, net, clearing_only),
             }
             if key in current:
-                updates.append({**row, "id": current[key]})
+                # Issue count and status are recalculated for every group by
+                # _refresh_group_issues, so a group whose sums are unchanged
+                # needs no write here.
+                if not _unchanged(LedgerGroup, saved_groups[key], row, {"issue_count", "status"}):
+                    updates.append({**row, "id": current[key]})
             else:
                 inserts.append(row)
         if inserts:
-            db.bulk_insert_mappings(LedgerGroup, inserts)
+            insert_rows(db, LedgerGroup, inserts)
         if updates:
             db.bulk_update_mappings(LedgerGroup, updates)
     db.flush()

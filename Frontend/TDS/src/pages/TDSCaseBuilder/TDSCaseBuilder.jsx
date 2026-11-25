@@ -639,7 +639,9 @@ export default function TDSCaseBuilder() {
     setGlModalData({ key: glModal.key, loading: true, events: [], issues: [] })
     ledgerService.getGlLines({ glKey: glModal.key, filters: storedFilters })
       .then((data) => { if (!cancelled) setGlModalData({ key: glModal.key, loading: false, ...data }) })
-      .catch(() => { if (!cancelled) setGlModalData({ key: glModal.key, loading: false, events: [], issues: [] }) })
+      // Say why instead of showing an empty table, so a failing request
+      // (e.g. on the MySQL machine) isn't mistaken for "no data".
+      .catch((err) => { if (!cancelled) setGlModalData({ key: glModal.key, loading: false, events: [], issues: [], error: err.message || 'Could not load the lines for this GL' }) })
     return () => { cancelled = true }
   }, [glModal?.key, storedFilters])
   const glModalBaseRow = glModal ? glTableRows.find((row) => row.glKey === glModal.key) : null
@@ -962,6 +964,8 @@ export default function TDSCaseBuilder() {
                 <div className="case-gl-modal-body">
                   {glModalData?.loading ? (
                     <div className="data-table-empty">Loading…</div>
+                  ) : glModalData?.error ? (
+                    <div className="data-table-empty">Could not load this GL's lines: {glModalData.error}</div>
                   ) : glModal.type === 'issues' ? (
                     <DataTable
                       key={`gl-issues-${activeGlModalRow.glKey}`}

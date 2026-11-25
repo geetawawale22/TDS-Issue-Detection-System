@@ -34,6 +34,7 @@ from typing import Any, Iterable
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from db.bulk import insert_rows
 from db.models import RuleRun, TrackedIssue
 from rules.tds_rule_engine import _get_financial_year
 
@@ -638,7 +639,7 @@ def track_rule_run(
                 counts["partial"] += 1
 
     if new_rows:
-        db.bulk_insert_mappings(TrackedIssue, new_rows)
+        insert_rows(db, TrackedIssue, new_rows)
     seen_ids = [existing[key]["id"] for key in current if key in existing]
     for chunk in _chunks(seen_ids):
         db.execute(
