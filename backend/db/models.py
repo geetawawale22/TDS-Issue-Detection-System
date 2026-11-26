@@ -2,6 +2,7 @@ from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, ForeignKey,
     Numeric, Text, Date, UniqueConstraint, Index
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from db.database import Base
@@ -538,3 +539,45 @@ class CorrectionEntry(Base):
     # TDS on the SAP row as uploaded (always positive); the role decides its sign.
 
     group = relationship("CorrectionGroup", back_populates="entries")
+
+
+class UploadRow(Base):
+    """One analysed row of a large SAP data API pull, as the Issues page shows it.
+
+    A pull too large to send to the browser (services/sap_analysis_job.py)
+    keeps its rows here, so "Issues · This Upload" can show the same cards and
+    table, worked out and paged by the server (api/upload_rows.py). Only the
+    latest few runs are kept (services/upload_rows.py KEEP_RUNS).
+    """
+    __tablename__ = "upload_rows"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("rule_runs.id", ondelete="CASCADE"), nullable=False)
+    seq = Column(Integer, nullable=False)  # order in the pull, unique within the run
+    company_code = Column(String(10), nullable=False, default="")
+    posting_date = Column(Date, nullable=True)
+    # passed | issue | insufficient | skipped | corrected, as the Issues page reads it
+    status = Column(String(20), nullable=False)
+    tds_deducted = Column(Boolean, nullable=False, default=False)
+    report_category = Column(String(30), nullable=True)
+    issue_tab = Column(String(20), nullable=True)
+    vendor = Column(String(255), nullable=True)
+    vendor_code = Column(String(50), nullable=True)
+    vendor_pan = Column(String(20), nullable=True)
+    doc_no = Column(String(50), nullable=True)
+    doc_type = Column(String(10), nullable=True)
+    section = Column(String(100), nullable=True)
+    profit_center = Column(String(50), nullable=True)
+    # Filter keys, '|'-delimited: every alias of the row's sections, and its issues' values.
+    section_keys = Column(String(500), nullable=False, default="")
+    has_section = Column(Boolean, nullable=False, default=False)
+    issue_severities = Column(String(100), nullable=False, default="")
+    issue_statuses = Column(String(200), nullable=False, default="")
+    issue_types = Column(Text, nullable=True)
+    # JSON: the validation row plus its issues (MySQL TEXT stops at 64 KB).
+    data = Column(Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=False)
+
+    __table_args__ = (
+        Index("ix_upload_rows_run_seq", "run_id", "seq"),
+        Index("ix_upload_rows_run_status", "run_id", "status"),
+    )

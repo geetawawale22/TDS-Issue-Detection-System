@@ -10,6 +10,7 @@ import SapUploadPanel from '@/components/Common/SapUploadPanel'
 import IssueHistory from '@/pages/CorrectionCenter/IssueHistory'
 import issuesService from '@/services/issuesService'
 import ledgerService from '@/services/ledgerService'
+import uploadRowsService, { uploadRowParams } from '@/services/uploadRowsService'
 import StatusBadge, { severityToTone } from '@/components/Common/StatusBadge'
 import {
   resetFilters, setIssueDateRange, setIssueTypeFilter, setProfitCenterFilter, setSearchQuery, setSectionFilter, setSeverityFilter,
@@ -327,27 +328,6 @@ export default function TDSCaseBuilder() {
     bar_search: storedFilters.search || undefined,
   }), [storedFilters])
 
-  // Large pull: this run's issues, each once (as the list under the tab shows them),
-  // with the same filter bar. The rows themselves can repeat a SAP line.
-  const [uploadSummary, setUploadSummary] = useState(null)
-  const openIssueBarKey = JSON.stringify(openIssueBarFilters)
-  useEffect(() => {
-    if (!serverOnly || trackingRunId == null) {
-      setUploadSummary(null)
-      return undefined
-    }
-    let cancelled = false
-    issuesService.getTrackedIssueSummary({
-      companyCode: selectedCompanyCode || '',
-      financialYear: financialYear || '',
-      barFilters: JSON.parse(openIssueBarKey),
-      seenInRun: trackingRunId,
-    })
-      .then((data) => { if (!cancelled) setUploadSummary(data) })
-      .catch(() => { if (!cancelled) setUploadSummary(null) })
-    return () => { cancelled = true }
-  }, [serverOnly, trackingRunId, selectedCompanyCode, financialYear, openIssueBarKey])
-
   // Counts follow the shared filter bar, using the Issues page's own
   // predicates so tab/card numbers match the cards inside the Issues tab.
   const filterValues = useMemo(() => ({
@@ -356,6 +336,26 @@ export default function TDSCaseBuilder() {
     profitCenterFilter, dateFrom: issueDateFromFilter, dateTo: issueDateToFilter,
   }), [searchQuery, vendorFilter, sectionFilter, docTypeFilter, severityFilter, statusFilter, issueTypeFilter, profitCenterFilter, issueDateFromFilter, issueDateToFilter])
   const filteredIssues = useMemo(() => issueRows.filter((issue) => issueMatchesFilters(issue, filterValues)), [issueRows, filterValues])
+  // Large pull: its rows are on the server; the tab counts them as the Issues page does.
+  const [uploadSummary, setUploadSummary] = useState(null)
+  const uploadParamsKey = JSON.stringify(serverOnly && trackingRunId != null ? uploadRowParams({
+    runId: trackingRunId,
+    companyCode: selectedCompanyCode,
+    financialYear,
+    filters: { ...filterValues, searchQuery: debouncedSearch },
+  }) : null)
+  useEffect(() => {
+    const params = JSON.parse(uploadParamsKey)
+    if (!params) {
+      setUploadSummary(null)
+      return undefined
+    }
+    let cancelled = false
+    uploadRowsService.getSummary(params)
+      .then((data) => { if (!cancelled) setUploadSummary(data) })
+      .catch(() => { if (!cancelled) setUploadSummary(null) })
+    return () => { cancelled = true }
+  }, [uploadParamsKey])
   const filteredValidationRows = useMemo(() => (
     validationRowsMatchingFilters(validationRows, filteredIssues, filterValues)
   ), [validationRows, filteredIssues, filterValues])
@@ -363,7 +363,7 @@ export default function TDSCaseBuilder() {
   // matches the "Issues Found" card inside the Issues tab.
   const issueRowCount = useMemo(() => (
     serverOnly
-      ? Number(uploadSummary?.open || 0) + Number(uploadSummary?.resolved || 0)
+      ? Number(uploadSummary?.issueRows || 0)
       : issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
   ), [serverOnly, uploadSummary, filteredValidationRows, filteredIssues])
   const issueTypeOptions = useMemo(
@@ -936,18 +936,8 @@ export default function TDSCaseBuilder() {
           {resultsTabsPanel}
           <IssueHistory mode="open" showCards refreshKey={trackingRunId} barFilters={openIssueBarFilters} />
         </>
-      ) : activeTab === 'issues' && serverOnly ? (
-        <>
-          {resultsTabsPanel}
-          <div className="case-empty-source">
-            This SAP pull ({Number(uploadMeta.stats?.transactionsBuilt || 0).toLocaleString()} rows) was analysed and saved in full on the server;
-            the cards and list below are worked out there, page by page, so nothing is left out however large the pull.
-            Each issue is counted once, even when SAP sends the same line more than once. Every line is in Document Ledger and GL Ledger.
-          </div>
-          <IssueHistory mode="both" initialStatus="open" showCards seenInRun={trackingRunId} refreshKey={trackingRunId} barFilters={openIssueBarFilters} />
-        </>
       ) : activeTab === 'issues' ? (
-        <Issues embedded initialView={searchParams.get('view') || 'all'} hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
+        <Issues embedded initialView={searchParams.get('view') || 'all'} hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} serverRunId={serverOnly ? trackingRunId : null} />
       ) : activeTab === 'gl' ? (
         <>
           {resultsTabsPanel}

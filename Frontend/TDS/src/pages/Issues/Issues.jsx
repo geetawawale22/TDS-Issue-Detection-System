@@ -5,7 +5,7 @@ import toast from 'react-hot-toast'
 import {
   Download, FileSearch, SlidersHorizontal, RotateCcw,
   Activity, AlertOctagon, AlertTriangle, CheckCircle2, CheckCheck, IdCard, Loader2, CircleSlash, X,
-  BadgeCheck, BadgeX,
+  BadgeCheck, BadgeX, ChevronLeft, ChevronRight,
 } from 'lucide-react'
 import DataTable from '@/components/Common/DataTable'
 import StatusBadge, { severityToTone, issueStatusToTone } from '@/components/Common/StatusBadge'
@@ -30,6 +30,7 @@ import { filterIncludes, filterMatchesAny, selectedValues } from '@/utils/multiF
 import { formatCurrency, formatDate, formatStatusLabel } from '@/utils/utils'
 import { sectionMatches } from '@/utils/sectionAliases'
 import { downloadCsv, ISSUE_CSV_COLUMNS, VALIDATION_CSV_COLUMNS } from '@/utils/csvExport'
+import uploadRowsService, { uploadRowParams } from '@/services/uploadRowsService'
 import SearchInput from '@/components/Common/SearchInput'
 import '@/components/Common/Common.css'
 import './Issues.css'
@@ -368,6 +369,52 @@ function uniqueIssueTypes(rowIssues) {
   return [...byLabel.values()]
 }
 
+// Table page size; a large SAP pull's table is paged by the server at this size.
+const TABLE_PAGE_SIZE = 1000
+
+/**
+ * A large SAP pull's saved row (backend/api/upload_rows.py: the validation row
+ * plus its own `issues`) as the table shows it, built exactly like
+ * viewTableRows / buildIssueValidationRows do for a small upload.
+ */
+function serverTableRow(row, view, rowNumber) {
+  const rowIssues = row.issues || []
+  if (view === 'issue') {
+    const primaryIssue = rowIssues[0]
+    const issueTypes = uniqueIssueTypes(rowIssues)
+    return {
+      ...row,
+      _rowNumber: rowNumber,
+      id: `issue-${row.rowIndex}`,
+      issueId: primaryIssue?.id,
+      category: primaryIssue?.category,
+      issueType: primaryIssue?.issueType,
+      issueTypeLabel: issueTypes.map((issue) => issue.label).join(' | '),
+      issueTypes,
+      severity: primaryIssue?.severity,
+      legacySection: primaryIssue?.legacySection,
+      ruleSection: primaryIssue?.ruleSection,
+      newSection: primaryIssue?.newSection,
+      plainEnglish: primaryIssue?.plainEnglish,
+      recommendedAction: primaryIssue?.recommendedAction,
+      status: 'issue',
+      issueStatus: primaryIssue?.status,
+      correctionGroupId: primaryIssue?.correctionGroupId,
+    }
+  }
+  // Same issue the small-upload table pairs with the row (the last one on it).
+  const matchingIssue = rowIssues[rowIssues.length - 1]
+  return {
+    ...row,
+    _rowNumber: rowNumber,
+    id: `${view}-${row.rowIndex}`,
+    issueId: matchingIssue?.id,
+    severity: matchingIssue?.severity,
+    issueTypeLabel: matchingIssue ? getDisplayIssueType(matchingIssue) : null,
+    ...(BUCKET_VIEWS[view] && row.status === 'issue' && rowIssues.length ? { issueTypes: uniqueIssueTypes(rowIssues) } : {}),
+  }
+}
+
 // Posting-date window from a Dashboard click (a month or the Dashboard's dates).
 export function rowInDateRange(row, from, to) {
   if (!from && !to) return true
@@ -458,7 +505,10 @@ export function validationRowsMatchingFilters(validationRows, filteredIssues, fi
   return hasIssueLevelFilters(filters) ? issueRowsMatchingIssues(rows, filteredIssues) : rows
 }
 
-export default function Issues({ embedded = false, initialView = 'all', filtersFirst = false, beforeSummary = null, hideFilters = false, externalDocTypeFilter = null, onExternalDocTypeFilterChange = null, reviewOnly = false } = {}) {
+// serverRunId: a large SAP pull's run. Its rows are not in the browser; the same
+// cards, tabs and table are worked out and paged by the server (api/upload_rows.py).
+export default function Issues({ embedded = false, initialView = 'all', filtersFirst = false, beforeSummary = null, hideFilters = false, externalDocTypeFilter = null, onExternalDocTypeFilterChange = null, reviewOnly = false, serverRunId = null } = {}) {
+  const serverMode = serverRunId != null && !reviewOnly
   const dispatch = useDispatch()
   const [searchParams] = useSearchParams()
   const [validationView, setValidationView] = useState('all')
@@ -567,7 +617,52 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   }), [searchQuery, vendorFilter, sectionFilter, activeDocTypeFilter, severityFilter, statusFilter, issueTypeFilter, profitCenterFilter, issueDateFromFilter, issueDateToFilter])
   const filtered = useMemo(() => issues.filter((issue) => issueMatchesFilters(issue, filterValues)), [issues, filterValues])
 
-  const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
+  // ── Large SAP pull (serverMode): cards and table pages come from the server. ──
+  const selectedCompanyCode = useSelector((s) => s.app.selectedCompanyCode)
+  const selectedFinancialYear = useSelector((s) => s.app.financialYear)
+  const [serverSearch, setServerSearch] = useState(searchQuery)
+  useEffect(() => {
+    const timer = setTimeout(() => setServerSearch(searchQuery.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+  const serverParams = useMemo(() => (serverMode ? uploadRowParams({
+    runId: serverRunId,
+    companyCode: selectedCompanyCode,
+    financialYear: selectedFinancialYear,
+    filters: { ...filterValues, searchQuery: serverSearch },
+  }) : null), [serverMode, serverRunId, selectedCompanyCode, selectedFinancialYear, filterValues, serverSearch])
+  const serverParamsKey = JSON.stringify(serverParams)
+  const [serverSummary, setServerSummary] = useState(null)
+  const [serverPage, setServerPage] = useState({ items: [], total: 0, tabCounts: {}, hasReportCategories: false })
+  const [serverPageNo, setServerPageNo] = useState(1)
+  const [serverLoading, setServerLoading] = useState(false)
+  const [serverError, setServerError] = useState('')
+  useEffect(() => { setServerPageNo(1) }, [serverParamsKey, validationView, categoryTab])
+  useEffect(() => {
+    if (!serverMode) return undefined
+    let cancelled = false
+    uploadRowsService.getSummary(JSON.parse(serverParamsKey))
+      .then((data) => { if (!cancelled) setServerSummary(data) })
+      .catch((err) => { if (!cancelled) setServerError(err.message || 'Could not load this upload') })
+    return () => { cancelled = true }
+  }, [serverMode, serverParamsKey])
+  useEffect(() => {
+    if (!serverMode) return undefined
+    let cancelled = false
+    setServerLoading(true)
+    setServerError('')
+    uploadRowsService.getPage(JSON.parse(serverParamsKey), { view: validationView, tab: categoryTab, page: serverPageNo, pageSize: TABLE_PAGE_SIZE })
+      .then((data) => { if (!cancelled) setServerPage(data) })
+      .catch((err) => { if (!cancelled) setServerError(err.message || 'Could not load this upload') })
+      .finally(() => { if (!cancelled) setServerLoading(false) })
+    return () => { cancelled = true }
+  }, [serverMode, serverParamsKey, validationView, categoryTab, serverPageNo])
+  // Issues on the rows shown, so Review opens the same drawer as for a small upload.
+  const serverIssuesById = useMemo(() => new Map(
+    serverPage.items.flatMap((row) => (row.issues || []).map((issue) => [issue.id, issue])),
+  ), [serverPage])
+
+  const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? serverIssuesById.get(selectedIssueId) ?? null
 
   // Company/FY-scoped validation rows (see selectActiveValidationRows), with
   // one extra reclassification: a row with a zero base amount can't actually
@@ -615,15 +710,32 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
 
   // Every row the issue could be matched to. Ids are fixed here, before any
   // search, so a selection still points at the same row after the search changes.
+  // Large pull: the server searches the rows; ticked rows are kept across searches.
+  const [serverMatch, setServerMatch] = useState({ items: [], total: 0 })
+  const [serverMatchPicked, setServerMatchPicked] = useState({})
+  useEffect(() => {
+    if (!serverMode || !matchIssue) return undefined
+    let cancelled = false
+    const timer = setTimeout(() => {
+      uploadRowsService.search({ runId: serverRunId, q: matchSearch.trim(), excludeDoc: String(matchIssue.docNo || '') })
+        .then((data) => { if (!cancelled) setServerMatch(data) })
+        .catch(() => { if (!cancelled) setServerMatch({ items: [], total: 0 }) })
+    }, 300)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [serverMode, serverRunId, matchIssue, matchSearch])
   const matchPoolRows = useMemo(() => {
     if (!matchIssue) return []
+    if (serverMode) {
+      const shown = new Set(serverMatch.items.map((row) => row.id))
+      return [...Object.values(serverMatchPicked).filter((row) => !shown.has(row.id)), ...serverMatch.items]
+    }
     return displayValidationRows
       .filter((row) => String(row.docNo || '') !== String(matchIssue.docNo || ''))
       .map((row, index) => ({
         ...row,
         id: row.id || `match-${index}-${row.docNo}`,
       }))
-  }, [displayValidationRows, matchIssue])
+  }, [displayValidationRows, matchIssue, serverMode, serverMatch, serverMatchPicked])
 
   // Search hits (first MATCH_ROW_LIMIT) plus every selected row, in upload order,
   // so rows picked under an earlier search stay visible and counted.
@@ -645,8 +757,10 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       if (isMatch) matchCount += 1
       if (isSelected || (isMatch && matchCount <= MATCH_ROW_LIMIT)) rows.push(row)
     })
+    // Large pull: the server already searched; its total counts every hit.
+    if (serverMode) return { rows: matchPoolRows, matchCount: Math.max(serverMatch.total, matchPoolRows.length) }
     return { rows, matchCount }
-  }, [matchPoolRows, matchSearch, selectedMatchIds])
+  }, [matchPoolRows, matchSearch, selectedMatchIds, serverMode, serverMatch])
 
   function handleOpenSapMatch(issue) {
     setMatchIssue(issue)
@@ -655,6 +769,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
     setMatchSearch(String(issue.vendorId || issue.vendor || issue.docNo || ''))
     setSelectedMatchIds(new Set())
     setMatchRoles({})
+    setServerMatchPicked({})
   }
 
   // Starting role for a newly ticked row; the user can change it in the Role column.
@@ -667,6 +782,17 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   function handleToggleMatchRow(rowId) {
     const next = new Set(selectedMatchIds)
     const roles = { ...matchRoles }
+    if (serverMode) {
+      setServerMatchPicked((picked) => {
+        const copy = { ...picked }
+        if (next.has(rowId)) delete copy[rowId]
+        else {
+          const row = matchPoolRows.find((candidate) => candidate.id === rowId)
+          if (row) copy[rowId] = row
+        }
+        return copy
+      })
+    }
     if (next.has(rowId)) {
       next.delete(rowId)
       delete roles[rowId]
@@ -814,6 +940,18 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   // Derived from the same filter bar inputs as the table, so the cards and
   // visible rows stay aligned when Vendor/Section/Doc Type/Search changes.
   const summary = useMemo(() => {
+    if (serverMode) {
+      const data = serverSummary || {}
+      return {
+        totalRows: data.totalRows || 0,
+        passedRows: data.passedRows || 0,
+        issueRows: data.issueRows || 0,
+        insufficientDataRows: data.insufficientDataRows || 0,
+        skippedRows: data.skippedRows || 0,
+        correctedRows: data.correctedRows || 0,
+        correctedDeducted: data.correctedDeducted || 0,
+      }
+    }
     const filteredIssueRows = issueRowsMatchingIssues(filteredValidationRowsForSummary, filtered)
 
     if (!uploadMeta) {
@@ -838,11 +976,20 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       correctedRows: correctedRows.length,
       correctedDeducted: correctedRows.filter(isRowTdsDeducted).length,
     }
-  }, [filtered, uploadMeta, filteredValidationRowsForSummary])
+  }, [filtered, uploadMeta, filteredValidationRowsForSummary, serverMode, serverSummary])
 
   // Count-only cards: rows with a non-zero TDS amount vs. rows without one,
   // from the same filtered row set as the other summary cards.
   const tdsDeductionSummary = useMemo(() => {
+    if (serverMode) {
+      const data = serverSummary || {}
+      return {
+        deducted: data.deducted || 0,
+        notDeducted: data.notDeducted || 0,
+        insufficientDeducted: data.insufficientDeducted || 0,
+        insufficientNotDeducted: data.insufficientNotDeducted || 0,
+      }
+    }
     const deducted = filteredValidationRowsForSummary.filter(isRowTdsDeducted).length
     const insufficientRows = filteredValidationRowsForSummary.filter((row) => row.status === 'insufficient')
     const insufficientDeducted = insufficientRows.filter(isRowTdsDeducted).length
@@ -852,7 +999,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       insufficientDeducted,
       insufficientNotDeducted: insufficientRows.length - insufficientDeducted,
     }
-  }, [filteredValidationRowsForSummary])
+  }, [filteredValidationRowsForSummary, serverMode, serverSummary])
 
   const filteredIssueKeys = useMemo(() => new Set(filtered.map(issueRowKey)), [filtered])
 
@@ -862,6 +1009,12 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
       filteredValidationRowsForSummary.filter((row) => rowInBucketView(row, view, filteredIssueKeys)),
     ]),
   ), [filteredValidationRowsForSummary, filteredIssueKeys])
+  // Card counts of the four buckets (a large pull's come from the server).
+  const bucketCounts = useMemo(() => (
+    serverMode
+      ? Object.fromEntries(Object.keys(BUCKET_VIEWS).map((view) => [view, serverSummary?.buckets?.[view] || 0]))
+      : Object.fromEntries(Object.entries(bucketRows).map(([view, rows]) => [view, rows.length]))
+  ), [serverMode, serverSummary, bucketRows])
 
 
   const docTypes = useMemo(() => {
@@ -938,8 +1091,45 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   // to be showing on the currently active tab, and not further narrowed by
   // the filter-bar's Vendor/Section/etc, which only apply to what's on
   // screen right now, not to "all Passed rows" as a concept.
+  // Large pull: the card's rows are fetched from the server, then downloaded the same way.
+  async function exportServerKpi(kind, fileBase) {
+    const spec = {
+      all: ['all', 'all-transactions'],
+      tds_deducted: ['tds_deducted', 'tds-deducted'],
+      tds_not_deducted: ['tds_not_deducted', 'tds-not-deducted'],
+      passed: ['passed', 'passed'],
+      issue: ['issue', 'issues-found'],
+      insufficient: ['insufficient', 'insufficient-data'],
+      skipped: ['skipped', 'skipped'],
+      passed_deducted: ['passed_deducted', 'tds-properly-deducted'],
+      issue_deducted: ['issue_deducted', 'issues-tds-deducted'],
+      passed_not_deducted: ['passed_not_deducted', 'tds-not-applicable'],
+      issue_not_deducted: ['issue_not_deducted', 'issues-tds-not-deducted'],
+    }[kind]
+    if (!spec) return
+    const [view, suffix] = spec
+    const toastId = toast.loading('Preparing download…')
+    try {
+      const rows = await uploadRowsService.getAll(serverParams, view)
+      toast.dismiss(toastId)
+      if (rows.length === 0) {
+        toast('No rows to export')
+        return
+      }
+      const exportRows = view === 'issue' ? rows.map((row, index) => serverTableRow(row, 'issue', index + 1)) : rows
+      downloadCsv(`${fileBase}-${suffix}.csv`, view === 'issue' ? ISSUE_CSV_COLUMNS : VALIDATION_CSV_COLUMNS, exportRows)
+    } catch (err) {
+      toast.dismiss(toastId)
+      toast.error(err.message || 'Could not prepare the download')
+    }
+  }
+
   function handleExportKpi(kind) {
     const fileBase = (uploadMeta?.fileName || 'issues').replace(/\.[^.]+$/, '')
+    if (serverMode) {
+      exportServerKpi(kind, fileBase)
+      return
+    }
     const exportSpec = {
       all: { rows: filteredValidationRowsForSummary, columns: VALIDATION_CSV_COLUMNS, suffix: 'all-transactions' },
       tds_deducted: { rows: filteredValidationRowsForSummary.filter(isRowTdsDeducted), columns: VALIDATION_CSV_COLUMNS, suffix: 'tds-deducted' },
@@ -961,7 +1151,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   }
 
   const columns = [
-    { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
+    { header: '#', render: (r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{r._rowNumber ?? i + 1}</span> },
     { key: 'vendor', header: 'Vendor Name', render: (r) => (
       <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</span>
     )},
@@ -1004,7 +1194,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   ]
 
   const transactionColumns = [
-    { header: '#', render: (_r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{i + 1}</span> },
+    { header: '#', render: (r, i) => <span className="font-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{r._rowNumber ?? i + 1}</span> },
     { key: 'vendor', header: 'Vendor Name', render: (r) => (
       <span style={{ fontSize: 12.5, fontWeight: 500 }}>{r.vendor}</span>
     )},
@@ -1154,20 +1344,29 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
   // Issue counts per tab for the rows the card view and filters leave, so a
   // tab's count is exactly what clicking it shows. Needs report categories
   // (uploads analysed since they were added).
-  const hasReportCategories = useMemo(() => viewTableRows.some((row) => row.reportCategory), [viewTableRows])
+  const hasReportCategories = useMemo(() => (
+    serverMode ? Boolean(serverPage.hasReportCategories) : viewTableRows.some((row) => row.reportCategory)
+  ), [serverMode, serverPage, viewTableRows])
   const issueTabCounts = useMemo(() => {
+    if (serverMode) return new Map(ISSUE_TABS.map((tab) => [tab.id, serverPage.tabCounts?.[tab.id] || 0]))
     const counts = new Map(ISSUE_TABS.map((tab) => [tab.id, 0]))
     for (const row of viewTableRows) {
       const tab = issueTabOf(row)
       if (tab) counts.set(tab, counts.get(tab) + 1)
     }
     return counts
-  }, [viewTableRows])
+  }, [viewTableRows, serverMode, serverPage])
 
   const validationTableRows = useMemo(() => {
+    if (serverMode) {
+      const first = (serverPage.page ? (serverPage.page - 1) * serverPage.pageSize : 0) + 1
+      return serverPage.items.map((row, index) => serverTableRow(row, validationView, first + index))
+    }
     if (!categoryTab || !hasReportCategories) return viewTableRows
     return viewTableRows.filter((row) => issueTabOf(row) === categoryTab)
-  }, [viewTableRows, categoryTab, hasReportCategories])
+  }, [viewTableRows, categoryTab, hasReportCategories, serverMode, serverPage, validationView])
+  const tableRowTotal = serverMode ? serverPage.total : validationTableRows.length
+  const serverPageCount = Math.max(1, Math.ceil((serverPage.total || 0) / TABLE_PAGE_SIZE))
 
   function handleResetFilters() {
     setActiveDocTypeFilter('all')
@@ -1283,6 +1482,18 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
 
   if (reviewOnly) return reviewOverlays
 
+  if (serverMode && serverSummary && !serverSummary.available) {
+    return (
+      <div className={embedded ? 'issues-embedded' : undefined}>
+        {beforeSummary}
+        <div className="case-empty-source">
+          This SAP pull was analysed before its rows were saved for this page. Pull it again to see its cards and rows here;
+          its issues are already in Open Issues · All Runs.
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={embedded ? 'issues-embedded' : undefined}>
       {!embedded && (
@@ -1339,7 +1550,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
               <div className="issues-summary-value">{tdsDeductionSummary.deducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Deducted</div>
               <div className="issues-summary-breakdown">
-                Properly Deducted {bucketRows.passed_deducted.length.toLocaleString()} · Issues {bucketRows.issue_deducted.length.toLocaleString()}
+                Properly Deducted {bucketCounts.passed_deducted.toLocaleString()} · Issues {bucketCounts.issue_deducted.toLocaleString()}
                 {summary.correctedDeducted > 0 && ` · Corrected ${summary.correctedDeducted.toLocaleString()}`}
                 {tdsDeductionSummary.insufficientDeducted > 0 && ` · Insufficient Data ${tdsDeductionSummary.insufficientDeducted.toLocaleString()}`}
               </div>
@@ -1358,7 +1569,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
               <div className="issues-summary-value">{tdsDeductionSummary.notDeducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Not Deducted</div>
               <div className="issues-summary-breakdown">
-                Not Applicable {bucketRows.passed_not_deducted.length.toLocaleString()} · Issues {bucketRows.issue_not_deducted.length.toLocaleString()}
+                Not Applicable {bucketCounts.passed_not_deducted.toLocaleString()} · Issues {bucketCounts.issue_not_deducted.toLocaleString()}
                 {summary.correctedRows - summary.correctedDeducted > 0 && ` · Corrected ${(summary.correctedRows - summary.correctedDeducted).toLocaleString()}`}
                 {tdsDeductionSummary.insufficientNotDeducted > 0 && ` · Insufficient Data ${tdsDeductionSummary.insufficientNotDeducted.toLocaleString()}`}
               </div>
@@ -1377,11 +1588,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed_deducted')}>
             <CheckCircle2 size={16} />
             <div>
-              <div className="issues-summary-value">{bucketRows.passed_deducted.length.toLocaleString()}</div>
+              <div className="issues-summary-value">{bucketCounts.passed_deducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Properly Deducted</div>
             </div>
           </button>
-          {bucketRows.passed_deducted.length > 0 && (
+          {bucketCounts.passed_deducted > 0 && (
             <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Properly Deducted rows" aria-label="Download TDS Properly Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_deducted') }}>
               <Download size={12} />
             </button>
@@ -1391,11 +1602,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('issue_deducted')}>
             <AlertOctagon size={16} />
             <div>
-              <div className="issues-summary-value">{bucketRows.issue_deducted.length.toLocaleString()}</div>
+              <div className="issues-summary-value">{bucketCounts.issue_deducted.toLocaleString()}</div>
               <div className="issues-summary-label">Issues - TDS Deducted</div>
             </div>
           </button>
-          {bucketRows.issue_deducted.length > 0 && (
+          {bucketCounts.issue_deducted > 0 && (
             <button className="issues-summary-card-download" type="button" title="Download CSV of Issues - TDS Deducted rows" aria-label="Download Issues - TDS Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('issue_deducted') }}>
               <Download size={12} />
             </button>
@@ -1405,11 +1616,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('passed_not_deducted')}>
             <CircleSlash size={16} />
             <div>
-              <div className="issues-summary-value">{bucketRows.passed_not_deducted.length.toLocaleString()}</div>
+              <div className="issues-summary-value">{bucketCounts.passed_not_deducted.toLocaleString()}</div>
               <div className="issues-summary-label">TDS Not Applicable</div>
             </div>
           </button>
-          {bucketRows.passed_not_deducted.length > 0 && (
+          {bucketCounts.passed_not_deducted > 0 && (
             <button className="issues-summary-card-download" type="button" title="Download CSV of TDS Not Applicable rows" aria-label="Download TDS Not Applicable CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('passed_not_deducted') }}>
               <Download size={12} />
             </button>
@@ -1419,11 +1630,11 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           <button className="issues-summary-card-clickarea" type="button" onClick={() => setValidationView('issue_not_deducted')}>
             <AlertOctagon size={16} />
             <div>
-              <div className="issues-summary-value">{bucketRows.issue_not_deducted.length.toLocaleString()}</div>
+              <div className="issues-summary-value">{bucketCounts.issue_not_deducted.toLocaleString()}</div>
               <div className="issues-summary-label">Issues - TDS Not Deducted</div>
             </div>
           </button>
-          {bucketRows.issue_not_deducted.length > 0 && (
+          {bucketCounts.issue_not_deducted > 0 && (
             <button className="issues-summary-card-download" type="button" title="Download CSV of Issues - TDS Not Deducted rows" aria-label="Download Issues - TDS Not Deducted CSV" onClick={(e) => { e.stopPropagation(); handleExportKpi('issue_not_deducted') }}>
               <Download size={12} />
             </button>
@@ -1492,7 +1703,9 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
 
       <div className="table-card">
         <div className="issues-count-label">
-          {`Showing ${validationTableRows.length.toLocaleString()} ${VIEW_LABELS[validationView] || 'rows'} row${validationTableRows.length === 1 ? '' : 's'}`}
+          {serverMode && serverLoading ? 'Loading… ' : ''}
+          {serverMode && serverError ? `${serverError} · ` : ''}
+          {`Showing ${tableRowTotal.toLocaleString()} ${VIEW_LABELS[validationView] || 'rows'} row${tableRowTotal === 1 ? '' : 's'}`}
           {hasReportCategories && categoryTab ? ` · ${ISSUE_TAB_LABELS.get(categoryTab)}` : ''}
           {dataSource === 'upload' ? ' from SAP upload' : ' awaiting SAP upload'}
         </div>
@@ -1500,7 +1713,7 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
           key={`validation-table-${validationView}-${categoryTab}`}
           columns={transactionColumns}
           data={validationTableRows}
-          pageSize={200}
+          pageSize={TABLE_PAGE_SIZE}
           emptyState={
             <div className="empty-state">
               <div className="empty-state-icon"><FileSearch size={20} /></div>
@@ -1510,6 +1723,16 @@ export default function Issues({ embedded = false, initialView = 'all', filtersF
             </div>
           }
         />
+        {serverMode && serverPageCount > 1 && (
+          <div className="case-stored-pager">
+            <span>{`Rows ${((serverPageNo - 1) * TABLE_PAGE_SIZE + 1).toLocaleString()}–${Math.min(serverPageNo * TABLE_PAGE_SIZE, serverPage.total).toLocaleString()} of ${serverPage.total.toLocaleString()}`}</span>
+            <div>
+              <button className="table-page-btn" type="button" disabled={serverPageNo <= 1 || serverLoading} onClick={() => setServerPageNo((page) => page - 1)}><ChevronLeft size={13} /></button>
+              <span>Page {serverPageNo.toLocaleString()} of {serverPageCount.toLocaleString()}</span>
+              <button className="table-page-btn" type="button" disabled={serverPageNo >= serverPageCount || serverLoading} onClick={() => setServerPageNo((page) => page + 1)}><ChevronRight size={13} /></button>
+            </div>
+          </div>
+        )}
       </div>
 
       {reviewOverlays}

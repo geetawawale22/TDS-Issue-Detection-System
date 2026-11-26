@@ -233,19 +233,12 @@ def _run_dict(run: RuleRun) -> dict[str, Any]:
 def tracked_issue_summary(
     company_code: str = "",
     financial_year: str = "",
-    seen_in_run: int | None = None,
     bar: _BarFilters = Depends(),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Issue book across every run: each issue once, however many files raised it.
-
-    With ``seen_in_run``: only the issues that run raised (new or again), for the
-    cards of a large SAP pull's "Issues · This Upload".
-    """
+    """Issue book across every run: each issue once, however many files raised it."""
     base = bar.apply(_in_selection(_scoped(db.query(TrackedIssue), current_user, db), company_code, financial_year))
-    if seen_in_run is not None:
-        base = base.filter(TrackedIssue.last_seen_run_id == seen_in_run)
     open_rows = base.filter(TrackedIssue.status == "open")
     open_count, open_impact = open_rows.with_entities(
         func.count(TrackedIssue.id), func.coalesce(func.sum(TrackedIssue.tax_impact), 0),

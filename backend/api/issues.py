@@ -2251,6 +2251,13 @@ def run_analysis(
             logger.exception("Saving ledger lines failed for %s %s", source, filename)
             tracking["ledgerError"] = "Ledger lines could not be saved for this run."
 
+    # A batch of a large pull sends no rows to the browser. Its rows are saved
+    # for the Issues page (services/upload_rows.py), its issues and lines as above.
+    if not browser_rows and tracking.get("runId"):
+        from services.upload_rows import save_upload_rows
+
+        save_upload_rows(db, tracking["runId"], validation_rows, issues)
+
     # A batch of a large pull sends no rows to the browser: its issues and
     # lines are saved, and every page reads them from there.
     return {

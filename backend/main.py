@@ -11,6 +11,7 @@ from api import ledger
 from api import corrections
 from api import reports
 from api import sap_data
+from api import upload_rows
 
 app = FastAPI(title="TDS Issue Detection System")
 
@@ -43,6 +44,7 @@ app.include_router(ledger.router)
 app.include_router(corrections.router)
 app.include_router(reports.router)
 app.include_router(sap_data.router)
+app.include_router(upload_rows.router)
 
 
 @app.get("/")

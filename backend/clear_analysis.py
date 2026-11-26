@@ -21,7 +21,7 @@ from db.database import engine  # noqa: E402
 
 # Children before parents (foreign keys to rule_runs / correction_groups).
 CORRECTION_TABLES = ["correction_entries", "correction_groups"]
-ANALYSIS_TABLES = ["ledger_groups", "ledger_lines", "tracked_issues", "rule_runs"]
+ANALYSIS_TABLES = ["upload_rows", "ledger_groups", "ledger_lines", "tracked_issues", "rule_runs"]
 
 TABLES = ([] if "--keep-corrections" in sys.argv else CORRECTION_TABLES) + ANALYSIS_TABLES
 
