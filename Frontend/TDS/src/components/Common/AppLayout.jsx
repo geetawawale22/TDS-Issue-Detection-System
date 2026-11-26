@@ -10,6 +10,7 @@ import {
 import { clearUpload } from '@/redux/slices/issuesSlice'
 import { loadCorrectionRegister } from '@/redux/correctionRegister'
 import issuesService from '@/services/issuesService'
+import { resumeSapAnalysisJob } from '@/utils/sapAnalysisJob'
 import './AppLayout.css'
 
 const MOBILE_BREAKPOINT = 768
@@ -31,6 +32,10 @@ export default function AppLayout() {
       // Pages still work without it; Correction Center retries and shows the error.
     })
   }, [dispatch])
+
+  // A SAP data API analysis started before a refresh or page change keeps
+  // being followed, and its result loads when it finishes.
+  useEffect(() => { resumeSapAnalysisJob(dispatch) }, [dispatch])
 
   // This browser keeps a copy of the last upload (localStorage / IndexedDB).
   // If its run is no longer in the database (e.g. clear_analysis.py ran),

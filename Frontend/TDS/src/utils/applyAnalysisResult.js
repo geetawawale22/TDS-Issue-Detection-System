@@ -12,7 +12,8 @@ export function applyAnalysisResult(dispatch, result, sourceLabel) {
   dispatch(uploadSucceeded(result))
   dispatch(seedPansFromIssues(result.issues || []))
   // Show the FY the data belongs to, so its rows aren't hidden by an FY selected earlier.
-  const financialYear = dominantFinancialYear(result.validationRows || [])
+  // A large SAP pull sends no rows, only its FY (result.financialYear).
+  const financialYear = dominantFinancialYear(result.validationRows || []) || result.financialYear
   if (financialYear) dispatch(setFinancialYear(financialYear))
   dispatch(setSyncStatus('synced'))
   dispatch(setLastSyncTime('Just now'))
@@ -37,4 +38,6 @@ export function applyAnalysisResult(dispatch, result, sourceLabel) {
     { duration: 5000 },
   )
   if (tracking?.error) toast.error(tracking.error)
+  // The analysis still loads, but Document / GL Ledger won't have this run's lines.
+  if (tracking?.ledgerError) toast.error(`${tracking.ledgerError} Document Ledger and GL Ledger won't show it; the backend console has the reason.`, { duration: 10000 })
 }

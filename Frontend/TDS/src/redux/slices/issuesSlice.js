@@ -299,6 +299,8 @@ const issuesSlice = createSlice({
         errors: payload.errors || [],
         // Comparison with earlier runs (new / resolved since last run), see tracked_issues.
         tracking: payload.tracking || null,
+        // Large SAP data API pull: only totals here; its issues and lines are read from the server.
+        serverOnly: Boolean(payload.serverOnly),
       }
       state.uploadStatus = 'ready'
       state.uploadProgress = 100

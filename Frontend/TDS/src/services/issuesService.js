@@ -32,9 +32,10 @@ const issuesService = {
   /** One page of saved issues across runs (status: open | resolved | all). */
   // barFilters: optional TDS Analysis filter bar (vendor, section, doc_type, profit_center,
   // severity_in, issue_type, date_from, date_to), sent as repeated keys for FastAPI.
-  async getTrackedIssues({ status = 'open', search = '', resolutionType = '', run = '', tds = '', severity = '', partial = false, issueTab = '', page = 1, pageSize = 50, companyCode = '', financialYear = '', barFilters = {} } = {}) {
+  // seenInRun: only issues that run raised (new or again).
+  async getTrackedIssues({ status = 'open', search = '', resolutionType = '', run = '', seenInRun = null, tds = '', severity = '', partial = false, issueTab = '', page = 1, pageSize = 50, companyCode = '', financialYear = '', barFilters = {} } = {}) {
     const { data } = await api.get('/tracked-issues', {
-      params: { ...barFilters, status, search, resolution_type: resolutionType, run, tds, severity, partial, issue_tab: issueTab, page, page_size: pageSize, company_code: companyCode || '', financial_year: financialYear || '' },
+      params: { ...barFilters, status, search, resolution_type: resolutionType, run, ...(seenInRun != null ? { seen_in_run: seenInRun } : {}), tds, severity, partial, issue_tab: issueTab, page, page_size: pageSize, company_code: companyCode || '', financial_year: financialYear || '' },
       paramsSerializer: { indexes: null },
     })
     return data

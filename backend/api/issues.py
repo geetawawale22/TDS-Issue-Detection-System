@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from dataclasses import dataclass
 import json
 import logging
 import math
@@ -1839,22 +1840,27 @@ class _FastJSONResponse(JSONResponse):
         ).encode("utf-8")
 
 
-def analyse_frame(
-    frame: pd.DataFrame,
-    *,
-    filename: str,
-    filenames: list[str],
-    company_code: str,
-    include_informational: bool,
-    current_user: User,
-    db: Session,
-    source: str,
-) -> "_FastJSONResponse":
-    """Run the TDS rules on SAP line items and save the run (issue history + ledger).
+@dataclass
+class AnalysisBatch:
+    """One batch of a large SAP data API pull (services/sap_analysis_job.py).
 
-    Shared by the Excel upload and the SAP data API (api/sap_data.py), so rows
-    from either source go through the same analysis and reach every page.
+    The pull is cut into batches that share no vendor, PAN or document, so
+    each batch's rules see everything they compare against. What still spans
+    batches is worked out over the whole pull first and passed in.
     """
+
+    # Every batch of the pull is saved under this one run (None: the first creates it).
+    run_id: int | None = None
+    # Whether the whole pull has descriptive TDS section text (picks the translator).
+    descriptive: bool | None = None
+    # Each GL's TDS pattern over the whole pull (rules.missing_deduction_gl_stats).
+    gl_stats: dict | None = None
+    # Build the rows the browser shows (validation rows, document ledger).
+    respond: bool = False
+
+
+def prepare_records(frame: pd.DataFrame, *, company_code: str, current_user: User, db: Session) -> tuple[list[dict[str, Any]], int, int]:
+    """SAP rows as the rules read them: (records, rows read, unused withholding rows dropped)."""
     records = _normalise_records(frame)
     allowed_codes = set(get_user_company_codes(current_user, db))
     requested_code = company_code.strip()
@@ -1879,15 +1885,18 @@ def analyse_frame(
     # drop_unused_withholding_rows); otherwise each reads as missed TDS.
     rows_read = len(records)
     records, unused_withholding_rows = drop_unused_withholding_rows(records)
+    return records, rows_read, unused_withholding_rows
 
-    # Exports containing compound descriptive section text (either the old
-    # numbering, e.g. "194C - Ind/HUF - 1%", or the new one, e.g.
-    # "...-393(1)6(i)") need the decoder + signed-amount normalization;
-    # ordinary SAP exports with bare section codes use the alias-based translator.
-    uses_descriptive_section = any(
-        looks_like_descriptive_tds_section(get_tds_section_raw(row)) for row in records
-    )
 
+def uses_descriptive_sections(records: list[dict[str, Any]]) -> bool:
+    """Exports containing compound descriptive section text (either the old
+    numbering, e.g. "194C - Ind/HUF - 1%", or the new one, e.g.
+    "...-393(1)6(i)") need the decoder + signed-amount normalization;
+    ordinary SAP exports with bare section codes use the alias-based translator."""
+    return any(looks_like_descriptive_tds_section(get_tds_section_raw(row)) for row in records)
+
+
+def build_transactions(records: list[dict[str, Any]], uses_descriptive_section: bool) -> list[Any]:
     try:
         transactions = (
             build_transactions_from_sap_export(records)
@@ -1899,8 +1908,71 @@ def analyse_frame(
             status_code=422,
             detail="One or more rows contain invalid dates or amounts. Correct the values and upload the file again.",
         ) from exc
+    return transactions
+
+
+def missing_deduction_inputs(transactions) -> list[Any]:
+    """The rows check_missing_deduction looks at (correction lines are judged with their original)."""
+    issue_eligible_transactions = [
+        txn for txn in transactions
+        if not _is_skipped_non_tds_document_without_tds_amounts(txn)
+        and not _has_zero_base_amount(txn)
+    ]
+    correction_line_ids = {id(txn) for txn in transactions if references_other_document(txn)}
+    return [
+        txn for txn in _missing_deduction_candidates(transactions, issue_eligible_transactions)
+        if id(txn) not in correction_line_ids
+    ]
+
+
+def analyse_frame(
+    frame: pd.DataFrame,
+    *,
+    filename: str,
+    filenames: list[str],
+    company_code: str,
+    include_informational: bool,
+    current_user: User,
+    db: Session,
+    source: str,
+) -> "_FastJSONResponse":
+    """Run the TDS rules on SAP line items and save the run (issue history + ledger).
+
+    Shared by the Excel upload and the SAP data API (api/sap_data.py), so rows
+    from either source go through the same analysis and reach every page.
+    """
+    return _FastJSONResponse(run_analysis(
+        frame, filename=filename, filenames=filenames, company_code=company_code,
+        include_informational=include_informational, current_user=current_user, db=db, source=source,
+    ))
+
+
+def run_analysis(
+    frame: pd.DataFrame,
+    *,
+    filename: str,
+    filenames: list[str],
+    company_code: str,
+    include_informational: bool,
+    current_user: User,
+    db: Session,
+    source: str,
+    batch: AnalysisBatch | None = None,
+) -> dict[str, Any] | None:
+    """analyse_frame's result as a dict. With ``batch`` (one batch of a large
+    pull): saved under the batch's run, the browser rows left out unless
+    ``batch.respond``, and None when the batch has no TDS-relevant rows."""
+    requested_code = company_code.strip()
+    records, rows_read, unused_withholding_rows = prepare_records(
+        frame, company_code=company_code, current_user=current_user, db=db,
+    )
+    descriptive = batch.descriptive if batch is not None and batch.descriptive is not None else uses_descriptive_sections(records)
+    transactions = build_transactions(records, descriptive)
+    del records
 
     if not transactions:
+        if batch is not None:
+            return None
         raise HTTPException(
             status_code=422,
             detail="No TDS-relevant transactions were found. Ensure TDS_Section and TDS_Rate are populated.",
@@ -1954,7 +2026,11 @@ def analyse_frame(
     for txn, rule_issue in _skip_ldc_decided(check_threshold_breach(issue_eligible_transactions), ldc_chain_members):
         record(txn, rule_issue)
 
-    for txn, rule_issue in _skip_ldc_decided(check_missing_deduction([txn for txn in _missing_deduction_candidates(transactions, issue_eligible_transactions) if id(txn) not in correction_line_ids]), ldc_chain_members):
+    missing_deduction = check_missing_deduction(
+        [txn for txn in _missing_deduction_candidates(transactions, issue_eligible_transactions) if id(txn) not in correction_line_ids],
+        gl_stats=batch.gl_stats if batch is not None else None,
+    )
+    for txn, rule_issue in _skip_ldc_decided(missing_deduction, ldc_chain_members):
         record(txn, rule_issue)
 
     for txn, rule_issue in _skip_ldc_decided(check_advance_payment_lifecycle(issue_eligible_transactions), ldc_chain_members):
@@ -1983,7 +2059,8 @@ def analyse_frame(
     for txn in correction_lines:
         if abs(float(txn.tds_deducted_amount or 0.0)) <= 0 and id(txn) not in issue_transaction_ids:
             tds_notes[id(txn)] = f"Credit note for invoice {str(txn.invoice_reference_document).strip()}, no TDS on it."
-    case_ledger = _build_case_ledger_from_transactions(transactions, issues, tds_notes)
+    browser_rows = batch is None or batch.respond
+    case_ledger = _build_case_ledger_from_transactions(transactions, issues, tds_notes) if browser_rows else []
     skipped_validation_rows = sum(
         id(txn) not in issue_transaction_ids and _is_skipped_non_tds_document_without_tds_amounts(txn)
         for txn in transactions
@@ -2133,9 +2210,12 @@ def analyse_frame(
             source=source,
             file_name=filename,
             include_informational=include_informational,
+            run_id=batch.run_id if batch is not None else None,
         )
     except Exception as exc:  # noqa: BLE001 - history must never block analysis
         db.rollback()
+        if batch is not None:
+            raise  # a batch whose issues were not saved fails the pull, see sap_analysis_job
         logger.exception("Issue tracking failed for %s %s", source, filename)
         tracking = {"error": "Issue history could not be updated for this run."}
 
@@ -2163,20 +2243,22 @@ def analyse_frame(
                 (txn, event_type, ledger_event(txn, event_type, tds_notes.get(id(txn))))
                 for txn in transactions
                 for event_type in (classify_event(txn),)
-            ], reports=report_rows)
+            ], reports=report_rows, refresh=batch is None)
         except Exception:  # noqa: BLE001
             db.rollback()
+            if batch is not None:
+                raise
             logger.exception("Saving ledger lines failed for %s %s", source, filename)
             tracking["ledgerError"] = "Ledger lines could not be saved for this run."
 
-    # Returned as a response object (not a dict) so FastAPI does not run its
-    # slow jsonable_encoder over the whole payload first.
-    return _FastJSONResponse({
+    # A batch of a large pull sends no rows to the browser: its issues and
+    # lines are saved, and every page reads them from there.
+    return {
         "uploadId": str(uuid4()),
         "fileName": filename,
         "fileNames": filenames,
         "companyCode": requested_code or None,
-        "issues": issues,
+        "issues": issues if browser_rows else [],
         "stats": stats,
         "vendors": vendors,
         "sections": sections,
@@ -2187,11 +2269,24 @@ def analyse_frame(
         "tdsCases": [],
         "caseStats": case_stats,
         "caseLedger": case_ledger,
-        "validationRows": validation_rows,
+        "validationRows": validation_rows if browser_rows else [],
         "unrecognizedColumns": [],
         "errors": [],
         "tracking": tracking,
-    })
+        # Without the rows, the browser can't tell which FY the data is in.
+        **({} if browser_rows else {"financialYearCounts": _financial_year_counts(transactions)}),
+    }
+
+
+def _financial_year_counts(transactions) -> dict[str, int]:
+    """Rows per Indian FY label ('FY 2025-26'), as the browser's dominantFinancialYear counts them."""
+    counts: dict[str, int] = defaultdict(int)
+    for txn in transactions:
+        posted = txn.posting_date
+        if posted:
+            start = posted.year if posted.month >= 4 else posted.year - 1
+            counts[f"FY {start}-{str(start + 1)[-2:]}"] += 1
+    return dict(counts)
 
 
 @router.post("/upload", response_class=_FastJSONResponse)

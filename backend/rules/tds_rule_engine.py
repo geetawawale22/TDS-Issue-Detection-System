@@ -1836,7 +1836,40 @@ def _missed_deduction_issue(txn: Transaction, gl: dict, vendor: Optional[dict], 
     )
 
 
-def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Transaction, TDSIssue]]:
+def _skips_missing_deduction_stats(txn: Transaction) -> bool:
+    return _is_supporting_adjustment_without_tds(txn) or _is_payment_without_advance_obligation(txn)
+
+
+def _has_tds_for_missing_deduction(txn: Transaction) -> bool:
+    return bool((txn.tds_deducted_section or txn.expected_tds_section) and txn.tds_deducted_rate)
+
+
+def missing_deduction_gl_stats(transactions: list[Transaction], order=None) -> dict[tuple, dict]:
+    """Each (company, GL)'s TDS behaviour, as check_missing_deduction learns it.
+
+    A run analysed in batches (services/sap_analysis_job.py) computes this over
+    every batch first and passes it in, so each GL is judged on the whole
+    pull. ``order`` (txn -> sortable) records where each GL's sample came
+    from, so merged batches keep the sample the whole pull would pick.
+    """
+    gl_stats: dict[tuple, dict] = {}
+    for txn in transactions:
+        if _skips_missing_deduction_stats(txn) or not txn.gl_account:
+            continue
+        stats = gl_stats.setdefault((txn.company_code, txn.gl_account), {
+            "with_tds": 0, "total": 0, "sample_section": None, "sample_rate": None, "sample_order": None,
+        })
+        stats["total"] += 1
+        if _has_tds_for_missing_deduction(txn):
+            stats["with_tds"] += 1
+            if stats["sample_section"] is None:  # keep one real example for the message
+                stats["sample_section"] = txn.expected_tds_section or txn.tds_deducted_section
+                stats["sample_rate"] = txn.tds_deducted_rate
+                stats["sample_order"] = order(txn) if order else None
+    return gl_stats
+
+
+def check_missing_deduction(transactions: list[Transaction], gl_stats: dict[tuple, dict] | None = None) -> list[tuple[Transaction, TDSIssue]]:
     """
     Category: Possible Missed TDS Deduction
 
@@ -1864,17 +1897,16 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
     # The vendor's own invoices decide which section and rate were missed: a
     # vendor reconciliation GL (e.g. Sundry Creditors) carries every vendor, so
     # its pattern says nothing about this vendor.
-    gl_stats: dict[tuple, dict] = defaultdict(lambda: {
-        "with_tds": 0, "total": 0, "sample_section": None, "sample_rate": None
-    })
+    if gl_stats is None:
+        gl_stats = missing_deduction_gl_stats(transactions)
     vendor_stats: dict[tuple, dict] = defaultdict(lambda: {
         "with_tds": 0, "total": 0, "sections": Counter(), "base_ratios": []
     })
 
     for txn in transactions:
-        if _is_supporting_adjustment_without_tds(txn) or _is_payment_without_advance_obligation(txn):
+        if _skips_missing_deduction_stats(txn):
             continue
-        has_tds = bool((txn.tds_deducted_section or txn.expected_tds_section) and txn.tds_deducted_rate)
+        has_tds = _has_tds_for_missing_deduction(txn)
         if txn.vendor_code:
             vendor = vendor_stats[(txn.company_code, txn.vendor_code)]
             vendor["total"] += 1
@@ -1883,16 +1915,6 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
                 vendor["sections"][(txn.expected_tds_section or txn.tds_deducted_section, txn.tds_deducted_rate)] += 1
                 if txn.basic_amount and txn.bill_amount:
                     vendor["base_ratios"].append(abs(txn.basic_amount) / abs(txn.bill_amount))
-        if not txn.gl_account:
-            continue
-        key = (txn.company_code, txn.gl_account)
-        stats = gl_stats[key]
-        stats["total"] += 1
-        if has_tds:
-            stats["with_tds"] += 1
-            if stats["sample_section"] is None:  # keep one real example for the message
-                stats["sample_section"] = txn.expected_tds_section or txn.tds_deducted_section
-                stats["sample_rate"] = txn.tds_deducted_rate
 
     # ---- Step 2: evaluate each blank-TDS transaction against its GL's stats ----
     for txn in transactions:
@@ -1904,9 +1926,8 @@ def check_missing_deduction(transactions: list[Transaction]) -> list[tuple[Trans
         if not txn.gl_account:
             continue  # can't cross-reference without a GL account
 
-        key = (txn.company_code, txn.gl_account)
-        stats = gl_stats[key]
-        if stats["total"] <= 1 or stats["with_tds"] == 0:
+        stats = gl_stats.get((txn.company_code, txn.gl_account))
+        if not stats or stats["total"] <= 1 or stats["with_tds"] == 0:
             continue  # no corroborating evidence this GL is ever TDS-relevant — stay silent
 
         coverage = stats["with_tds"] / stats["total"]

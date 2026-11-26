@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,7 @@ from api.ldc import _normalise_columns, import_certificate_frame
 from core.dependencies import require_admin
 from db.database import get_db
 from db.models import User
-from services import sap_data_api
+from services import sap_analysis_job, sap_data_api
 from services.sap_data_api import MAX_PAGE_SIZE, SapDataApiError
 
 router = APIRouter(prefix="/sap-data", tags=["SAP Data API"])
@@ -97,6 +97,60 @@ def analyse(request: FetchAllRequest, current_user: User = Depends(require_admin
         db=db,
         source="sap_api",
     )
+
+
+@router.post("/analyse-jobs", status_code=status.HTTP_202_ACCEPTED)
+def start_analyse_job(request: FetchAllRequest, current_user: User = Depends(require_admin)) -> dict[str, Any]:
+    """Start the TDS analysis of every matching vendor line item in the
+    background (any size; see services/sap_analysis_job.py). Poll the job."""
+    try:
+        job = sap_analysis_job.start_job(
+            current_user,
+            table=request.table.strip(),
+            other_conditions=request.other_conditions.strip(),
+            company_code=request.company_code,
+            include_informational=request.include_informational,
+        )
+    except sap_analysis_job.JobBusy as busy:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A SAP analysis is already running ({busy.job.stage}). Wait for it to finish or stop it first.",
+        ) from busy
+    return job.public()
+
+
+@router.get("/analyse-jobs/latest")
+def latest_analyse_job(_: User = Depends(require_admin)) -> dict[str, Any] | None:
+    job = sap_analysis_job.latest_job()
+    return job.public() if job else None
+
+
+def _job_or_404(job_id: str):
+    job = sap_analysis_job.get_job(job_id)
+    if job is None:
+        # Jobs live in the backend process: a restart forgets them.
+        raise HTTPException(status_code=404, detail="This analysis is no longer known to the backend (it was restarted).")
+    return job
+
+
+@router.get("/analyse-jobs/{job_id}")
+def get_analyse_job(job_id: str, _: User = Depends(require_admin)) -> dict[str, Any]:
+    return _job_or_404(job_id).public()
+
+
+@router.get("/analyse-jobs/{job_id}/result")
+def get_analyse_job_result(job_id: str, _: User = Depends(require_admin)) -> Response:
+    """Full result (rows for every page) of a pull small enough for one batch."""
+    job = _job_or_404(job_id)
+    if job.result is None:
+        raise HTTPException(status_code=404, detail="This analysis has no full result to load (large pulls are only saved).")
+    return Response(content=job.result, media_type="application/json")
+
+
+@router.post("/analyse-jobs/{job_id}/stop")
+def stop_analyse_job(job_id: str, _: User = Depends(require_admin)) -> dict[str, Any]:
+    _job_or_404(job_id)
+    return sap_analysis_job.stop_job(job_id).public()
 
 
 @router.post("/import-ldc")

@@ -234,6 +234,8 @@ export default function TDSCaseBuilder() {
     filteredCaseLedger.map((row) => ({ ...row, id: row.caseId }))
   ), [filteredCaseLedger])
   const hasUpload = Boolean(uploadMeta)
+  // Large SAP data API pull: no rows in the browser; this run's issues come from the server.
+  const serverOnly = Boolean(uploadMeta?.serverOnly)
   // Issue book across every run (daily feed / uploads): each issue counted once.
   const trackingRunId = uploadMeta?.tracking?.runId ?? null
   const selectedCompanyCode = useSelector((state) => state.app.selectedCompanyCode)
@@ -253,6 +255,7 @@ export default function TDSCaseBuilder() {
   const [storedGroups, setStoredGroups] = useState({ items: [], total: 0, counts: null })
   const [storedGl, setStoredGl] = useState([])
   const [storedGlLoading, setStoredGlLoading] = useState(true)
+  const [storedGlError, setStoredGlError] = useState('')
   const [storedPage, setStoredPage] = useState(1)
   const [storedLoading, setStoredLoading] = useState(false)
   const [storedError, setStoredError] = useState('')
@@ -300,9 +303,14 @@ export default function TDSCaseBuilder() {
   useEffect(() => {
     let cancelled = false
     setStoredGlLoading(true)
+    setStoredGlError('')
     ledgerService.getGlRows({ filters: storedFilters })
       .then((data) => { if (!cancelled) setStoredGl(data.items || []) })
-      .catch(() => { if (!cancelled) setStoredGl([]) })
+      .catch((err) => {
+        if (cancelled) return
+        setStoredGl([])
+        setStoredGlError(err.message || 'Could not load the GL Ledger')
+      })
       .finally(() => { if (!cancelled) setStoredGlLoading(false) })
     return () => { cancelled = true }
   }, [storedFilters, trackingRunId])
@@ -333,8 +341,10 @@ export default function TDSCaseBuilder() {
   // Rows with at least one issue — a row failing two rules counts once, so this
   // matches the "Issues Found" card inside the Issues tab.
   const issueRowCount = useMemo(() => (
-    issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
-  ), [filteredValidationRows, filteredIssues])
+    serverOnly
+      ? Number(uploadMeta?.stats?.issueRows || 0)
+      : issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
+  ), [serverOnly, uploadMeta, filteredValidationRows, filteredIssues])
   const issueTypeOptions = useMemo(
     () => issueTypeFilterOptionsFor(issueRows, issueTypeFilter)
       .filter(([, label]) => !TDS_ANALYSIS_HIDDEN_ISSUE_TYPE_LABELS.has(label)),
@@ -901,6 +911,15 @@ export default function TDSCaseBuilder() {
           {resultsTabsPanel}
           <IssueHistory mode="open" showCards refreshKey={trackingRunId} barFilters={openIssueBarFilters} />
         </>
+      ) : activeTab === 'issues' && serverOnly ? (
+        <>
+          {resultsTabsPanel}
+          <div className="case-empty-source">
+            This SAP pull ({Number(uploadMeta.stats?.transactionsBuilt || 0).toLocaleString()} rows) is too large to keep in the browser, so it was
+            saved on the server. Below are the issues it raised; every line is in Document Ledger and GL Ledger.
+          </div>
+          <IssueHistory mode="both" initialStatus="open" seenInRun={trackingRunId} refreshKey={trackingRunId} barFilters={openIssueBarFilters} />
+        </>
       ) : activeTab === 'issues' ? (
         <Issues embedded initialView={searchParams.get('view') || 'all'} hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
       ) : activeTab === 'gl' ? (
@@ -921,7 +940,7 @@ export default function TDSCaseBuilder() {
               ) : col.key === 'glAccount' ? <span className="case-muted">Total</span> : null
             )}
             onRowClick={(row) => setGlModal({ type: 'transactions', key: row.glKey })}
-            emptyState={<div className="data-table-empty">No GL accounts found for this view</div>}
+            emptyState={<div className="data-table-empty">{storedGlLoading ? 'Loading…' : storedGlError ? `Could not load the GL Ledger: ${storedGlError}` : 'No GL accounts found for this view'}</div>}
           />
           </div>
           {activeGlModalRow && (

@@ -132,6 +132,7 @@ def list_tracked_issues(
     company_code: str = "",
     financial_year: str = "",
     run: Literal["", "latest"] = "",
+    seen_in_run: int | None = None,
     tds: Literal["", "deducted", "not_deducted"] = "",
     severity: str = "",
     partial: bool = False,
@@ -169,6 +170,9 @@ def list_tracked_issues(
         latest_id = _latest_run_id(db)
         column = TrackedIssue.resolved_run_id if status == "resolved" else TrackedIssue.first_seen_run_id
         query = query.filter(column == latest_id)
+    if seen_in_run is not None:
+        # Raised by that run (new or again): "This Upload" for a pull too large for the browser.
+        query = query.filter(TrackedIssue.last_seen_run_id == seen_in_run)
     query = _card_filters(query, tds, severity, partial)
     query = _issue_tab_filter(query, issue_tab.strip())
     if resolution_type.strip():

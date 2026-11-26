@@ -40,3 +40,38 @@ export async function importLdcFromSap({ table, otherConditions = '', companyCod
   }, { timeout: LONG_TIMEOUT })
   return response.data
 }
+
+// ── Background analysis (any size): start, then poll. See backend services/sap_analysis_job.py.
+// Polls skip the page loader, which would otherwise flash every few seconds.
+const QUIET = { skipGlobalLoader: true }
+
+export async function startSapAnalysisJob({ table, otherConditions = '', companyCode = '', includeInformational = true }) {
+  const response = await api.post('/sap-data/analyse-jobs', {
+    table,
+    other_conditions: otherConditions,
+    company_code: companyCode,
+    include_informational: includeInformational,
+  })
+  return response.data
+}
+
+export async function getSapAnalysisJob(jobId) {
+  const response = await api.get(`/sap-data/analyse-jobs/${jobId}`, QUIET)
+  return response.data
+}
+
+export async function getLatestSapAnalysisJob() {
+  const response = await api.get('/sap-data/analyse-jobs/latest', QUIET)
+  return response.data
+}
+
+/** Full result (every row) of a pull that fit in one batch. */
+export async function getSapAnalysisJobResult(jobId) {
+  const response = await api.get(`/sap-data/analyse-jobs/${jobId}/result`, { ...QUIET, timeout: 5 * 60 * 1000 })
+  return response.data
+}
+
+export async function stopSapAnalysisJob(jobId) {
+  const response = await api.post(`/sap-data/analyse-jobs/${jobId}/stop`, {}, QUIET)
+  return response.data
+}

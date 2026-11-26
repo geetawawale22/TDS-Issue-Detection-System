@@ -30,3 +30,5 @@ dist/
 # IDE
 .vscode/
 _reference_old_backend/
+# Backend logs (start_backend.bat)
+backend/logs/

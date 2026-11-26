@@ -4,10 +4,12 @@ import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import {
   ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Code2, Download, Eye,
-  FileText, Loader2, Plus, RotateCcw, ShieldCheck, Table2, X, Zap,
+  FileText, Loader2, Plus, RotateCcw, ShieldCheck, Square, Table2, X, Zap,
 } from 'lucide-react'
-import { analyseSapData, fetchSapDataConfig, importLdcFromSap, querySapTable } from '@/services/sapDataService'
-import { applyAnalysisResult } from '@/utils/applyAnalysisResult'
+import { fetchSapDataConfig, getLatestSapAnalysisJob, importLdcFromSap, querySapTable } from '@/services/sapDataService'
+import {
+  ACTIVE_STATUSES, startSapAnalysis, stopSapAnalysis, subscribeSapAnalysisJob,
+} from '@/utils/sapAnalysisJob'
 import { invalidateLdcPageCache } from '@/pages/LDCCompliance/LDCCompliance'
 import { downloadCsv } from '@/utils/csvExport'
 import './SapDataApiPanel.css'
@@ -28,6 +30,7 @@ const TABLES = {
     lists: [
       { key: 'docNo', label: 'Document no.', columns: ['Document_No', 'Document_Number', 'Accounting_Document_Number'] },
       { key: 'vendor', label: 'Vendor code', columns: ['Vendor_Code', 'Vendor_Number', 'Supplier'] },
+      { key: 'gl', label: 'GL account', columns: ['GL', 'GL_Account'] },
     ],
   },
   ZAPI_TDS_EXEMPTION: {
@@ -96,6 +99,11 @@ function totalFromMeta(meta) {
   return Number.isFinite(total) ? total : null
 }
 
+function elapsedText(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0))
+  return s >= 60 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s` : `${s} s`
+}
+
 function errorText(err, fallback) {
   const detail = err.response?.data?.detail
   if (typeof detail === 'string') return detail
@@ -106,6 +114,37 @@ function errorText(err, fallback) {
 function emptyFilters(table) {
   const range = TABLES[table]?.date ? lastMonth() : { from: '', to: '' }
   return { dateFrom: range.from, dateTo: range.to, lists: {}, extra: [], raw: '' }
+}
+
+// The form (view, company, filters per view, page size) is kept in this
+// browser, so switching Settings tabs, pages or views doesn't wipe it.
+const FORM_STORAGE_KEY = 'tds_sap_api_form'
+
+function readSavedForm() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(FORM_STORAGE_KEY) || 'null')
+    return saved && typeof saved === 'object' ? saved : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Saved filters for one view, or null if missing / from an older shape. */
+function savedFilters(value) {
+  if (!value || typeof value !== 'object') return null
+  const text = (v) => (typeof v === 'string' ? v : '')
+  const lists = value.lists && typeof value.lists === 'object' ? value.lists : {}
+  return {
+    dateFrom: text(value.dateFrom),
+    dateTo: text(value.dateTo),
+    lists: Object.fromEntries(Object.entries(lists).filter(([, v]) => typeof v === 'string')),
+    extra: Array.isArray(value.extra)
+      ? value.extra
+        .filter((row) => row && typeof row === 'object')
+        .map((row) => ({ column: text(row.column), op: OPERATORS.some((o) => o.value === row.op) ? row.op : 'in', value: text(row.value) }))
+      : [],
+    raw: text(value.raw),
+  }
 }
 
 /** The otherConditions string the API filters on, built from the form. */
@@ -145,12 +184,20 @@ export default function SapDataApiPanel() {
   const dispatch = useDispatch()
   const navigate = useNavigate()
   const { availableCompanyCodes, selectedCompanyCode } = useSelector((s) => s.app)
+  const [saved] = useState(readSavedForm)
   const [config, setConfig] = useState(null)
-  const [table, setTable] = useState('ZAPI_TDS_VENDOR_ITEMS')
-  const [customTable, setCustomTable] = useState('')
-  const [companyCode, setCompanyCode] = useState(selectedCompanyCode ?? '')
-  const [filters, setFilters] = useState(() => emptyFilters('ZAPI_TDS_VENDOR_ITEMS'))
-  const [pageSize, setPageSize] = useState(500)
+  const [table, setTable] = useState(() => (saved.table === OTHER_TABLE || TABLES[saved.table] ? saved.table : 'ZAPI_TDS_VENDOR_ITEMS'))
+  const [customTable, setCustomTable] = useState(() => (typeof saved.customTable === 'string' ? saved.customTable : ''))
+  const [companyCode, setCompanyCode] = useState(() => (
+    saved.companyCode === '' || availableCompanyCodes.includes(saved.companyCode) ? saved.companyCode : selectedCompanyCode ?? ''
+  ))
+  // Each view keeps its own filters, so switching views and back restores them.
+  const [filtersByTable, setFiltersByTable] = useState(() => Object.fromEntries(
+    Object.entries(saved.filtersByTable && typeof saved.filtersByTable === 'object' ? saved.filtersByTable : {})
+      .map(([name, value]) => [name, savedFilters(value)])
+      .filter(([, value]) => value),
+  ))
+  const [pageSize, setPageSize] = useState(() => (PAGE_SIZES.includes(saved.pageSize) ? saved.pageSize : 500))
   const [showQuery, setShowQuery] = useState(false)
   // Field names seen in data fetched from each table: drive column suggestions
   // and which candidate column name a filter uses.
@@ -160,10 +207,40 @@ export default function SapDataApiPanel() {
   const [lastQuery, setLastQuery] = useState(null)
   const [processed, setProcessed] = useState(null)
   const [error, setError] = useState('')
+  // Background analysis (utils/sapAnalysisJob): followed across pages and refreshes.
+  const [job, setJob] = useState(null)
+  const jobRunning = Boolean(job && ACTIVE_STATUSES.has(job.status))
 
   useEffect(() => {
     fetchSapDataConfig().then(setConfig).catch(() => setConfig({ configured: false, url: null }))
   }, [])
+
+  useEffect(() => subscribeSapAnalysisJob(setJob), [])
+  // A pull started in another tab or before a backend-side refresh: show it too.
+  useEffect(() => {
+    getLatestSapAnalysisJob()
+      .then((latest) => { if (latest && ACTIVE_STATUSES.has(latest.status)) setJob((now) => now || latest) })
+      .catch(() => {})
+  }, [])
+  useEffect(() => {
+    if (job?.status === 'done' && job.summary) {
+      setProcessed({ kind: 'analyse', stats: job.summary.stats || {}, serverOnly: !job.hasFullResult, jobId: job.jobId })
+    }
+  }, [job])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({ table, customTable, companyCode, pageSize, filtersByTable }))
+    } catch {
+      // Storage full or blocked: the form just isn't remembered.
+    }
+  }, [table, customTable, companyCode, pageSize, filtersByTable])
+
+  const filters = filtersByTable[table] || emptyFilters(table)
+  const setFilters = (update) => setFiltersByTable((all) => {
+    const current = all[table] || emptyFilters(table)
+    return { ...all, [table]: typeof update === 'function' ? update(current) : update }
+  })
 
   const tableName = table === OTHER_TABLE ? customTable.trim() : table
   const spec = TABLES[table]
@@ -172,6 +249,7 @@ export default function SapDataApiPanel() {
   const columns = useMemo(() => fieldNames(result?.rows || []), [result])
   const total = totalFromMeta(result?.meta)
   const ready = Boolean(config?.configured && tableName) && !busy
+  const canProcess = ready && !(spec?.action === 'analyse' && jobRunning)
 
   const setList = (key) => (event) => setFilters((f) => ({ ...f, lists: { ...f.lists, [key]: event.target.value } }))
   const setExtra = (index, key, value) => setFilters((f) => ({
@@ -181,7 +259,6 @@ export default function SapDataApiPanel() {
 
   function changeTable(value) {
     setTable(value)
-    setFilters(emptyFilters(value))
     setProcessed(null)
     setError('')
   }
@@ -225,9 +302,8 @@ export default function SapDataApiPanel() {
     const request = { table: tableName, otherConditions: conditions, companyCode }
     try {
       if (spec.action === 'analyse') {
-        const data = await analyseSapData(request)
-        applyAnalysisResult(dispatch, data, `SAP API — ${spec.label}`)
-        setProcessed({ kind: 'analyse', stats: data.stats || {} })
+        // Runs in the backend; progress and the result arrive through the job.
+        await startSapAnalysis(dispatch, request, `SAP API — ${spec.label}`)
       } else {
         const data = await importLdcFromSap(request)
         invalidateLdcPageCache()
@@ -436,17 +512,45 @@ export default function SapDataApiPanel() {
               </button>
             </div>
             {spec?.action && (
-              <button className="btn btn-primary sap-api-btn" type="button" onClick={process} disabled={!ready}>
-                {busy === 'process' ? <Loader2 size={14} className="spin" /> : spec.action === 'analyse' ? <Zap size={14} /> : <ShieldCheck size={14} />}
-                {busy === 'process'
-                  ? (spec.action === 'analyse' ? 'Fetching & analysing…' : 'Saving…')
-                  : (spec.action === 'analyse' ? 'Run TDS analysis' : 'Save to LDC Master')}
+              <button className="btn btn-primary sap-api-btn" type="button" onClick={process} disabled={!canProcess}>
+                {busy === 'process' || (spec.action === 'analyse' && jobRunning) ? <Loader2 size={14} className="spin" /> : spec.action === 'analyse' ? <Zap size={14} /> : <ShieldCheck size={14} />}
+                {spec.action === 'analyse'
+                  ? (jobRunning ? 'Analysis running…' : busy === 'process' ? 'Starting…' : 'Run TDS analysis')
+                  : (busy === 'process' ? 'Saving…' : 'Save to LDC Master')}
               </button>
             )}
           </div>
         </form>
 
         {error && <div className="sap-api-error" role="alert">{error}</div>}
+
+        {jobRunning && (
+          <div className="sap-api-job" role="status" aria-live="polite">
+            <Loader2 size={18} className="spin" />
+            <div className="sap-api-job-text">
+              <strong>{job.stage}</strong>
+              <span>
+                {Number(job.rowsFetched || 0).toLocaleString('en-IN')} rows fetched
+                {job.expectedRows ? ` of ${Number(job.expectedRows).toLocaleString('en-IN')}` : ''}
+                {job.batchesTotal > 1 ? ` · batch ${Math.min(job.batchesDone + 1, job.batchesTotal)} of ${job.batchesTotal}` : ''}
+                {' · '}{elapsedText(job.elapsedSeconds)}
+              </span>
+              <small>Runs on the server: you can switch pages or refresh. The result loads when it finishes.</small>
+            </div>
+            {job.batchesTotal > 1 && (
+              <div className="sap-api-job-bar" aria-hidden="true">
+                <span style={{ width: `${Math.round((job.batchesDone / job.batchesTotal) * 100)}%` }} />
+              </div>
+            )}
+            <button type="button" className="btn btn-outline sap-api-btn" onClick={() => stopSapAnalysis(job.jobId).catch((err) => toast.error(err.message))}
+              disabled={job.stage?.startsWith('Stopping')}>
+              <Square size={13} />Stop
+            </button>
+          </div>
+        )}
+        {job && (job.status === 'failed' || job.status === 'stopped') && (
+          <div className="sap-api-error" role="alert">{job.error || 'The analysis did not finish.'}</div>
+        )}
 
         {processed?.kind === 'analyse' && (
           <div className="sap-api-done">
@@ -455,7 +559,9 @@ export default function SapDataApiPanel() {
               <strong>Analysis done · {Number(processed.stats.transactionsBuilt || 0).toLocaleString('en-IN')} transactions</strong>
               <span>
                 {Number(processed.stats.issuesFound || 0).toLocaleString('en-IN')} issues · {Number(processed.stats.passedRows || 0).toLocaleString('en-IN')} passed.
-                All pages now show this data.
+                {processed.serverOnly
+                  ? ' Saved on the server (too many rows to keep in the browser): Open Issues, Document Ledger, GL Ledger and the Dashboard show it.'
+                  : ' All pages now show this data.'}
               </span>
             </div>
             <div className="sap-api-done-links">

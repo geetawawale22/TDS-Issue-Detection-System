@@ -219,7 +219,8 @@ function OpenIssueCards({ summary, view, onView }) {
 const NO_BAR_FILTERS = {}
 
 // barFilters: optional filter bar from TDS Analysis (vendor, section, doc_type, ...); applied to cards and list.
-export default function IssueHistory({ mode = 'both', initialStatus = 'resolved', refreshKey = null, showCards = false, barFilters = NO_BAR_FILTERS } = {}) {
+// seenInRun: only issues that run raised (a large SAP pull's "This Upload").
+export default function IssueHistory({ mode = 'both', initialStatus = 'resolved', refreshKey = null, showCards = false, barFilters = NO_BAR_FILTERS, seenInRun = null } = {}) {
   const [cardView, setCardView] = useState('all')
   const [issueTab, setIssueTab] = useState('')
   const [summary, setSummary] = useState(null)
@@ -266,6 +267,7 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
       search,
       resolutionType: status === 'resolved' ? resolutionType : '',
       run: latestRunOnly ? 'latest' : '',
+      seenInRun,
       ...CARD_FILTERS[cardView],
       issueTab: showCards ? issueTab : '',
       page,
@@ -278,7 +280,7 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
       .catch((err) => { if (!cancelled) setError(err.message || 'Could not load issue history') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [status, search, resolutionType, latestRunOnly, cardView, issueTab, showCards, page, refreshKey, companyCode, financialYear, barFilterKey])
+  }, [status, search, resolutionType, latestRunOnly, seenInRun, cardView, issueTab, showCards, page, refreshKey, companyCode, financialYear, barFilterKey])
 
   function changeCardView(next) {
     setCardView(next)

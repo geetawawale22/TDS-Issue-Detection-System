@@ -476,27 +476,44 @@ def track_rule_run(
     source: str,
     file_name: str | None,
     include_informational: bool,
+    run_id: int | None = None,
 ) -> dict[str, Any]:
     """Save this run's issues, re-evaluate earlier ones, annotate ``issues`` in place.
 
-    ``issue_txns[i]`` is the transaction behind ``issues[i]``.
+    ``issue_txns[i]`` is the transaction behind ``issues[i]``. With ``run_id``
+    these rows are one more batch of that run (a large SAP data API pull,
+    services/sap_analysis_job.py): its totals are added to the run's. Batches
+    share no document, so each issue is evaluated in exactly one batch.
     """
     now = datetime.now(timezone.utc)
     index = _CorrectionIndex(transactions)
     company_codes = sorted({doc_identity(txn)[0] for txn in transactions})
     posting_dates = [txn.posting_date for txn in transactions if txn.posting_date]
+    period_from = min(posting_dates) if posting_dates else None
+    period_to = max(posting_dates) if posting_dates else None
 
-    run = RuleRun(
-        source=source,
-        file_name=file_name,
-        company_codes=",".join(code or "—" for code in company_codes)[:255],
-        period_from=min(posting_dates) if posting_dates else None,
-        period_to=max(posting_dates) if posting_dates else None,
-        transactions=len(transactions),
-        issues_found=len(issues),
-        run_by=user_id,
-    )
-    db.add(run)
+    run = db.get(RuleRun, run_id) if run_id is not None else None
+    if run is None:
+        run = RuleRun(
+            source=source,
+            file_name=file_name,
+            company_codes=",".join(code or "—" for code in company_codes)[:255],
+            period_from=period_from,
+            period_to=period_to,
+            transactions=len(transactions),
+            issues_found=len(issues),
+            new_issues=0, recurring_issues=0, reopened_issues=0, resolved_issues=0, partially_corrected=0,
+            run_by=user_id,
+        )
+        db.add(run)
+    else:
+        codes = {code for code in (run.company_codes or "").split(",") if code}
+        codes.update(code or "—" for code in company_codes)
+        run.company_codes = ",".join(sorted(codes))[:255]
+        run.period_from = min(filter(None, (run.period_from, period_from)), default=None)
+        run.period_to = max(filter(None, (run.period_to, period_to)), default=None)
+        run.transactions = (run.transactions or 0) + len(transactions)
+        run.issues_found = (run.issues_found or 0) + len(issues)
     db.flush()
 
     # Current issues by key; one SAP line can raise the same issue only once.
@@ -684,11 +701,11 @@ def track_rule_run(
     if detail_updates:
         db.bulk_update_mappings(TrackedIssue, detail_updates)
 
-    run.new_issues = counts["new"]
-    run.recurring_issues = counts["recurring"]
-    run.reopened_issues = counts["reopened"]
-    run.resolved_issues = counts["resolved"]
-    run.partially_corrected = counts["partial"]
+    run.new_issues = (run.new_issues or 0) + counts["new"]
+    run.recurring_issues = (run.recurring_issues or 0) + counts["recurring"]
+    run.reopened_issues = (run.reopened_issues or 0) + counts["reopened"]
+    run.resolved_issues = (run.resolved_issues or 0) + counts["resolved"]
+    run.partially_corrected = (run.partially_corrected or 0) + counts["partial"]
     db.commit()
 
     for key, note in annotations.items():

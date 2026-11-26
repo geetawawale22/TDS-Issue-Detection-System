@@ -179,6 +179,7 @@ def save_run_lines(
     run_id: int | None,
     items: list[tuple[Any, str, dict[str, Any]]],
     reports: dict[int, dict[str, Any]] | None = None,
+    refresh: bool = True,
 ) -> dict[str, Any]:
     """Save one run's lines (``(txn, event_type, event)``) and refresh the groups they touch.
 
@@ -188,6 +189,8 @@ def save_run_lines(
     kept ('' type) is reused, and rows SAP no longer sends for that line go.
 
     ``reports`` maps id(txn) to the line's report row (TDS Category Report).
+    ``refresh=False`` (one batch of a large pull) leaves the company-wide issue
+    flags to one refresh_issue_state call after the last batch.
     """
     # Entries of each SAP line in this run, by withholding type/code (a repeated
     # identical row keeps the last one, as before).
@@ -274,9 +277,11 @@ def save_run_lines(
     all_lines = [line for entries in incoming.values() for line in entries.values()]
     affected |= _infer_clearing(db, all_lines)
     companies = sorted({key[0] for key in incoming})
-    _refresh_issue_flags(db, companies)
+    if refresh:
+        _refresh_issue_flags(db, companies)
     _rebuild_groups(db, affected)
-    _refresh_group_issues(db, companies)
+    if refresh:
+        _refresh_group_issues(db, companies)
     db.commit()
     return {"linesSaved": saved, "newLines": len(inserts), "groupsTouched": len(affected)}
 
