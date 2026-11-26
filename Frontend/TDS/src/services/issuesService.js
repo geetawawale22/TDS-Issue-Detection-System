@@ -48,9 +48,9 @@ const issuesService = {
   },
 
   /** Issue book across every run (each issue once) plus the latest run's counts, for the selected company / FY. */
-  async getTrackedIssueSummary({ companyCode = '', financialYear = '', barFilters = {} } = {}) {
+  async getTrackedIssueSummary({ companyCode = '', financialYear = '', barFilters = {}, seenInRun = null } = {}) {
     const { data } = await api.get('/tracked-issues/summary', {
-      params: { ...barFilters, company_code: companyCode || '', financial_year: financialYear || '' },
+      params: { ...barFilters, company_code: companyCode || '', financial_year: financialYear || '', ...(seenInRun != null ? { seen_in_run: seenInRun } : {}) },
       paramsSerializer: { indexes: null },
     })
     return data

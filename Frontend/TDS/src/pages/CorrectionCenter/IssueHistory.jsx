@@ -8,7 +8,7 @@ import issuesService from '@/services/issuesService'
 import { formatCurrency, formatDate } from '@/utils/utils'
 import './IssueHistory.css'
 
-const PAGE_SIZE = 200
+const PAGE_SIZE = 1000
 
 const RESOLUTION_LABELS = {
   REVERSED: 'Reversed / cancelled',
@@ -183,15 +183,15 @@ function SummaryCard({ tone, icon: Icon, value, label, breakdown, active, onClic
   )
 }
 
-/** Cards over every open issue (all runs); a click filters the list below. */
-function OpenIssueCards({ summary, view, onView }) {
+/** Cards over every open issue (all runs, or one run's with thisUpload); a click filters the list below. */
+function OpenIssueCards({ summary, view, onView, thisUpload = false }) {
   const n = (value) => Number(value || 0).toLocaleString()
   const pick = (next) => onView(view === next ? 'all' : next)
   return (
     <>
       <div className="issues-summary-grid issues-summary-grid--top">
         <SummaryCard tone="info" icon={ShieldAlert} value={n(summary.open)} label="Open Issues"
-          breakdown={`All runs · tax impact ${formatCurrency(summary.openTaxImpact)}`}
+          breakdown={`${thisUpload ? 'This upload' : 'All runs'} · tax impact ${formatCurrency(summary.openTaxImpact)}`}
           active={view === 'all'} onClick={() => onView('all')} />
         <SummaryCard tone="success" icon={BadgeCheck} value={n(summary.openTdsDeducted)} label="TDS Deducted"
           breakdown="Open issues where some TDS was deducted"
@@ -243,11 +243,11 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
   useEffect(() => {
     if (!showCards) return undefined
     let cancelled = false
-    issuesService.getTrackedIssueSummary({ companyCode, financialYear, barFilters: JSON.parse(barFilterKey) })
+    issuesService.getTrackedIssueSummary({ companyCode, financialYear, barFilters: JSON.parse(barFilterKey), seenInRun })
       .then((data) => { if (!cancelled) setSummary(data) })
       .catch(() => { if (!cancelled) setSummary(null) })
     return () => { cancelled = true }
-  }, [showCards, refreshKey, companyCode, financialYear, barFilterKey])
+  }, [showCards, refreshKey, companyCode, financialYear, barFilterKey, seenInRun])
 
   // Wait for typing to pause before asking the server.
   useEffect(() => {
@@ -303,7 +303,7 @@ export default function IssueHistory({ mode = 'both', initialStatus = 'resolved'
 
   return (
     <>
-    {showCards && summary && <OpenIssueCards summary={summary} view={cardView} onView={changeCardView} />}
+    {showCards && summary && <OpenIssueCards summary={summary} view={cardView} onView={changeCardView} thisUpload={seenInRun != null} />}
     {showCards && summary?.openByIssueTab && <OpenIssueTabs counts={summary.openByIssueTab} active={issueTab} onChange={changeIssueTab} />}
     <div className="table-card issue-history-card">
       <div className="table-card-header">

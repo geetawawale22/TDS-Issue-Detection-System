@@ -439,7 +439,19 @@ def ledger_filter_options(
         return sorted(str(row[0]) for row in rows if str(row[0]).strip())
 
     has_lines = db.query(literal(1)).filter(exists().where(*conditions) if conditions else exists().where(LedgerLine.id.isnot(None))).scalar()
+    # Issue types of the saved issues in the same scope, so the Issue Type filter
+    # has its options when the rows are not in the browser (large SAP pull).
+    issue_query = db.query(TrackedIssue.category).filter(TrackedIssue.category.isnot(None))
+    if companies is not None:
+        issue_query = issue_query.filter(TrackedIssue.company_code.in_(companies))
+    if company_code.strip():
+        issue_query = issue_query.filter(TrackedIssue.company_code == company_code.strip())
+    period = financial_year_range(financial_year)
+    if period:
+        issue_query = issue_query.filter(TrackedIssue.posting_date.between(*period))
+    issue_categories = sorted({str(row[0]) for row in issue_query.distinct().limit(500) if str(row[0]).strip()})
     return {
+        "issueCategories": issue_categories,
         "hasData": bool(has_lines),
         "vendors": distinct(func.coalesce(LedgerLine.vendor_name, LedgerLine.vendor_code)),
         "sections": distinct(LedgerLine.section),

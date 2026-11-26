@@ -492,6 +492,9 @@ def track_rule_run(
     period_from = min(posting_dates) if posting_dates else None
     period_to = max(posting_dates) if posting_dates else None
 
+    # The same SAP line can come more than once in a pull (identical rows); each
+    # issue is saved once, so the run counts unique issues, as the lists show them.
+    unique_issues = len({issue["issueKey"] for issue in issues})
     run = db.get(RuleRun, run_id) if run_id is not None else None
     if run is None:
         run = RuleRun(
@@ -501,7 +504,7 @@ def track_rule_run(
             period_from=period_from,
             period_to=period_to,
             transactions=len(transactions),
-            issues_found=len(issues),
+            issues_found=unique_issues,
             new_issues=0, recurring_issues=0, reopened_issues=0, resolved_issues=0, partially_corrected=0,
             run_by=user_id,
         )
@@ -513,7 +516,7 @@ def track_rule_run(
         run.period_from = min(filter(None, (run.period_from, period_from)), default=None)
         run.period_to = max(filter(None, (run.period_to, period_to)), default=None)
         run.transactions = (run.transactions or 0) + len(transactions)
-        run.issues_found = (run.issues_found or 0) + len(issues)
+        run.issues_found = (run.issues_found or 0) + unique_issues
     db.flush()
 
     # Current issues by key; one SAP line can raise the same issue only once.

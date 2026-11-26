@@ -327,6 +327,27 @@ export default function TDSCaseBuilder() {
     bar_search: storedFilters.search || undefined,
   }), [storedFilters])
 
+  // Large pull: this run's issues, each once (as the list under the tab shows them),
+  // with the same filter bar. The rows themselves can repeat a SAP line.
+  const [uploadSummary, setUploadSummary] = useState(null)
+  const openIssueBarKey = JSON.stringify(openIssueBarFilters)
+  useEffect(() => {
+    if (!serverOnly || trackingRunId == null) {
+      setUploadSummary(null)
+      return undefined
+    }
+    let cancelled = false
+    issuesService.getTrackedIssueSummary({
+      companyCode: selectedCompanyCode || '',
+      financialYear: financialYear || '',
+      barFilters: JSON.parse(openIssueBarKey),
+      seenInRun: trackingRunId,
+    })
+      .then((data) => { if (!cancelled) setUploadSummary(data) })
+      .catch(() => { if (!cancelled) setUploadSummary(null) })
+    return () => { cancelled = true }
+  }, [serverOnly, trackingRunId, selectedCompanyCode, financialYear, openIssueBarKey])
+
   // Counts follow the shared filter bar, using the Issues page's own
   // predicates so tab/card numbers match the cards inside the Issues tab.
   const filterValues = useMemo(() => ({
@@ -342,13 +363,17 @@ export default function TDSCaseBuilder() {
   // matches the "Issues Found" card inside the Issues tab.
   const issueRowCount = useMemo(() => (
     serverOnly
-      ? Number(uploadMeta?.stats?.issueRows || 0)
+      ? Number(uploadSummary?.open || 0) + Number(uploadSummary?.resolved || 0)
       : issueRowsMatchingIssues(filteredValidationRows, filteredIssues).length
-  ), [serverOnly, uploadMeta, filteredValidationRows, filteredIssues])
+  ), [serverOnly, uploadSummary, filteredValidationRows, filteredIssues])
   const issueTypeOptions = useMemo(
-    () => issueTypeFilterOptionsFor(issueRows, issueTypeFilter)
+    // Saved issues (all runs) give the options too: a large pull has no rows in the browser.
+    () => issueTypeFilterOptionsFor([
+      ...issueRows,
+      ...(storedOptions?.issueCategories || []).map((category) => ({ category })),
+    ], issueTypeFilter)
       .filter(([, label]) => !TDS_ANALYSIS_HIDDEN_ISSUE_TYPE_LABELS.has(label)),
-    [issueRows, issueTypeFilter],
+    [issueRows, storedOptions, issueTypeFilter],
   )
   const vendorOptions = useMemo(() => {
     const values = [
@@ -915,10 +940,11 @@ export default function TDSCaseBuilder() {
         <>
           {resultsTabsPanel}
           <div className="case-empty-source">
-            This SAP pull ({Number(uploadMeta.stats?.transactionsBuilt || 0).toLocaleString()} rows) is too large to keep in the browser, so it was
-            saved on the server. Below are the issues it raised; every line is in Document Ledger and GL Ledger.
+            This SAP pull ({Number(uploadMeta.stats?.transactionsBuilt || 0).toLocaleString()} rows) was analysed and saved in full on the server;
+            the cards and list below are worked out there, page by page, so nothing is left out however large the pull.
+            Each issue is counted once, even when SAP sends the same line more than once. Every line is in Document Ledger and GL Ledger.
           </div>
-          <IssueHistory mode="both" initialStatus="open" seenInRun={trackingRunId} refreshKey={trackingRunId} barFilters={openIssueBarFilters} />
+          <IssueHistory mode="both" initialStatus="open" showCards seenInRun={trackingRunId} refreshKey={trackingRunId} barFilters={openIssueBarFilters} />
         </>
       ) : activeTab === 'issues' ? (
         <Issues embedded initialView={searchParams.get('view') || 'all'} hideFilters beforeSummary={resultsTabsPanel} externalDocTypeFilter={docTypeFilter} onExternalDocTypeFilterChange={setDocTypeFilter} />
