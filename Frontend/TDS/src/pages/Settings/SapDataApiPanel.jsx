@@ -77,8 +77,32 @@ function inClause(column, values) {
   return unique.length === 1 ? `${column} = ${quote(unique[0])}` : `${column} IN (${unique.map(quote).join(', ')})`
 }
 
+// The column the view really has (its own spelling), else the first candidate.
 function pickColumn(candidates, knownFields) {
-  return candidates.find((name) => knownFields?.has(name)) || candidates[0]
+  if (knownFields?.size) {
+    const byLower = new Map([...knownFields].map((name) => [name.toLowerCase(), name]))
+    for (const name of candidates) {
+      const found = byLower.get(name.toLowerCase())
+      if (found) return found
+    }
+  }
+  return candidates[0]
+}
+
+// Column names (never values) seen in each view, kept in this browser so a
+// filter keeps the right column after a refresh, e.g. GL vs GL_Account.
+const FIELDS_STORAGE_KEY = 'tds_sap_api_fields'
+
+function readSavedFields() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(FIELDS_STORAGE_KEY) || 'null')
+    if (!saved || typeof saved !== 'object') return {}
+    return Object.fromEntries(Object.entries(saved)
+      .filter(([, names]) => Array.isArray(names))
+      .map(([table, names]) => [table, new Set(names.filter((name) => typeof name === 'string'))]))
+  } catch {
+    return {}
+  }
 }
 
 function displayValue(value) {
@@ -201,7 +225,7 @@ export default function SapDataApiPanel() {
   const [showQuery, setShowQuery] = useState(false)
   // Field names seen in data fetched from each table: drive column suggestions
   // and which candidate column name a filter uses.
-  const [fieldsByTable, setFieldsByTable] = useState({})
+  const [fieldsByTable, setFieldsByTable] = useState(readSavedFields)
   const [busy, setBusy] = useState('') // '' | 'preview' | 'process'
   const [result, setResult] = useState(null)
   const [lastQuery, setLastQuery] = useState(null)
@@ -235,6 +259,16 @@ export default function SapDataApiPanel() {
       // Storage full or blocked: the form just isn't remembered.
     }
   }, [table, customTable, companyCode, pageSize, filtersByTable])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(FIELDS_STORAGE_KEY, JSON.stringify(
+        Object.fromEntries(Object.entries(fieldsByTable).map(([name, fields]) => [name, [...fields]])),
+      ))
+    } catch {
+      // Storage full or blocked: names are learnt again on the next query.
+    }
+  }, [fieldsByTable])
 
   const filters = filtersByTable[table] || emptyFilters(table)
   const setFilters = (update) => setFiltersByTable((all) => {
@@ -276,10 +310,7 @@ export default function SapDataApiPanel() {
       const data = await querySapTable(query)
       setResult(data)
       setLastQuery(query)
-      const names = fieldNames(data.rows)
-      if (names.length) {
-        setFieldsByTable((current) => ({ ...current, [query.table]: new Set([...(current[query.table] || []), ...names]) }))
-      }
+      rememberFields(query.table, data.rows)
     } catch (err) {
       setResult(null)
       setError(errorText(err, 'The query failed.'))
@@ -288,10 +319,40 @@ export default function SapDataApiPanel() {
     }
   }
 
-  function preview(event) {
+  function rememberFields(name, rows) {
+    const names = fieldNames(rows || [])
+    if (!names.length) return null
+    const merged = new Set([...(fieldsByTable[name] || []), ...names])
+    setFieldsByTable((current) => ({ ...current, [name]: new Set([...(current[name] || []), ...names]) }))
+    return merged
+  }
+
+  // A filter whose column name depends on the view (GL vs GL_Account) needs
+  // the view's column names. When none are known yet, read one row (company
+  // filter only) to learn them, then build the conditions with them.
+  async function conditionsForQuery() {
+    const usesCandidates = spec && (
+      spec.date || spec.lists.some((filter) => splitCodes(filters.lists[filter.key] || '').length)
+    )
+    if (!usesCandidates || knownFields?.size) return conditions
+    try {
+      const sample = await querySapTable({
+        table: tableName, pageNo: 1, pageSize: 1,
+        otherConditions: companyCode ? `Company_Code = ${quote(companyCode)}` : '',
+      })
+      const learnt = rememberFields(tableName, sample.rows)
+      return learnt ? buildConditions({ table, companyCode, filters, knownFields: learnt }) : conditions
+    } catch {
+      return conditions // the real query reports any problem itself
+    }
+  }
+
+  async function preview(event) {
     event?.preventDefault()
     if (!tableName) return
-    fetchPage({ table: tableName, pageNo: 1, pageSize, otherConditions: conditions })
+    setBusy('preview')
+    const otherConditions = await conditionsForQuery()
+    fetchPage({ table: tableName, pageNo: 1, pageSize, otherConditions })
   }
 
   async function process() {
@@ -299,8 +360,8 @@ export default function SapDataApiPanel() {
     setBusy('process')
     setError('')
     setProcessed(null)
-    const request = { table: tableName, otherConditions: conditions, companyCode }
     try {
+      const request = { table: tableName, otherConditions: await conditionsForQuery(), companyCode }
       if (spec.action === 'analyse') {
         // Runs in the backend; progress and the result arrive through the job.
         await startSapAnalysis(dispatch, request, `SAP API — ${spec.label}`)

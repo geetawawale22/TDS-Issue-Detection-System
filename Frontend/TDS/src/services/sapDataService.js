@@ -21,7 +21,9 @@ export async function querySapTable({ table, pageNo = 1, pageSize = 100, otherCo
 const LONG_TIMEOUT = 15 * 60 * 1000
 
 /** Run the TDS analysis on every SAP row matching the filters (same result as an Excel upload). */
-export async function analyseSapData({ table, otherConditions = '', companyCode = '', includeInformational = true }) {
+// includeInformational: also save "correct" rule results (e.g. TDS Deducted as
+// per LDC) as issues. Off, as for a file upload: they are not problems.
+export async function analyseSapData({ table, otherConditions = '', companyCode = '', includeInformational = false }) {
   const response = await api.post('/sap-data/analyse', {
     table,
     other_conditions: otherConditions,
@@ -45,7 +47,7 @@ export async function importLdcFromSap({ table, otherConditions = '', companyCod
 // Polls skip the page loader, which would otherwise flash every few seconds.
 const QUIET = { skipGlobalLoader: true }
 
-export async function startSapAnalysisJob({ table, otherConditions = '', companyCode = '', includeInformational = true }) {
+export async function startSapAnalysisJob({ table, otherConditions = '', companyCode = '', includeInformational = false }) {
   const response = await api.post('/sap-data/analyse-jobs', {
     table,
     other_conditions: otherConditions,

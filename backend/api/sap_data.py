@@ -43,7 +43,9 @@ class FetchAllRequest(BaseModel):
     other_conditions: str = Field("", max_length=CONDITIONS_MAX)
     # Company the filter is for ("" = all); stamped on rows without one.
     company_code: str = Field("", max_length=20)
-    include_informational: bool = True
+    # Also save "correct" rule results (e.g. TDS Deducted as per LDC) as
+    # issues. Off, as for a file upload: they are not problems.
+    include_informational: bool = False
 
 
 def _fetch_frame(request: FetchAllRequest) -> pd.DataFrame:
