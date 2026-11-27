@@ -86,9 +86,14 @@ alembic upgrade head
 
 ### 5. Run the server
 
-```bash
-uvicorn main:app --reload
+On Windows, use one of the start scripts in `backend` (double-click, or run from a Command Prompt rather than the VS Code terminal, so closing VS Code doesn't stop the server):
+
+```bat
+backend\start_backend.bat       :: normal use: no auto-reload, restarts itself if it stops, logs to backend\logs\backend.log
+backend\start_backend_dev.bat   :: development: auto-reloads when code in api, services, db, ... changes
 ```
+
+Avoid plain `uvicorn main:app --reload`: it watches the whole `backend` folder including the virtual environment, so saves, `git pull` and `pip install` restart the server, and on Windows the restart often doesn't come back. A reload also stops any SAP analysis that is running.
 
 API will be available at `http://127.0.0.1:8000`
 Interactive docs at `http://127.0.0.1:8000/docs`

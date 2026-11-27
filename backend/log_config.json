@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "filters": {
+    "errors_and_failed_requests": {
+      "()": "core.logging_filters.ErrorsAndFailedRequests"
+    }
+  },
+  "formatters": {
+    "console": {
+      "()": "uvicorn.logging.DefaultFormatter",
+      "fmt": "%(levelprefix)s %(message)s",
+      "use_colors": null
+    },
+    "access_console": {
+      "()": "uvicorn.logging.AccessFormatter",
+      "fmt": "%(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s",
+      "use_colors": null
+    },
+    "file": {
+      "format": "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+      "datefmt": "%Y-%m-%d %H:%M:%S"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "formatter": "console",
+      "stream": "ext://sys.stderr"
+    },
+    "access_console": {
+      "class": "logging.StreamHandler",
+      "formatter": "access_console",
+      "stream": "ext://sys.stdout"
+    },
+    "file": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "filename": "logs/backend.log",
+      "maxBytes": 5242880,
+      "backupCount": 5,
+      "encoding": "utf-8",
+      "delay": true,
+      "formatter": "file",
+      "filters": ["errors_and_failed_requests"]
+    }
+  },
+  "loggers": {
+    "uvicorn": {
+      "handlers": ["console", "file"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "level": "INFO"
+    },
+    "uvicorn.access": {
+      "handlers": ["access_console", "file"],
+      "level": "INFO",
+      "propagate": false
+    }
+  },
+  "root": {
+    "handlers": ["console", "file"],
+    "level": "INFO"
+  }
+}
