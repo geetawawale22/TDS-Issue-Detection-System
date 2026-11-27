@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from db.bulk import insert_rows
 from db.models import RuleRun, TrackedIssue
+from rules.doc_types import CLEARING_DOC_TYPES, PAYMENT_DOC_TYPES, TRANSFER_POSTING_DOC_TYPES
 from rules.tds_rule_engine import _get_financial_year
 
 # Rupee difference within which a correction counts as complete.
@@ -43,7 +44,7 @@ AMOUNT_TOLERANCE = 1.0
 _CHUNK = 1000
 # Payments, clearings and transfer postings reference other documents to
 # settle or move them; they do not correct TDS.
-_NOT_CORRECTION_DOC_TYPES = {"KZ", "AB", "TP", "TM"}
+_NOT_CORRECTION_DOC_TYPES = PAYMENT_DOC_TYPES | CLEARING_DOC_TYPES | TRANSFER_POSTING_DOC_TYPES
 
 
 def references_other_document(txn) -> bool:

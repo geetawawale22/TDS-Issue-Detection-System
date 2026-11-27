@@ -58,6 +58,7 @@ from rules.tds_rule_engine import (
     threshold_period,
 )
 from services.tds_case_builder import build_tds_cases, classify_event
+from rules.doc_types import doc_type_event
 from services.issue_tracker import build_issue_key, fiscal_year_for, references_other_document, track_rule_run
 from services.ledger_store import save_run_lines
 from services.report_category import apply_resolutions, build_advance_roles, issue_report_category, report_fields
@@ -796,28 +797,9 @@ def _event_type_from_joined_row(row: dict[str, Any]) -> str:
     amount = float(row.get("amount") or 0)
     if row.get("isReversed") or row.get("reversalDocument"):
         return "REVERSAL"
-    if doc_type in {"RE", "KR", "F1", "F2", "F3", "FA", "LQ", "RH", "RP", "KW", "ZU"}:
-        return "INVOICE"
-    if doc_type == "KA":
-        return "ADVANCE_PAYMENT"
-    if doc_type == "KZ":
-        return "PAYMENT"
-    if doc_type in {"KG", "F4", "F5", "F6", "KC"}:
-        return "CREDIT_MEMO"
-    if doc_type in {"KN", "KD"}:
-        return "DEBIT_NOTE"
-    if doc_type == "AB":
-        return "CLEARING"
-    if doc_type in {"TP", "TM"}:
-        return "TRANSFER_POSTING"
-    if doc_type == "BT":
-        return "TDS_PAYMENT"
-    if doc_type == "JV":
-        return "JOURNAL"
-    if doc_type == "JR":
-        return "PROVISION"
-    if doc_type in {"SA", "ST", "BR", "ML", "PR", "QR", "QS", "UG", "ZY", "ZZ", "WA", "WE", "WI", "WL", "WN", "W2", "W3"}:
-        return "SUPPORTING"
+    event = doc_type_event(doc_type)
+    if event:
+        return event
     if amount < 0:
         return "REVERSAL"
     return "UNKNOWN"

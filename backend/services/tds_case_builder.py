@@ -12,23 +12,13 @@ from datetime import date
 from hashlib import sha256
 from typing import Any
 
+from rules.doc_types import (
+    ADVANCE_DOC_TYPES,
+    INVOICE_DOC_TYPES,
+    doc_type_event,
+    normalise_doc_type,
+)
 from rules.transaction_model import Transaction
-
-
-INVOICE_DOC_TYPES = {"RE", "KR", "F1", "F2", "F3", "FA", "LQ", "RH", "RP", "KW", "ZU"}
-ADVANCE_DOC_TYPES = {"KA"}
-PAYMENT_DOC_TYPES = {"KZ"}
-CREDIT_DOC_TYPES = {"KG", "F4", "F5", "F6", "KC"}
-DEBIT_NOTE_DOC_TYPES = {"KN", "KD"}
-CLEARING_DOC_TYPES = {"AB"}
-TRANSFER_POSTING_DOC_TYPES = {"TP", "TM"}
-TDS_PAYMENT_DOC_TYPES = {"BT"}
-JOURNAL_DOC_TYPES = {"JV"}
-PROVISION_DOC_TYPES = {"JR"}
-SUPPORTING_DOC_TYPES = {
-    "SA", "ST", "BR", "ML", "PR", "QR", "QS", "UG", "ZY", "ZZ",
-    "WA", "WE", "WI", "WL", "WN", "W2", "W3",
-}
 
 
 def _financial_year(value: date) -> str:
@@ -43,30 +33,15 @@ def _base_amount(txn: Transaction) -> float:
 
 
 def classify_event(txn: Transaction) -> str:
-    doc_type = (txn.doc_type or "").strip().upper()
+    doc_type = normalise_doc_type(txn.doc_type)
 
     if doc_type in INVOICE_DOC_TYPES:
         return "INVOICE"
     if txn.is_advance_payment or doc_type in ADVANCE_DOC_TYPES:
         return "ADVANCE_PAYMENT"
-    if doc_type in PAYMENT_DOC_TYPES:
-        return "PAYMENT"
-    if doc_type in CREDIT_DOC_TYPES:
-        return "CREDIT_MEMO"
-    if doc_type in DEBIT_NOTE_DOC_TYPES:
-        return "DEBIT_NOTE"
-    if doc_type in CLEARING_DOC_TYPES:
-        return "CLEARING"
-    if doc_type in TRANSFER_POSTING_DOC_TYPES:
-        return "TRANSFER_POSTING"
-    if doc_type in TDS_PAYMENT_DOC_TYPES:
-        return "TDS_PAYMENT"
-    if doc_type in JOURNAL_DOC_TYPES:
-        return "JOURNAL"
-    if doc_type in PROVISION_DOC_TYPES:
-        return "PROVISION"
-    if doc_type in SUPPORTING_DOC_TYPES:
-        return "SUPPORTING"
+    event = doc_type_event(doc_type)
+    if event:
+        return event
     if (txn.bill_amount or 0) < 0:
         return "REVERSAL"
     return "UNKNOWN"

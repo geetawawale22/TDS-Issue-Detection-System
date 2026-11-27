@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import date
 import re
+from rules.doc_types import INVOICE_DOC_TYPES, NON_TDS_DEDUCTION_DOC_TYPES, PAYMENT_DOC_TYPES
 from rules.transaction_model import Transaction
 from collections import Counter, defaultdict
 
@@ -52,34 +53,8 @@ PAYMENT_TYPE_TEXT_PATTERNS = (
     ("ecommerce", (r"\be[- ]?commerce\b",)),
 )
 ALWAYS_VALIDATE_DOC_TYPES = {"RE", "KZ", "KR", "KG", "LQ"}
-NON_TDS_DEDUCTION_DOC_TYPES = {
-    "AB",
-    "BD",
-    "JR",
-    "JV",
-    "KW",
-    "SK",
-    "KA",
-    "TP",
-    "BT",
-    "SA",
-    "ST",
-    "BR",
-    "ML",
-    "PR",
-    "QR",
-    "QS",
-    "UG",
-    "ZY",
-    "ZZ",
-    "WA",
-    "WE",
-    "WI",
-    "WL",
-    "WN",
-    "W2",
-    "W3",
-}
+# NON_TDS_DEDUCTION_DOC_TYPES (skip when TDS-blank), PAYMENT_DOC_TYPES and
+# INVOICE_DOC_TYPES come from the client's SAP doc-type master: rules/doc_types.py
 
 
 # ============================================================
@@ -1250,10 +1225,10 @@ def check_missing_tds_section(txn: Transaction) -> Optional[TDSIssue]:
 
 
 def _is_payment_without_advance_obligation(txn: Transaction) -> bool:
-    """Plain KZ payment rows support clearing, but TDS-bearing KZ rows still get validated."""
+    """Plain payment rows (KZ, P1, CP, ...) support clearing; TDS-bearing ones still get validated."""
     doc_type = (txn.doc_type or "").strip().upper()
     has_tds_signal = bool(txn.tds_deducted_section or txn.tds_deducted_rate or txn.tds_deducted_amount)
-    return doc_type == "KZ" and not txn.is_advance_payment and not has_tds_signal
+    return doc_type in PAYMENT_DOC_TYPES and not txn.is_advance_payment and not has_tds_signal
 
 
 def run_all_checks(txn: Transaction) -> list[TDSIssue]:
@@ -1419,7 +1394,7 @@ def _vendor_match_key(txn: Transaction) -> str:
 
 
 def link_advances_to_invoices(transactions: list[Transaction]) -> list[tuple[Transaction, list[Transaction]]]:
-    """Pair each RE/KR invoice with the advance payments made against it.
+    """Pair each vendor invoice (RE, KR, F1, LQ, ...) with the advance payments made against it.
 
     Link order: REBZG/REBZJ/REBZZ first, then Assignment_Number/ZUONR.
     Invoices without a linked advance are left out.
@@ -1428,7 +1403,7 @@ def link_advances_to_invoices(transactions: list[Transaction]) -> list[tuple[Tra
     advances = [txn for txn in transactions if txn.is_advance_payment and not _is_advance_clearing_adjustment(txn)]
     invoices = [
         txn for txn in transactions
-        if not txn.is_advance_payment and (txn.doc_type or "").strip().upper() in {"RE", "KR"}
+        if not txn.is_advance_payment and (txn.doc_type or "").strip().upper() in INVOICE_DOC_TYPES
     ]
     direct_index: dict[tuple[str, str, str], list[Transaction]] = defaultdict(list)
     assignment_index: dict[tuple[str, str, str], list[Transaction]] = defaultdict(list)
