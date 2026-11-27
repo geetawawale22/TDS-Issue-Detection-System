@@ -271,11 +271,15 @@ Do not manually delete migration files unless the developer confirms.
 
 ## 9. Start Backend Server
 
-From `backend` folder, with virtual environment activated:
+On Windows, run `backend\start_backend.bat` (normal use: no auto-reload, restarts itself if it stops, logs to `backend\logs\backend.log`) or `backend\start_backend_dev.bat` (development: auto-reloads on code changes). Start it from a Command Prompt or by double-clicking, not from the VS Code terminal.
+
+On Linux/Mac, from `backend` folder, with virtual environment activated:
 
 ```bash
-uvicorn main:app --reload
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+Avoid plain `uvicorn main:app --reload`: it watches the virtual environment too, so the server restarts on saves, `git pull` and `pip install`, and on Windows the restart often does not come back.
 
 Backend should run at:
 
@@ -399,7 +403,8 @@ cd backend
 # OR
 source .venv/bin/activate   # Linux/Mac
 
-uvicorn main:app --reload
+uvicorn main:app --host 0.0.0.0 --port 8000
+# On Windows, instead just run: backend\start_backend.bat
 ```
 
 Frontend:
